@@ -1,73 +1,46 @@
-# HPClaw v0.2.14 — HPC 集群智能工作台
+# HPClaw —— HPC 集群智能工作台
 
-基于 Electron + React + TypeScript 构建的 HPC 集群管理客户端，集成 AI 辅助、文件传输、SSH 终端和正式流程运行。
+面向生物信息与高性能计算场景的桌面客户端：AI 智能体 + 集群作业管理 + 文件传输 + 生信分析流程库，开箱即用。
 
-> 开发者和后续 AI 请先阅读 [开发总说明](docs/DEVELOPMENT_GUIDE.md)。当前源码与测试是最高事实来源，历史设计文档可能已过时。
+## 下载安装（推荐给绝大多数用户）
 
-## 快速使用
+**[⬇️ 点击下载 HPClaw 最新版（Windows x64 安装包）](https://github.com/peacezha/HPClaw/releases/latest)**
 
-运行 `release/HPClaw-Setup-0.2.14-x64.exe` 完成安装；应用运行时无需另装 Node.js。
+下载 `HPClaw-Setup-x64.exe` 后双击安装即可，**无需安装 Node.js 或任何其他依赖**。
 
-1. 启动后输入集群地址、端口、用户名和密码
-2. 首次连接需确认主机指纹
-3. 登录后可使用终端、AI 助理、文件管理等全部功能
+> 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
 
-## 目录结构
+## 快速上手
 
-```
-src/                  # React 前端源码
-server/               # Express 后端与 Agent/流程实现
-electron/             # Electron 主进程
-shared/               # 前后端共享类型和规则
-skills/               # AI 技能
-lsf_skills/           # LSF 调度器技能
-workflows/            # 流程种子与资产
-vendor/               # 随包 dsh、插件和 Node 运行时
-docs/                 # 开发、功能和历史设计文档
-dist*/、release/      # 生成产物，不应直接修改
-```
+1. 启动 HPClaw，输入集群地址、端口、用户名和密码（首次连接需确认主机指纹）；
+2. 登录后即可使用：AI 对话与任务执行、SSH 终端、集群与本地文件互传、流程库一键运行；
+3. 流程库内置 53 条精选流程（含 12 条 ENCODE 金标准流程），每条流程第 1 步自动做环境检查，分析代码为固定金脚本，只需在运行面板确认参数。
 
-## 开发环境搭建
+## 功能一览
+
+- **AI 智能体**：对话式驱动集群作业（提交、监控、自动续跑、完成后自动分析结果），支持本地文件分析（无集群也能用）；
+- **流程库**：ENCODE 金标准流程（RNA-seq / ChIP-seq / ATAC-seq / WGBS / Hi-C 等 12 条）+ 35 条精选 BioSkills 流程；固定脚本 + 全局参数微调；植物样本适配（叶绿体去除）；
+- **集群工作台**：LSF 作业提交/监控/排障，终端右键菜单与 AI 辅助小窗；
+- **文件传输**：集群与本地双向互传、远程文件在线编辑同步；
+- **网络数据资源**：内置 NCBI / Ensembl / UniProt 等公共数据库接口，AI 可直接查询序列与注释。
+
+## 从源码构建（开发者）
 
 ```bash
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
-
-# 构建生产版本
-npm run build
-
-# 打包 Electron 应用
-npm run electron:dist
+npm install          # 安装依赖
+npm run dev          # 开发模式
+npm run test         # 运行测试（168 个测试文件，1296 项）
+npm run electron:dist  # 打包 Windows 安装包（输出到 release/）
 ```
 
-## 技术栈
+技术栈：Electron + React + TypeScript + Express。详见 [开发总说明](docs/DEVELOPMENT_GUIDE.md)。
 
-- **前端**: React 19 + Tailwind CSS + xterm.js
-- **后端**: Express + Socket.IO + ssh2
-- **桌面**: Electron 42
-- **语言**: TypeScript
-- **构建**: Vite + electron-builder
+## 文档
 
-## 远程文件打开与预览
+- [ENCODE 流程设计与质控阈值解读](docs/ENCODE生物信息分析与质控流程.md)
+- [ENCODE 流程与代码全文](docs/ENCODE流程与代码全文_v0.4.12.md)
+- [流程自动化约定](docs/FLOW_AUTOMATION.md)
 
-- 双击远程文件会先下载到 HPClaw 的安全缓存，再调用 Windows 默认软件打开。
-- 在默认软件中保存修改后，HPClaw 自动把文件上传覆盖到原集群路径；关闭软件时还会执行最终同步检查。
-- 同步失败时不会删除本地副本，可在文件工作区点击“重试上传”或“打开本地副本”。
-- 双击本地文件只调用系统默认软件，不会上传到集群。
-- 右键选择“预览”可在应用内只读查看图片、PDF、DOCX、XLS/XLSX、CSV/TSV、Markdown、代码、日志和常见生物信息文本。
-- 100 MiB 及以上的 FASTA、FASTQ、日志等行式文本仅流式读取并显示前 20 行。
+## License
 
-## 流程自动化（四板块工作区）
-
-- 每个分析流程在集群上拥有持久目录 `~/hpclaw_flows/<流程>/`，每次运行在 `03_workspace/runs/<runId>/` 下创建独立代码、日志、结果、配置、流程快照和 `run.json`。
-- 预检可检查调度器、软件 Module、版本、参考数据与资产；缺失时可让 AI 引导处理。当前版本仍要求用户确认预检结果。
-- 运行中由 `run.json` 状态机记录步骤，长作业交给 LSF/Slurm/PBS 后台监控；最终报告由具体流程决定，并非所有流程都会自动生成统一报告。
-- 当前种子库包含 6 个内置流程和 41 条 BioSkills 流程。完整实现与已知边界见 `docs/DEVELOPMENT_GUIDE.md`。
-
-## 系统要求
-
-- Windows 10/11 x64
-- 无需额外依赖（Node.js 运行时已内置）
+[MIT](LICENSE)
