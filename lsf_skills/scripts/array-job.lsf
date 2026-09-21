@@ -1,0 +1,30 @@
+#!/bin/bash
+#BSUB -J array_job[1-10]
+#BSUB -n 1                   # 【根据bhosts调整】资源紧张时1核最易调度
+#BSUB -R "span[hosts=1]"
+#BSUB -o %J_%I.out
+#BSUB -e %J_%I.err
+#BSUB -q normal
+
+# ============================================================
+# LSF 数组作业模板（极简版）
+#
+# 【软件加载 - 重要！】
+# 使用集群已安装软件时，必须module加载：
+#   module load SoftwareName/Version
+#
+# 【极简原则】不设置内存和时间参数
+# 【提交前必做】bhosts 查看资源，调整 -n 的值
+# ============================================================
+
+# 加载需要的软件模块（取消注释使用）
+# module load YourSoftware/Version
+
+echo "Task $LSB_JOBINDEX started at $(date)"
+
+# 使用 $LSB_JOBINDEX 区分不同任务
+INPUT_FILE=$(sed -n "${LSB_JOBINDEX}p" /path/to/input_list.txt)
+
+your_program -i "$INPUT_FILE" -o "output_${LSB_JOBINDEX}.txt"
+
+echo "Task $LSB_JOBINDEX completed at $(date)"

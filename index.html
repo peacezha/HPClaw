@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // 在任何 CSS/JS 前同步恢复保存的主题，避免深色用户启动时先白闪再变黑
+      // key 与 src/main.tsx 保持一致
+      document.documentElement.dataset.theme = localStorage.getItem('hpclaw_theme') === 'light' ? '' : 'dark';
+    </script>
+    <title>HPClaw</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

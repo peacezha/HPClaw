@@ -1,0 +1,12 @@
+{
+  "name": "hpclaw-dsh-plugin",
+  "version": "0.4.1",
+  "description": "Expose HPClaw capabilities as DeepSeek Harness agent tools: cluster run_command bridge with user confirmation, cluster_fs file access and local<->cluster transfer, zero-dependency CDP browser control (browser_open/eval/click/type/screenshot/close), WheatOmics/GitHub-mirror CLI wrappers, read-only HPClaw local API bridge, an HPClaw command-safety pre-execute gate for dsh's bash/pwsh tools, and an HPClaw domain system-prompt section.",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  }
+}

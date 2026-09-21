@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.log
+.env
+.venv/
+venv/
+mirrors-docker.txt
+mirrors-github.txt

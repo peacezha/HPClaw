@@ -1,0 +1,4 @@
+interface:
+  display_name: "NCBI 集群参考基因组"
+  short_description: "自动挑选、校验并下载最佳 NCBI 参考基因组到远程计算集群"
+  default_prompt: "使用 $ncbi-reference-to-cluster 为我的分析挑选并下载最佳 NCBI 参考基因组到集群。"

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HPClaw 启动中</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f3f4f7;
+    color: #1f2733;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    overflow: hidden;
+  }
+  .logo {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #2b3a52;
+    margin-bottom: 6px;
+  }
+  .logo .paw { color: #3f6fdd; }
+  .sub {
+    font-size: 12px;
+    color: #7a8699;
+    margin-bottom: 28px;
+  }
+  .bar-track {
+    width: 300px;
+    height: 8px;
+    background: #dde3ec;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #3f6fdd, #5b8cff);
+    border-radius: 4px;
+    transition: width 0.45s ease;
+  }
+  .bar-shimmer {
+    position: absolute;
+    top: 0; left: -40%;
+    width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+  @keyframes shimmer {
+    0% { left: -40%; }
+    100% { left: 100%; }
+  }
+  .status {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #5a6a84;
+    min-height: 16px;
+  }
+  .pct {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #93a1b8;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+  <div class="logo">HP<span class="paw">Claw</span></div>
+  <div class="sub">集群智能工作台 · 正在启动</div>
+  <div class="bar-track">
+    <div class="bar-fill" id="fill"></div>
+    <div class="bar-shimmer"></div>
+  </div>
+  <div class="status" id="status">正在启动…</div>
+  <div class="pct" id="pct"></div>
+  <script>
+    // 主进程经 executeJavaScript 调用：window.setProgress(0-100, '状态文本')
+    window.setProgress = function (pct, text) {
+      var fill = document.getElementById('fill');
+      var status = document.getElementById('status');
+      var pctEl = document.getElementById('pct');
+      var v = Math.max(0, Math.min(100, Math.round(pct)));
+      fill.style.width = v + '%';
+      if (text) status.textContent = text;
+      pctEl.textContent = v > 0 && v < 100 ? v + '%' : '';
+    };
+  </script>
+</body>
+</html>

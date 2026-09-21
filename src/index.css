@@ -1,0 +1,364 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Light Neutral Palette（白天模式；深色为默认）─────────
+   * 语义槽位（class 不变，色值按主题切换）：
+   *   50–300  文字（主 → 次）
+   *   400–500 弱化文字 / 图标
+   *   600–700 边框 / 分隔线
+   *   800     次级填充（hover、条纹）
+   *   900     面板
+   *   950     页面底 / 输入框底
+   */
+  --color-scholar-50: #1e2430;
+  --color-scholar-100: #2b3442;
+  --color-scholar-200: #475062;
+  --color-scholar-300: #5f6b7d;
+  --color-scholar-400: #8992a3;
+  --color-scholar-500: #a6adbb;
+  --color-scholar-600: #cfd5de;
+  --color-scholar-700: #dfe3ea;
+  --color-scholar-800: #eef1f5;
+  --color-scholar-900: #ffffff;
+  --color-scholar-950: #f4f5f8;
+
+  /* 工程蓝 —— 浅色背景上加深以保证对比度 */
+  --color-accent: #2563eb;
+  --color-accent-light: #3b82f6;
+  --color-accent-dark: #1d4ed8;
+}
+
+/* ── 语义变量（alpha 合成色用 rgb 三元组，便于换主题）────── */
+:root {
+  --line-rgb: 148 163 184;        /* 边框/分隔线的 rgb 三元组 */
+  --accent-rgb: 37 99 235;        /* 强调蓝的 rgb 三元组 */
+  --scrim-rgb: 15 23 42;          /* 遮罩/阴影的 rgb 三元组 */
+  --scholar-950-rgb: 244 245 248; /* 页面底的 rgb 三元组 */
+  --danger-rgb: 220 38 38;
+  --color-danger: #dc2626;
+  --color-gold-strong: #1d4ed8;   /* 小字强调（变量名沿用旧称，色值已换蓝） */
+  --color-ok: #16a34a;
+  --color-warn: #b45309;
+  --login-bg: linear-gradient(150deg, #ffffff 0%, #f4f5f8 55%, #eef1f5 100%);
+}
+
+/* ── 深色模式（默认）：VS Code 系中性蓝灰 ─────────────────── */
+[data-theme='dark'] {
+  --color-scholar-50: #f4f6f8;
+  --color-scholar-100: #e2e6eb;
+  --color-scholar-200: #c3cad3;
+  --color-scholar-300: #9aa3b0;
+  --color-scholar-400: #7c8595;
+  --color-scholar-500: #5d6673;
+  --color-scholar-600: #3f4550;
+  --color-scholar-700: #33373f;
+  --color-scholar-800: #292c33;
+  --color-scholar-900: #212329;
+  --color-scholar-950: #1a1c21;
+
+  --color-accent: #3b82f6;
+  --color-accent-light: #60a5fa;
+  --color-accent-dark: #2563eb;
+
+  --line-rgb: 63 69 80;
+  --accent-rgb: 59 130 246;
+  --scrim-rgb: 0 0 0;
+  --scholar-950-rgb: 26 28 33;
+  --danger-rgb: 248 113 113;
+  --color-danger: #f87171;
+  --color-gold-strong: #7aa5f8;
+  --color-ok: #4ade80;
+  --color-warn: #fbbf24;
+  --login-bg: linear-gradient(150deg, #1a1c21 0%, #21242b 55%, #1a1c21 100%);
+}
+
+/* ---- Base ---- */
+html {
+  /* 16px made compact controls difficult to read on common Windows displays. */
+  font-size: 17px;
+}
+
+body {
+  background: var(--color-scholar-950);
+  color: var(--color-scholar-50);
+  -webkit-font-smoothing: antialiased;
+  /* 滚动条出现/消失时不引起横向抖动 */
+  scrollbar-gutter: stable;
+  line-height: 1.5;
+}
+
+/* Never render operational labels below a readable minimum. */
+.text-\[10px\],
+.text-\[11px\] {
+  font-size: 12px !important;
+}
+
+/* 登录页背景（随主题） */
+.login-bg { background: var(--login-bg); }
+
+/* ── Z-Index Scale ─────────────────────────────────────────── */
+/*   0-9: Content   10: Panel toggles   15: File-transfer launcher   20: Dropdowns
+ *   30: Modals / File-transfer overlay   40: Toasts   50: Lightbox            */
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--line-rgb) / 0.35); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--line-rgb) / 0.55); }
+
+/* 集群标签条：横向滚动条做薄，避免在 48px 高工具条里吃高度 */
+.cluster-tab-strip { scrollbar-width: thin; }
+.cluster-tab-strip::-webkit-scrollbar { height: 4px; }
+
+/* ── Selection ─────────────────────────────────────────────── */
+::selection { background: rgb(var(--accent-rgb) / 0.25); color: var(--color-scholar-50); }
+
+/* ── Focus Ring ────────────────────────────────────────────── */
+/* 1px：输入框普遍另有 focus:ring-2，避免双环叠加 */
+*:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 2px; }
+
+/* ── Reduced Motion ────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Button System ─────────────────────────────────────────── */
+/* 主按钮：强调蓝填充，用于关键操作（登录、发送、文件传输等） */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  border-radius: 0.375rem;
+  background: var(--color-accent);
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  box-shadow: 0 1px 2px rgb(var(--scrim-rgb) / 0.08);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-accent-dark); }
+.btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* 幽灵按钮：透明底，hover 浅灰，用于导航与工具项 */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-scholar-300);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.btn-ghost:hover:not(:disabled) { background: var(--color-scholar-800); color: var(--color-scholar-100); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost[data-active="true"] { background: var(--color-scholar-800); color: var(--color-scholar-50); }
+
+/* 图标按钮：统一 32px 见方 */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-scholar-300);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.btn-icon:hover:not(:disabled) { background: var(--color-scholar-800); color: var(--color-scholar-100); }
+.btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-icon[data-active="true"] { background: rgb(var(--accent-rgb) / 0.12); color: var(--color-accent); }
+
+/* ── Global language switch ─────────────────────────────────── */
+.language-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 2.8rem;
+  height: 2rem;
+  padding: 0 0.55rem;
+  border: 1px solid rgb(var(--line-rgb) / 0.38);
+  border-radius: 0.375rem;
+  background: var(--color-scholar-900);
+  color: var(--color-scholar-200);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.language-toggle:hover {
+  color: var(--color-accent);
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  background: var(--color-scholar-800);
+}
+.language-toggle-floating {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 60;
+  box-shadow: 0 2px 10px rgb(var(--scrim-rgb) / 0.12);
+}
+
+/* ── Panel Card ──────────────────────────────────────────── */
+.scholar-card {
+  background: var(--color-scholar-900);
+  border: 1px solid rgb(var(--line-rgb) / 0.22);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgb(var(--scrim-rgb) / 0.08);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.scholar-card:hover {
+  border-color: rgb(var(--accent-rgb) / 0.35);
+  box-shadow: 0 2px 8px rgb(var(--scrim-rgb) / 0.15);
+}
+
+/* ── Panel Divider ───────────────────────────────────────── */
+.scholar-divider {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgb(var(--line-rgb) / 0.3), transparent);
+}
+
+/* ── RichContent Card Styles ───────────────────────────────── */
+.rich-card {
+  background: var(--color-scholar-900);
+  border: 1px solid rgb(var(--line-rgb) / 0.2);
+  border-radius: 6px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.rich-card:hover {
+  border-color: rgb(var(--accent-rgb) / 0.3);
+  /* 分层投影（contact → mid → wide），参照 OpenMAIC workspace-shell 的投影层叠法 */
+  box-shadow:
+    0 1px 2px rgb(var(--scrim-rgb) / 0.16),
+    0 2px 8px rgb(var(--scrim-rgb) / 0.10),
+    0 12px 28px -10px rgb(var(--scrim-rgb) / 0.16);
+}
+.rich-content-cards .rich-card + .rich-card { margin-top: 0.5rem; }
+.rich-card pre code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  tab-size: 2;
+  color: var(--color-scholar-100);
+}
+/* 富内容表格：圆角外框 + 分层细线（与对话表格同款精致化） */
+.rich-card table { border-collapse: separate; border-spacing: 0; border: 1px solid rgb(var(--line-rgb) / 0.35); border-radius: 0.5rem; overflow: hidden; }
+.rich-card table th, .rich-card table td { border-bottom: 1px solid rgb(var(--line-rgb) / 0.22); }
+.rich-card table tr:last-child td { border-bottom: none; }
+.rich-card table tbody tr:nth-child(even) { background: rgb(var(--line-rgb) / 0.18); }
+/* 放在条纹之后：同优先级时 hover 覆盖偶数行条纹，保证悬停可见 */
+.rich-card table tbody tr:hover { background: rgb(var(--line-rgb) / 0.32); }
+.rich-card table thead { background: rgb(var(--line-rgb) / 0.35); }
+
+/* ── Conversation Markdown ─────────────────────────────────── */
+.hpclaw-markdown { min-width: 0; overflow-wrap: anywhere; }
+.hpclaw-markdown > :first-child { margin-top: 0; }
+.hpclaw-markdown > :last-child { margin-bottom: 0; }
+.hpclaw-markdown p { margin: 0.35rem 0 0.65rem; }
+.hpclaw-markdown h1,
+.hpclaw-markdown h2,
+.hpclaw-markdown h3,
+.hpclaw-markdown h4 {
+  margin: 0.9rem 0 0.4rem;
+  color: var(--color-scholar-50);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.hpclaw-markdown h1 { font-size: 1.15rem; }
+.hpclaw-markdown h2 { font-size: 1.05rem; }
+.hpclaw-markdown h3,
+.hpclaw-markdown h4 { font-size: 0.95rem; }
+.hpclaw-markdown ul,
+.hpclaw-markdown ol { margin: 0.45rem 0 0.7rem 1.25rem; }
+.hpclaw-markdown ul { list-style: disc; }
+.hpclaw-markdown ol { list-style: decimal; }
+.hpclaw-markdown li { margin: 0.18rem 0; padding-left: 0.12rem; }
+.hpclaw-markdown blockquote {
+  margin: 0.65rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid rgb(var(--accent-rgb) / 0.55);
+  color: var(--color-scholar-300);
+}
+.hpclaw-markdown a { color: var(--color-accent-dark); text-decoration: underline; text-underline-offset: 2px; }
+.hpclaw-markdown pre {
+  max-width: 100%;
+  margin: 0.65rem 0;
+  padding: 0.75rem;
+  overflow: auto;
+  /* 代码块要和页面底色拉开：面板底 + 可见边框 + 亮文字，不再灰蒙蒙 */
+  border: 1px solid var(--color-scholar-600);
+  border-radius: 0.375rem;
+  background: var(--color-scholar-900);
+  color: var(--color-scholar-100);
+}
+.hpclaw-markdown code {
+  border-radius: 0.25rem;
+  /* 行内代码：亮一档的底 + 细边 + 亮文字 */
+  background: var(--color-scholar-800);
+  border: 1px solid var(--color-scholar-700);
+  color: var(--color-scholar-100);
+  padding: 0.08rem 0.3rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.82em;
+}
+.hpclaw-markdown pre code { padding: 0; background: transparent; border: none; color: inherit; font-size: 0.78rem; }
+.hpclaw-markdown table {
+  width: 100%;
+  margin: 0.65rem 0;
+  font-size: 0.82rem;
+  /* 精致边框：圆角外框 + 分层细线，不再是灰蒙蒙的粗灰线 */
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid rgb(var(--line-rgb) / 0.35);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.hpclaw-markdown th,
+.hpclaw-markdown td { padding: 0.4rem 0.55rem; border-bottom: 1px solid rgb(var(--line-rgb) / 0.22); text-align: left; vertical-align: top; }
+.hpclaw-markdown tr:last-child td { border-bottom: none; }
+/* 表格正文显式亮文字（不再跟随可能偏灰的继承色） */
+.hpclaw-markdown td { color: var(--color-scholar-200); }
+.hpclaw-markdown th { color: var(--color-scholar-50); font-weight: 600; background: var(--color-scholar-800); border-bottom: 1px solid rgb(var(--accent-rgb) / 0.35); }
+
+/* Codex 风格工作区：对话与底部输入框保持舒适阅读宽度。 */
+.hpclaw-chat-workspace [data-chat-messages],
+.hpclaw-chat-workspace [data-chat-composer] {
+  padding-left: clamp(1rem, 7vw, 7rem);
+  padding-right: clamp(1rem, 7vw, 7rem);
+}
+.hpclaw-chat-workspace [data-message-bubble="assistant"] {
+  padding-left: 0;
+  padding-right: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.hpclaw-chat-workspace [data-message-bubble="user"] {
+  max-width: min(82%, 46rem);
+}
+
+@keyframes card-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.rich-card-loading {
+  background: linear-gradient(90deg, rgb(var(--line-rgb) / 0.1) 25%, rgb(var(--line-rgb) / 0.2) 50%, rgb(var(--line-rgb) / 0.1) 75%);
+  background-size: 200% 100%;
+  animation: card-shimmer 1.5s infinite;
+}

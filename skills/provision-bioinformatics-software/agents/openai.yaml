@@ -1,0 +1,4 @@
+interface:
+  display_name: "生信软件集群部署"
+  short_description: "自动检查集群 Modules，并规范部署缺失的生信软件"
+  default_prompt: "Use $provision-bioinformatics-software to inspect required bioinformatics tools and safely plan or deploy any missing modules."

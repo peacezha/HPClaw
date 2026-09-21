@@ -1,0 +1,33 @@
+#!/bin/bash
+#BSUB -J gpu_job
+#BSUB -q gpu
+#BSUB -n 4                   # 【根据bhosts调整】紧张时改2
+#BSUB -R "span[hosts=1]"
+#BSUB -gpu "num=1:mode=shared"
+#BSUB -o %J.out
+#BSUB -e %J.err
+
+# ============================================================
+# LSF GPU作业模板（极简版）
+#
+# 【软件加载 - 重要！】
+# 使用集群已安装的PyTorch/TensorFlow等时，必须module加载：
+#   module load PyTorch/1.9.0-foss-2020a-Python-3.8.2
+#   module load TensorFlow/2.4.1-foss-2020a-Python-3.8.2
+#
+# 【极简原则】不设置内存和时间参数
+# ============================================================
+
+# 加载需要的软件模块（取消注释使用）
+# module load PyTorch/1.9.0-foss-2020a-Python-3.8.2
+# module load TensorFlow/2.4.1-foss-2020a-Python-3.8.2
+
+echo "GPU Job Started at $(date)"
+echo "Job ID: $LSB_JOBID"
+echo "Host: $HOSTNAME"
+
+nvidia-smi
+
+python your_deep_learning_script.py
+
+echo "GPU Job Finished at $(date)"

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" font-family="system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+  <rect x="0" y="0" width="900" height="420" rx="12" fill="#1a1c21"/>
+  <text x="40" y="42" font-size="20" font-weight="600" fill="#e5e7eb">Editing Class Distribution</text>
+  <text x="40" y="64" font-size="13" fill="#8b93a3">Modified vs WT reads per sample (mean of 3 replicates)</text>
+
+  <!-- legend -->
+  <rect x="672" y="28" width="12" height="12" rx="2" fill="#3b82f6"/>
+  <text x="690" y="38" font-size="13" fill="#c9cfdb">Modified</text>
+  <rect x="762" y="28" width="12" height="12" rx="2" fill="#565d6b"/>
+  <text x="780" y="38" font-size="13" fill="#c9cfdb">WT</text>
+
+  <!-- gridlines + y labels (0-100%, step 20; y = 360 - p*2.7) -->
+  <g stroke="#2a2e36" stroke-width="1">
+    <line x1="100" y1="360" x2="860" y2="360"/>
+    <line x1="100" y1="306" x2="860" y2="306"/>
+    <line x1="100" y1="252" x2="860" y2="252"/>
+    <line x1="100" y1="198" x2="860" y2="198"/>
+    <line x1="100" y1="144" x2="860" y2="144"/>
+    <line x1="100" y1="90" x2="860" y2="90"/>
+  </g>
+  <g font-size="12" fill="#8b93a3" text-anchor="end">
+    <text x="90" y="364">0%</text>
+    <text x="90" y="310">20%</text>
+    <text x="90" y="256">40%</text>
+    <text x="90" y="202">60%</text>
+    <text x="90" y="148">80%</text>
+    <text x="90" y="94">100%</text>
+  </g>
+  <line x1="100" y1="90" x2="100" y2="360" stroke="#4b5563" stroke-width="1.5"/>
+  <line x1="100" y1="360" x2="860" y2="360" stroke="#4b5563" stroke-width="1.5"/>
+
+  <!-- stacked bars: Modified (bottom, blue) + WT (top, gray); 100% = 270px -->
+  <!-- R16-D 87.4 / 12.6 -->
+  <rect x="141" y="124.0" width="70" height="236.0" fill="#3b82f6"/>
+  <rect x="141" y="90.0" width="70" height="34.0" fill="#565d6b"/>
+  <text x="176" y="246" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">87.4%</text>
+  <!-- R16-C 84.1 / 15.9 -->
+  <rect x="293" y="132.9" width="70" height="227.1" fill="#3b82f6"/>
+  <rect x="293" y="90.0" width="70" height="42.9" fill="#565d6b"/>
+  <text x="328" y="250" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">84.1%</text>
+  <!-- R33-D 79.8 / 20.2 -->
+  <rect x="445" y="144.5" width="70" height="215.5" fill="#3b82f6"/>
+  <rect x="445" y="90.0" width="70" height="54.5" fill="#565d6b"/>
+  <text x="480" y="256" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">79.8%</text>
+  <!-- R33-C 76.5 / 23.5 -->
+  <rect x="597" y="153.4" width="70" height="206.6" fill="#3b82f6"/>
+  <rect x="597" y="90.0" width="70" height="63.5" fill="#565d6b"/>
+  <text x="632" y="260" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">76.5%</text>
+  <!-- Mock 2.3 / 97.7 -->
+  <rect x="749" y="353.8" width="70" height="6.2" fill="#3b82f6"/>
+  <rect x="749" y="90.0" width="70" height="263.8" fill="#565d6b"/>
+  <text x="784" y="225" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">97.7%</text>
+
+  <!-- x labels -->
+  <g font-size="13" fill="#9ca3af" text-anchor="middle">
+    <text x="176" y="382">R16-D</text>
+    <text x="328" y="382">R16-C</text>
+    <text x="480" y="382">R33-D</text>
+    <text x="632" y="382">R33-C</text>
+    <text x="784" y="382">Mock</text>
+  </g>
+  <text x="480" y="406" font-size="12" fill="#6b7280" text-anchor="middle">sample</text>
+</svg>

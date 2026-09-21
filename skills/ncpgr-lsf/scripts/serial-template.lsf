@@ -1,0 +1,54 @@
+#!/bin/bash
+#BSUB -J serial_job
+#BSUB -n 4                  # 【根据bhosts结果调整】紧张时改2，充足时可8+
+#BSUB -R "span[hosts=1]"    # 【必须】限制单节点
+#BSUB -o %J.out
+#BSUB -e %J.err
+#BSUB -q normal             # 可选：默认就是normal
+
+# ============================================================
+# LSF 极简作业模板
+# 适用于: 生物信息分析软件 (blast, bwa, STAR等)
+# 
+# 【软件加载 - 重要！】
+# 如果用户使用集群已安装的软件，必须先用module加载：
+#   module av bwa          # 查看可用版本
+#   module load BWA/0.7.17-foss-2018b
+# 
+# 常用软件模块示例：
+#   module load STAR/2.6.0a-foss-2016b
+#   module load SAMtools/1.3
+#   module load BWA/0.7.17-foss-2018b
+#   module load picard/2.18.27
+#
+# 【极简原则】
+# 1. 不设置内存参数（队列已自动管理）
+# 2. 不设置时间限制（除测试外）
+# 3. 只保留核心数、队列、输出等必要参数
+#
+# 【提交前必做】
+# bhosts | grep -E "ok|closed" | head -10
+# 根据资源情况调整 -n 的值
+# ============================================================
+
+# 加载需要的软件模块（取消注释使用）
+# module load BWA/0.7.17-foss-2018b
+# module load STAR/2.6.0a-foss-2016b
+# module load SAMtools/1.3
+
+echo "========================================"
+echo "Job Started at: $(date)"
+echo "Job ID: $LSB_JOBID"
+echo "Queue: $LSB_QUEUE"
+echo "Running on: $HOSTNAME"
+echo "Allocated cores: $LSB_DJOB_NUMPROC"
+echo "========================================"
+
+# 使用 $LSB_DJOB_NUMPROC 自动获取申请的核心数
+# 示例: bwa mem -t $LSB_DJOB_NUMPROC ref.fa read1.fq read2.fq > output.sam
+
+your_program --threads $LSB_DJOB_NUMPROC --input your_input
+
+echo "========================================"
+echo "Job Finished at: $(date)"
+echo "========================================"

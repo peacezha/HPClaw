@@ -1,0 +1,43 @@
+#!/bin/bash
+# ============================================================
+# LSF 批量作业提交脚本（极简版）
+# ============================================================
+
+# 配置参数
+QUEUE="normal"
+CORES=4                          # 【根据bhosts结果调整】紧张时改2，充足时可8+
+INPUT_DIR="/path/to/your/data"
+OUTPUT_DIR="/path/to/output"
+
+# 要加载的软件模块（根据实际修改）
+# MODULE="BWA/0.7.17-foss-2018b"
+MODULE=""
+
+mkdir -p "$OUTPUT_DIR"
+
+for input_file in "$INPUT_DIR"/*_1.fq.gz; do
+    sample=$(basename "$input_file" | sed 's/_1.fq.gz//')
+    
+    echo "Submitting: $sample"
+    
+    # 构建module加载命令（如果有）
+    if [ -n "$MODULE" ]; then
+        module_cmd="module load $MODULE && "
+    else
+        module_cmd=""
+    fi
+    
+    # 极简提交：不设置内存和时间
+    bsub \
+        -J "${sample}" \
+        -q "$QUEUE" \
+        -n "$CORES" \
+        -R "span[hosts=1]" \
+        -o "${OUTPUT_DIR}/%J.${sample}.out" \
+        -e "${OUTPUT_DIR}/%J.${sample}.err" \
+        "${module_cmd}your_program -t $CORES -i $input_file -o ${OUTPUT_DIR}/${sample}.out"
+    
+    sleep 5
+done
+
+echo "All jobs submitted!"

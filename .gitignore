@@ -1,0 +1,67 @@
+/node_modules/
+build/
+dist/
+dist-electron/
+release/
+HPClaw-x64/
+HPClaw-x64-backup-*/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Runtime files
+.ssh_mux_*
+.creds_*.json
+uploads/
+conversations/
+.superpowers/
+.worktrees/
+
+# Temp/scratch files
+fix.cjs
+fix.js
+metadata.json
+server-err.txt
+server-out.txt
+gen_*.py
+runner.py
+audit.py
+start.bat
+*.err.log
+*.out.log
+
+# Claude / IDE settings
+.claude/
+.superpowers/
+manifest.json
+
+# Misc
+HPClaw_Manual.docx
+
+tmp_skills_repo/
+tmp_skills_repo.zip
+tmp_skills_*.json
+
+# Runtime data
+transfer.json
+
+# Local distribution artifacts (GitHub 单文件 100MB 限制)
+HPClaw-v2-完整包.zip
+
+# Runtime data / smoke test artifacts
+transfers.json
+smoke-*.png
+.skill-index.json
+
+# 构建/运行产物（不入库）
+output/
+/server.cjs
+/dsh-bridge.json
+/ai-profile.json
+/release-competition/
+/tmp-*.py
+/tmp-*.mts
+workflows/.bioskills-seed-version
+tmp/
