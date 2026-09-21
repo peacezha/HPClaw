@@ -65,3 +65,6 @@ output/
 /tmp-*.mts
 workflows/.bioskills-seed-version
 tmp/
+
+# 版本修复说明仅保留在本地，不入库
+/v*_*说明.md
