@@ -9,6 +9,9 @@ export interface WorkflowRunQc {
 export interface WorkflowRunStep {
   n: number;
   stepId: string;
+  /** 稳定步骤 id 列表；流程图和运行门禁均按它判断前置关系。 */
+  dependsOn?: string[];
+  phase?: string;
   title: string;
   status: WorkflowRunStepStatus;
   startedAt?: number;
@@ -70,6 +73,8 @@ export interface WorkflowRun {
 export interface WorkflowRunPatch {
   /** 可选乐观锁；不等于当前 revision 时拒绝更新。 */
   expectedRevision?: number;
+  /** 用户明确要求重跑时，把该步骤及其后续步骤原子重置为 pending。 */
+  restartFromStep?: number;
   status?: WorkflowRunStatus;
   currentStep?: number;
   summary?: string;

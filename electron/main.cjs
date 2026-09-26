@@ -808,6 +808,7 @@ async function boot() {
     shell,
     getWindow: () => mainWindow,
     settingsFile: path.join(userDataPath, 'update-settings.json'),
+    edition: APP_EDITION,
   });
 
   // Register IPC handlers

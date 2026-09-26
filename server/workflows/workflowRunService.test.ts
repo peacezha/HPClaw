@@ -7,6 +7,7 @@ import {
   resolveWorkflowRunDir,
   sanitizeRunConfig,
   workflowStepScriptPath,
+  updateWorkflowRun,
 } from './workflowRunService';
 import type { WorkflowRun } from '../../shared/workflowRun';
 import type { Workflow } from './workflowTypes';
@@ -72,6 +73,24 @@ describe('workflowRunService', () => {
     expect(script).not.toContain('HPCLAW_REVIEW_REQUIRED');
   });
 
+  it('把 LSF 指令放在首个 shell 命令之前，确保 bsub 能读取资源参数', () => {
+    const workflow: Workflow = {
+      id: 'wf-lsf', name: 'LSF 流程', description: '', keywords: [], params: [],
+      steps: [{ title: '集群计算', command: '#BSUB -J test_job\n#BSUB -n {{THREADS}}\n#BSUB -q {{QUEUE}}\necho run' }],
+      source: 'user', createdAt: 1, updatedAt: 1,
+    };
+    const script = buildWorkflowStepScript(
+      workflow,
+      sanitizeRunConfig({ params: { THREADS: 8, QUEUE: 'normal' } }),
+      1,
+      '/home/u/hpclaw_flows/w/03_workspace/runs/r1',
+    );
+    expect(script.indexOf('#BSUB -J test_job')).toBeLessThan(script.indexOf('set -eo pipefail'));
+    expect(script.match(/#BSUB -J test_job/g)).toHaveLength(1);
+    expect(script).toContain('#BSUB -n 8');
+    expect(script).toContain('#BSUB -q normal');
+  });
+
   it('未补齐的占位参数会在步骤脚本中明确标记需要确认', () => {
     const workflow: Workflow = {
       id: 'wf-review', name: '流程', description: '', keywords: [], params: [],
@@ -119,5 +138,71 @@ describe('workflowRunService', () => {
     expect(report).toContain('reads 通过质控');
     expect(report).toContain('results/qc.html');
     expect(report).toContain('不额外调用 AI 模型');
+  });
+
+  it('用户要求重跑时原子重置目标步骤及后续步骤，并保留已有脚本', async () => {
+    const runDir = '/home/u/hpclaw_flows/rna/03_workspace/runs/rerun-1';
+    let stored = {
+      runId: 'rerun-1', workflowId: 'wf-rna', workflowName: 'RNA', workflowVersion: 1,
+      revision: 4, runDir, workspacePolicy: 'isolated-run-v1' as const,
+      status: 'done' as const, startedAt: 1, updatedAt: 2, endedAt: 2, heartbeatAt: 2,
+      currentStep: 4, totalSteps: 4,
+      config: { inputs: ['/data/rna'], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [
+        { n: 1, stepId: 's1', title: 'QC', status: 'done' as const, summary: 'ok', evidence: ['qc'] },
+        { n: 2, stepId: 's2', title: '比对', status: 'done' as const, summary: 'old', evidence: ['job'], jobIds: ['123'], scriptPath: `${runDir}/code/step-02.sh`, submittedScriptHash: 'abc' },
+        { n: 3, stepId: 's3', title: '定量', status: 'done' as const, summary: 'old', evidence: ['out'], outputs: ['old.txt'] },
+        { n: 4, stepId: 's4', title: '报告', status: 'done' as const, summary: 'old', evidence: ['report'] },
+      ],
+      jobStates: { '123': 'DONE' }, reportPath: `${runDir}/results/run-summary.md`,
+    } satisfies WorkflowRun;
+    const exec = async (command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(stored);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded) stored = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+      return '';
+    };
+
+    const restarted = await updateWorkflowRun(exec, '/home/u', runDir, { restartFromStep: 2 });
+
+    expect(restarted.status).toBe('running');
+    expect(restarted.currentStep).toBe(2);
+    expect(restarted.steps[0].status).toBe('done');
+    expect(restarted.steps.slice(1).map(step => step.status)).toEqual(['pending', 'pending', 'pending']);
+    expect(restarted.steps[1].scriptPath).toBe(`${runDir}/code/step-02.sh`);
+    expect(restarted.steps[1].jobIds).toBeUndefined();
+    expect(restarted.steps[1].submittedScriptHash).toBeUndefined();
+    expect(restarted.jobStates).toEqual({});
+    expect(restarted.reportPath).toBeUndefined();
+    expect(restarted.endedAt).toBeUndefined();
+  });
+
+  it('DAG 分支只等待声明的依赖，不被无关的前序步骤阻塞', async () => {
+    const runDir = '/home/u/hpclaw_flows/dag/03_workspace/runs/dag-1';
+    let stored = {
+      runId: 'dag-1', workflowId: 'wf-dag', workflowName: 'DAG', workflowVersion: 1,
+      revision: 1, runDir, workspacePolicy: 'isolated-run-v1' as const,
+      status: 'running' as const, startedAt: 1, updatedAt: 1, heartbeatAt: 1,
+      currentStep: 2, totalSteps: 4,
+      config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [
+        { n: 1, stepId: 'prepare', dependsOn: [], title: '准备', status: 'done' as const, summary: 'ready', evidence: ['log'] },
+        { n: 2, stepId: 'star', dependsOn: ['prepare'], title: 'STAR', status: 'pending' as const },
+        { n: 3, stepId: 'kallisto', dependsOn: ['prepare'], title: 'Kallisto', status: 'pending' as const },
+        { n: 4, stepId: 'report', dependsOn: ['star', 'kallisto'], title: '报告', status: 'pending' as const },
+      ],
+    } satisfies WorkflowRun;
+    const exec = async (command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(stored);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded) stored = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+      return '';
+    };
+
+    const branch = await updateWorkflowRun(exec, '/home/u', runDir, { step: { n: 3, status: 'running' } });
+    expect(branch.steps[1].status).toBe('pending');
+    expect(branch.steps[2].status).toBe('running');
+    await expect(updateWorkflowRun(exec, '/home/u', runDir, { step: { n: 4, status: 'running' } }))
+      .rejects.toThrow('前置步骤 2（STAR）尚未完成');
   });
 });

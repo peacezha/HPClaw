@@ -65,7 +65,7 @@ describe('FlowRunnerDrawer', () => {
     expect(screen.getByText('专属工作目录')).toBeInTheDocument();
     expect(screen.getByText('强制隔离')).toBeInTheDocument();
     expect(screen.getByText('按需环境检查')).toBeInTheDocument();
-    expect(screen.getByText('步骤与高级设置')).toBeInTheDocument();
+    expect(screen.getByText('步骤、代码与高级设置')).toBeInTheDocument();
     expect(screen.getByText('数据选择')).toBeInTheDocument();
     expect(screen.getByText('全局参数')).toBeInTheDocument();
     expect(screen.getByText('任务监控')).toBeInTheDocument();
@@ -92,6 +92,21 @@ describe('FlowRunnerDrawer', () => {
     expect(screen.getByText('运行前确认')).toBeInTheDocument();
     expect(screen.getByText(/仓库进程调用 STAR/)).toBeInTheDocument();
     expect(screen.getByText(/预期输出：BAM/)).toBeInTheDocument();
+  });
+
+  it('流程预览保留 workflow 的显式并行依赖，不降级成线性步骤链', () => {
+    const { container } = render(<FlowRunnerDrawer workflow={makeWorkflow({
+      steps: [
+        { id: 'prepare', title: '准备', command: 'echo prepare', dependsOn: [] },
+        { id: 'star', title: 'STAR', command: 'echo star', dependsOn: ['prepare'] },
+        { id: 'kallisto', title: 'Kallisto', command: 'echo kallisto', dependsOn: ['prepare'] },
+        { id: 'report', title: '报告', command: 'echo report', dependsOn: ['star', 'kallisto'] },
+      ],
+    })} onClose={() => {}} onRun={() => {}} />);
+    expect(container.querySelector('path[data-from="prepare"][data-to="star"]')).toBeTruthy();
+    expect(container.querySelector('path[data-from="prepare"][data-to="kallisto"]')).toBeTruthy();
+    expect(container.querySelector('path[data-from="kallisto"][data-to="report"]')).toBeTruthy();
+    expect(container.querySelector('path[data-from="star"][data-to="kallisto"]')).toBeNull();
   });
 
   it('未选数据时点运行给出错误提示，选数据后先创建正式运行再触发 onRun', async () => {

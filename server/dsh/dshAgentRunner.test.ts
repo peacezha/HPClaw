@@ -132,6 +132,7 @@ describe('runDshAgent mux ordering', () => {
       requestId: 'request-test',
       profile: { provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: 'sk-test-only' },
       userText: '测试',
+      summary: '当前目标: 分析 /data/project-a；已提交 Job <81234>',
       locale: 'zh-CN',
       sshSessionId: 'ssh-test',
       conversationKey: 'conversation-test',
@@ -149,6 +150,9 @@ describe('runDshAgent mux ordering', () => {
     // 文件展示矫正指令随每轮 prompt 注入：Markdown 图片语法直写路径，禁止临时 HTTP 服务
     expect(harness.lastPromptText).toContain('![描述](路径)');
     expect(harness.lastPromptText).toContain('临时 HTTP 服务');
+    expect(harness.lastPromptText).not.toContain('智能体质量契约');
+    expect(harness.lastPromptText).toContain('对话摘要：');
+    expect(harness.lastPromptText).toContain('81234');
   });
 
   it('answers a replayed dsh question before submitting the next prompt', async () => {

@@ -150,7 +150,7 @@ export default function UpdateCenterDialog({ onClose }: UpdateCenterDialogProps)
           <div className="grid grid-cols-2 gap-2">
             <button
               className="btn-primary justify-center"
-              disabled={!updater || !state.supported || !settings.updateUrl || activeOperation}
+              disabled={!updater || !state.supported || activeOperation}
               onClick={() => updater && void run(updater.check)}
             >
               {state.phase === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -173,16 +173,17 @@ export default function UpdateCenterDialog({ onClose }: UpdateCenterDialogProps)
 
           <div className="border-t border-scholar-700 pt-4 space-y-3">
             <div>
-              <label className="block text-xs text-scholar-300 mb-1">更新服务器地址</label>
+              <label className="block text-xs text-scholar-300 mb-1">自定义更新服务器地址（可选）</label>
               <input
                 type="url"
                 value={settings.updateUrl}
                 onChange={event => setSettings(previous => ({ ...previous, updateUrl: event.target.value }))}
-                placeholder="https://example.com/hpclaw/updates/"
+                placeholder="留空：默认从 GitHub Releases 更新"
                 className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
               />
               <p className="mt-1 text-[10px] text-scholar-500 leading-relaxed">
-                地址中需放置 latest.yml、安装包和 blockmap。没有服务器时，可直接使用上方“选择本地安装包”。
+                默认自动从 GitHub Releases（github.com/peacezha/HPClaw）检查并下载更新，无需任何配置。
+                填写自建地址后会改用该服务器（需放置 latest.yml、安装包和 blockmap）；也可用上方“选择本地安装包”手动升级。
               </p>
             </div>
             <label className="flex items-center gap-2 text-xs text-scholar-300">

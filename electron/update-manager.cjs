@@ -4,6 +4,32 @@ const path = require('node:path');
 const AUTO_CHECK_DELAY_MS = 20_000;
 const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 
+// 内置默认更新源：GitHub Releases（peacezha/HPClaw）。
+// 每个 Release 需附带 electron-builder 生成的 latest.yml 与安装包；
+// 用户在设置里填写自建地址时优先使用自建 generic 源。
+const GITHUB_FEED = Object.freeze({
+  provider: 'github',
+  owner: 'peacezha',
+  repo: 'HPClaw',
+});
+const GITHUB_RELEASES_LABEL = 'GitHub Releases（peacezha/HPClaw）';
+
+/**
+ * 用户在“自定义更新服务器地址”里填的很可能就是 GitHub 仓库地址
+ * （https://github.com/owner/repo[/releases|.git]）。generic 源打这种地址
+ * 只会 404（仓库页不是 latest.yml 目录），识别出来改走真正的 github 通道。
+ */
+function parseGithubRepoUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const match = raw.match(/^https?:\/\/(?:www\.)?github\.com\/([^/?#]+)\/([^/?#]+)/i);
+  if (!match) return null;
+  const owner = match[1];
+  const repo = match[2].replace(/\.git$/i, '').replace(/\/+$/, '');
+  if (!owner || !repo) return null;
+  return { owner, repo };
+}
+
 function normalizeUpdateUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -49,6 +75,7 @@ function createUpdateManager(options) {
     fsImpl = fs,
     settingsFile = path.join(app.getPath('userData'), 'update-settings.json'),
     platform = process.platform,
+    edition = 'full',
     setTimeoutImpl = setTimeout,
     setIntervalImpl = setInterval,
     clearTimeoutImpl = clearTimeout,
@@ -62,6 +89,8 @@ function createUpdateManager(options) {
     // First launch or a damaged optional settings file: use safe defaults.
   }
 
+  // 竞赛版走独立分发渠道，不能默认升级成 GitHub 上的标准版安装包
+  const githubDefault = edition !== 'competition';
   const supported = platform === 'win32' && app.isPackaged === true;
   let state = {
     phase: 'idle',
@@ -74,7 +103,9 @@ function createUpdateManager(options) {
     message: supported ? '可以检查更新' : '在线更新仅在 Windows 安装版中可用',
     updateUrl: settings.updateUrl,
     autoCheck: settings.autoCheck,
-    configured: Boolean(settings.updateUrl),
+    // 标准版内置 GitHub Releases 源，开箱即可检查更新；
+    // configured 为 true 表示存在可用在线源（内置 GitHub 或自建覆盖地址）
+    configured: githubDefault || Boolean(settings.updateUrl),
     supported,
   };
   let checkPromise = null;
@@ -103,12 +134,26 @@ function createUpdateManager(options) {
   };
 
   const configureFeed = () => {
-    if (!settings.updateUrl) throw new Error('请先填写并保存更新服务器地址');
-    autoUpdater.setFeedURL({
-      provider: 'generic',
-      url: settings.updateUrl,
-      useMultipleRangeRequest: false,
-    });
+    if (settings.updateUrl) {
+      const githubFeed = parseGithubRepoUrl(settings.updateUrl);
+      if (githubFeed) {
+        // 填的是 GitHub 仓库地址：按 GitHub Releases 通道处理，不当 generic 目录
+        autoUpdater.setFeedURL({ provider: 'github', ...githubFeed });
+        return;
+      }
+      autoUpdater.setFeedURL({
+        provider: 'generic',
+        url: settings.updateUrl,
+        useMultipleRangeRequest: false,
+      });
+      return;
+    }
+    if (githubDefault) {
+      // 默认源：GitHub Releases，无需任何配置即可自动更新
+      autoUpdater.setFeedURL({ ...GITHUB_FEED });
+      return;
+    }
+    throw new Error('请先填写并保存更新服务器地址');
   };
 
   const listeners = {
@@ -166,9 +211,13 @@ function createUpdateManager(options) {
     setState({
       updateUrl: settings.updateUrl,
       autoCheck: settings.autoCheck,
-      configured: Boolean(settings.updateUrl),
+      configured: githubDefault || Boolean(settings.updateUrl),
       phase: 'idle',
-      message: settings.updateUrl ? '更新设置已保存' : '已关闭在线更新源，可继续使用本地安装包更新',
+      message: settings.updateUrl
+        ? '更新设置已保存，将使用自建更新服务器'
+        : githubDefault
+          ? `更新设置已保存，默认从 ${GITHUB_RELEASES_LABEL} 检查更新`
+          : '已关闭在线更新源，可继续使用本地安装包更新',
       percent: 0,
     });
     if (autoCheckStarted) startAutoCheck();
@@ -270,7 +319,8 @@ function createUpdateManager(options) {
   function startAutoCheck() {
     autoCheckStarted = true;
     stopAutoCheck();
-    if (!supported || !settings.autoCheck || !settings.updateUrl) return;
+    if (!supported || !settings.autoCheck) return;
+    if (!githubDefault && !settings.updateUrl) return;
     initialTimer = setTimeoutImpl(() => void check(), AUTO_CHECK_DELAY_MS);
     initialTimer.unref?.();
     intervalTimer = setIntervalImpl(() => void check(), AUTO_CHECK_INTERVAL_MS);
@@ -300,4 +350,4 @@ function createUpdateManager(options) {
   };
 }
 
-module.exports = { createUpdateManager, normalizeSettings, normalizeUpdateUrl };
+module.exports = { createUpdateManager, normalizeSettings, normalizeUpdateUrl, parseGithubRepoUrl };

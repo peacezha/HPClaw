@@ -254,14 +254,19 @@ export interface LocalWorkspaceWriteResult {
  * fs.writeFile 的 flag:'wx' 提供原子兜底，杜绝"检查后才被创建"的竞态覆盖。
  * 父目录自动创建；不存在 delete/rename/overwrite 的任何入口。
  */
-export function writeLocalWorkspaceFile(root: string, relPath: string, content: string): LocalWorkspaceWriteResult {
+export function writeLocalWorkspaceFile(
+  root: string,
+  relPath: string,
+  content: string,
+  options: { overwrite?: boolean } = {},
+): LocalWorkspaceWriteResult {
   const target = resolveWorkspaceEntry(root, relPath);
-  if (fs.existsSync(target)) {
+  if (fs.existsSync(target) && !options.overwrite) {
     throw new LocalWorkspaceError('exists', `文件已存在，不允许覆盖：${relPath}`);
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   try {
-    fs.writeFileSync(target, content, { encoding: 'utf8', flag: 'wx' });
+    fs.writeFileSync(target, content, { encoding: 'utf8', flag: options.overwrite ? 'w' : 'wx' });
   } catch (err: any) {
     if (err?.code === 'EEXIST') {
       throw new LocalWorkspaceError('exists', `文件已存在，不允许覆盖：${relPath}`);
@@ -289,12 +294,16 @@ function truncateOutput(value: string): string {
  * 危险命令（删除/格式化/关机等黑名单）直接拒绝；输出双侧各截断 64KB；超时 120s。
  * 命令自身非零退出不算服务错误——正常返回 ok:false + 退出码，由模型决定下一步。
  */
-export function runLocalWorkspaceCommand(root: string, command: string): Promise<LocalWorkspaceCommandResult> {
+export function runLocalWorkspaceCommand(
+  root: string,
+  command: string,
+  options: { allowDestructive?: boolean } = {},
+): Promise<LocalWorkspaceCommandResult> {
   const input = typeof command === 'string' ? command.trim() : '';
   if (!input || input.includes('\0')) {
     throw new LocalWorkspaceError('required', '命令不能为空');
   }
-  if (LOCAL_COMMAND_BLACKLIST.test(input)) {
+  if (!options.allowDestructive && LOCAL_COMMAND_BLACKLIST.test(input)) {
     throw new LocalWorkspaceError('blocked', `命令命中本地安全黑名单，已拒绝执行：${input.slice(0, 200)}`);
   }
   return new Promise((resolve) => {

@@ -112,7 +112,7 @@ describe('maybeResumeLegacyAgent', () => {
     expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
       { role: 'user', content: '【系统】作业 424242 已结束（DONE），已自动继续处理。' },
       { role: 'assistant', content: '任务完成。' },
-    ]);
+    ], 'ssh-1');
     expect(deps.emitToUi).toHaveBeenCalledWith('ssh-1', {
       type: 'ai:resumed',
       conversationId: 'conv-1',
@@ -149,7 +149,7 @@ describe('maybeResumeLegacyAgent', () => {
     expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
       { role: 'user', content: '【系统】作业 424242 已结束（DONE），已自动继续处理。' },
       { role: 'assistant', content: '需要用户确认后继续：输出目录选哪个？' },
-    ]);
+    ], 'ssh-1');
     expect(deps.markResumed).toHaveBeenCalledTimes(1);
   });
 
@@ -161,7 +161,7 @@ describe('maybeResumeLegacyAgent', () => {
     expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
       { role: 'user', content: '【系统】作业 424242 已结束（EXIT），已自动继续处理。' },
       { role: 'assistant', content: '(自动续跑失败：provider timeout)' },
-    ]);
+    ], 'ssh-1');
     expect(deps.markResumed).toHaveBeenCalledWith('424242', 'ssh-1');
   });
 
@@ -173,7 +173,7 @@ describe('maybeResumeLegacyAgent', () => {
     expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
       { role: 'user', content: '[System] Job 424242 finished (DONE); the conversation was resumed automatically.' },
       { role: 'assistant', content: '任务完成。' },
-    ]);
+    ], 'ssh-1');
     expect(deps.notify).toHaveBeenCalledWith('Job finished, AI resumed', '任务完成。');
   });
 

@@ -79,6 +79,21 @@ describe('workflowSlug 集群路径 ASCII 化', () => {
     expect(workflowSlug('另一个流程')).not.toBe(a);
   });
 
+  it('slug 不含 shell 特殊字符（括号曾让 ENCODE 流程的集群目录炸掉预检）', async () => {
+    const { workflowSlug, workflowSlugParenLegacy } = await import('@/shared/flowManifest');
+    const slug = workflowSlug('ENCODE-DCC ATAC-seq v2.2.3 (official WDL)');
+    // 不含 ()$&;'"`! 等 shell 特殊字符，可直接用于未加引号的 mkdir/cd
+    expect(/[()[\]{}$&;'"`!\\\s]/.test(slug)).toBe(false);
+    // v0.4.19–v0.4.20 窗口期的带括号 slug 仍可识别归属
+    const paren = workflowSlugParenLegacy('ENCODE-DCC ATAC-seq v2.2.3 (official WDL)');
+    expect(paren).toContain('(');
+    expect(runBelongsToWorkflow(makeRun({
+      workflowId: '',
+      workflowName: 'ENCODE-DCC ATAC-seq v2.2.3 (official WDL)',
+      runDir: `/home/u/hpclaw_flows/${paren}/03_workspace/runs/run-1`,
+    }), makeWorkflow({ name: 'ENCODE-DCC ATAC-seq v2.2.3 (official WDL)' }))).toBe(true);
+  });
+
   it('旧中文目录仍可通过 legacy slug 归属', () => {
     // slug ASCII 化之前生成的目录名含中文，归属不能丢
     expect(runBelongsToWorkflow(makeRun({

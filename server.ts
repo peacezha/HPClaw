@@ -27,6 +27,24 @@ import { formatLoginFailure } from './server/loginDiagnostics';
 import { verifySSHCredentials } from './server/sshAuthenticator';
 import { runAgent, type AgentCtx } from './server/ai/agentRunner';
 import {
+  resolveAccountScheduler,
+  clearSchedulerTag,
+  schedulerTagKey,
+  SCHEDULER_LABELS,
+  type SchedulerKind,
+} from './server/cluster/schedulerProfile';
+import {
+  abortActiveRun,
+  attachRunListener,
+  findActiveRunByConversation,
+  finishActiveRun,
+  getActiveRun,
+  markRunDetached,
+  pushRunEvent,
+  registerActiveRun,
+} from './server/ai/activeRuns';
+import { classifyWorkflowTurn } from './server/ai/workflowTurnIntent';
+import {
   buildSmartContext,
   profileFromBody,
   messagesFromBody,
@@ -42,7 +60,7 @@ import {
   refreshClusterSkillsInBackground,
 } from './server/ai/clusterSkills';
 import { installSkillFromSource } from './server/ai/skillInstaller';
-import { mergeConversationMemory } from './server/ai/conversationMemory';
+import { mergeConversationMemory, type ConversationWithMemory } from './server/ai/conversationMemory';
 import { clusterContext } from './server/ai/clusterContext';
 import { resolveRequestSessionId } from './server/cluster/sessionRequest';
 import { annotateRuns, collectActiveJobIds, parseBjobsStates, reconcileRunsWithScheduler } from './server/workflows/runAnnotate';
@@ -62,10 +80,10 @@ import {
   parseWorkflowExecutionContext,
 } from './shared/workflowExecution';
 import { ClusterConversationStore } from './server/conversations/clusterConversations';
-import { LocalConversationStore } from './server/conversations/localConversations';
+import { LocalConversationStore, filterConversationsByScope } from './server/conversations/localConversations';
 import { registerClusterConversationRoutes } from './server/conversations/registerClusterConversationRoutes';
 import { ensureDemoConversationSeed } from './server/conversations/demoConversationSeed';
-import type { AIMessage, AIProfile, SkillIndex } from './server/ai/types';
+import type { AIMessage, AIProfile, SkillIndex, StructuredMemory } from './server/ai/types';
 import { SftpFileService } from './server/files/sftpFileService';
 import { QQBot, type QQBotConfig } from './server/bots/qqBot';
 import { getTransferCredentials, setTransferCredentials, totpNow } from './server/transfers/transferCredentials';
@@ -230,7 +248,8 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       userSkillsDir: USER_SKILLS_DIR,
       runtimeConfig: {
         planningPolicy: 'auto',
-        confirmationPolicy: 'dangerous',
+        confirmationPolicy: 'never',
+        pathPolicy: 'full_access',
         maxCommands: 40,
         maxSteps: 200,
       },
@@ -334,16 +353,28 @@ async function reconcileFinishedWorkflowJob(sessionId: string, jobId: string, st
   } catch { /* 后台对账失败由下一轮列表轮询补偿 */ }
 }
 
-/** dsh/legacy 唤醒共用的对话回写：把续跑系统消息与 AI 回答追加到本地对话记录。 */
+/** dsh/legacy 唤醒与后台（detached）运行共用的对话回写：把续跑系统消息与 AI 回答追加到对话存档。
+ *  对话按计算目标物理分存：带 sessionId 的集群对话写到该集群的远程库，否则写本地库。 */
 const appendJobResumeConversation = async (
   conversationId: string,
   messages: Array<{ role: string; content: string }>,
+  sessionId?: string,
 ): Promise<boolean> => {
   try {
-    const record = await localConversationStore.get(conversationId);
+    let store: AnyConversationStore = localConversationStore;
+    if (sessionId && sessionId !== 'local-workbench' && hasSession(sessionId)) {
+      const s = getSession(sessionId);
+      if (s) {
+        store = new ClusterConversationStore(
+          new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)),
+          s.home,
+        );
+      }
+    }
+    const record = await store.get(conversationId);
     if (!record) return false;
     (record.messages as AIMessage[]).push(...(messages as AIMessage[]));
-    await localConversationStore.save(enrichConversation(record as ConversationRecord));
+    await store.save(enrichConversation(record as ConversationRecord));
     return true;
   } catch (err) {
     console.warn('[job-resume] appendConversation 失败: %s', err instanceof Error ? err.message : String(err));
@@ -632,11 +663,23 @@ async function handleLogin(
   // 此前这里从未接线，导致"测试通知能收到、真实作业完成不通知"。
   const s = getSession(result.sessionId);
   if (s) {
+    // 登录后探测一次该账号所在集群的调度器并打标签（后续不再重复查询）；
+    // 探测失败按 none 处理，不阻塞登录。
+    try {
+      const tag = await resolveAccountScheduler(
+        { username: credentials.username, host: credentials.host, port: credentials.port },
+        (cmd, timeout) => s.cluster.exec(cmd, timeout),
+      );
+      s.cluster.scheduler = tag.kind;
+      s.cluster.moduleAvailable = tag.hasModule;
+      s.cluster.installers = tag.installers;
+    } catch { /* 探测失败不阻塞登录 */ }
     restoreFormalWorkflowMonitoring(result.sessionId, s);
     restoreJobAgentBindings(result.sessionId);
     jobWatcher.start(result.sessionId, {
       cluster: { exec: s.cluster.exec.bind(s.cluster) },
       username: credentials.username,
+      scheduler: s.cluster.scheduler,
     });
     refreshClusterSkillsInBackground(s.cluster.exec.bind(s.cluster), result.sessionId);
   }
@@ -644,6 +687,8 @@ async function handleLogin(
     success: true,
     sessionId: result.sessionId,
     home: result.home,
+    scheduler: s?.cluster.scheduler,
+    schedulerLabel: s?.cluster.scheduler ? SCHEDULER_LABELS[s.cluster.scheduler] : undefined,
   });
 }
 
@@ -679,6 +724,35 @@ app.post('/api/desktop/connect', requireDesktopToken, async (req, res) => {
   });
 });
 
+/** 手动重探调度器：集群后装了调度系统时用。清标签 → 重新探测 → 同步监控会话。 */
+app.post('/api/cluster/scheduler/redetect', async (req, res) => {
+  const sessionId = resolveRequestSessionId({
+    cookie: (req.session as any)?.sshSessionId,
+    header: req.get('X-SSH-Session-Id'),
+    auth: undefined,
+  }, hasSession);
+  const s = sessionId ? getSession(sessionId) : undefined;
+  if (!s) {
+    res.status(401).json({ success: false, error: '需要活跃的集群会话' });
+    return;
+  }
+  try {
+    const key = schedulerTagKey({ username: s.info.username, host: s.info.host, port: s.info.port });
+    await clearSchedulerTag(key);
+    const tag = await resolveAccountScheduler(
+      { username: s.info.username, host: s.info.host, port: s.info.port },
+      (cmd, timeout) => s.cluster.exec(cmd, timeout),
+    );
+    s.cluster.scheduler = tag.kind;
+    s.cluster.moduleAvailable = tag.hasModule;
+    s.cluster.installers = tag.installers;
+    jobWatcher.setScheduler(sessionId, tag.kind);
+    res.json({ success: true, scheduler: tag.kind, schedulerLabel: SCHEDULER_LABELS[tag.kind] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 /** 网络中断后保留原 sessionId，重建完整 SSH/SFTP/PTY，而不只是重建 Shell。 */
 app.post('/api/reconnect', async (req, res) => {
   const sessionId = String(req.body?.sessionId || req.get('X-SSH-Session-Id') || '');
@@ -700,11 +774,28 @@ app.post('/api/reconnect', async (req, res) => {
         await active.cluster.connect(credentials, async () => false);
         active.credentials = credentials;
         active.home = await active.cluster.getHomeDirectory();
+        // 调度器标签随会话恢复：命中磁盘缓存即可，不再发起 SSH 探测
+        if (!active.cluster.scheduler) {
+          try {
+            const { schedulerTagKey, loadSchedulerTag } = await import('./server/cluster/schedulerProfile');
+            const tag = await loadSchedulerTag(schedulerTagKey({
+              username: active.info.username,
+              host: active.info.host,
+              port: active.info.port,
+            }));
+            if (tag) {
+              active.cluster.scheduler = tag.kind;
+              active.cluster.moduleAvailable = tag.hasModule;
+              active.cluster.installers = tag.installers;
+            }
+          } catch { /* 无标签时后续流程按全局配置兜底 */ }
+        }
         restoreFormalWorkflowMonitoring(sessionId, active);
         restoreJobAgentBindings(sessionId);
         jobWatcher.start(sessionId, {
           cluster: { exec: active.cluster.exec.bind(active.cluster) },
           username: active.info.username,
+          scheduler: active.cluster.scheduler,
         });
         refreshClusterSkillsInBackground(active.cluster.exec.bind(active.cluster), sessionId);
       })();
@@ -806,7 +897,7 @@ registerNotificationRoutes(app, (sessionId) => {
     if (!s || !sessionId) return undefined;
     let sftp: { fastPut: (localPath: string, remotePath: string, cb: (err?: Error) => void) => void } | undefined;
     try { sftp = s.cluster.getSftp(); } catch { /* SFTP 未就绪时跳过资产自动部署 */ }
-    return { sessionId, exec: s.cluster.exec.bind(s.cluster), home: s.home, sftp };
+    return { sessionId, exec: s.cluster.exec.bind(s.cluster), home: s.home, sftp, scheduler: s.cluster.scheduler };
   }, emitWorkflowRunChanged);
 }
 
@@ -946,11 +1037,14 @@ app.get('/api/skills/search', async (req, res) => {
 interface ConversationRecord {
   id: string;
   contextKey?: string;
+  /** 对话归属的计算目标：'local-workbench' 或集群 sessionId；旧记录缺省按本地处理。 */
+  scopeKey?: string;
   title: string;
   messages: AIMessage[];
   summary?: string;
   memory?: string;
   skillHints?: string[];
+  structuredMemory?: StructuredMemory;
   createdAt: number;
   updatedAt: number;
 }
@@ -969,8 +1063,34 @@ function clusterConversationStoreFor(req: Request): ClusterConversationStore | u
   );
 }
 
-function conversationStoreFor(_req: Request): LocalConversationStore {
-  return localConversationStore;
+/** 对话读写的统一形状：本地库与集群远程库同构。 */
+type AnyConversationStore = Pick<LocalConversationStore, 'list' | 'get' | 'save' | 'remove'>;
+
+/** 对话归属的计算目标：优先取请求体/查询里的 scopeKey，其次 X-SSH-Session-Id 头。 */
+function conversationScopeKey(req: Request): string {
+  const raw = (req.body?.scopeKey ?? req.query.scope ?? req.headers['x-ssh-session-id'] ?? '') as string;
+  const value = String(raw).trim();
+  if (!value || value.length > 200 || /[\r\n\0]/.test(value)) return 'local-workbench';
+  return value;
+}
+
+/**
+ * 对话按计算目标物理分存：
+ * - 本地工作台 → 本机数据目录（LocalConversationStore）；
+ * - 集群目标且会话在线 → 写入该集群的 ~/hpclaw_conversations（ClusterConversationStore），
+ *   本地不再留副本，换机登录同一集群也能看到同样的对话；
+ * - 集群目标但会话不在线 → 返回 null（调用方按"未连接"回应，不悄悄落到本地）。
+ */
+function conversationStoreFor(req: Request): AnyConversationStore | null {
+  const scope = conversationScopeKey(req);
+  if (scope === 'local-workbench') return localConversationStore;
+  const sessionId = hasSession(scope) ? scope : undefined;
+  const s = sessionId ? getSession(sessionId) : undefined;
+  if (!s) return null;
+  return new ClusterConversationStore(
+    new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)),
+    s.home,
+  );
 }
 
 function enrichConversation(record: ConversationRecord): ConversationRecord {
@@ -999,12 +1119,17 @@ async function importClusterConversations(req: Request): Promise<void> {
 
 app.post('/api/conversations', async (req, res) => {
   const store = conversationStoreFor(req);
+  if (!store) {
+    res.status(409).json({ success: false, error: '目标集群当前未连接，对话无法写入；请重新连接后再试' });
+    return;
+  }
   try {
     const { title, messages, clusterInfo, contextKey } = req.body || {};
     const id = createSessionId();
     const record = enrichConversation({
       id,
       contextKey: normalizeConversationContextKey(contextKey, `saved-${id}`),
+      scopeKey: conversationScopeKey(req),
       title: title || '新对话',
       messages: Array.isArray(messages) ? messages : [],
       createdAt: Date.now(),
@@ -1026,13 +1151,25 @@ registerClusterConversationRoutes(app, {
 
 // 对话列表（摘要，不含消息体）——前端 ConversationList 依赖此路由；
 // 缺失时会落到 SPA fallback 返回 index.html，导致前端 JSON 解析报错"加载失败"
+// ?scope=<sessionId|local-workbench> 只读该计算目标的对话：
+// 本地读本机库（旧记录无 scopeKey 归入本地工作台）；集群读该集群的远程库；
+// 集群不在线时返回 connected:false + 空列表，不回退到本地（物理分离不混淆）
 app.get('/api/conversations', async (req, res) => {
+  const scope = typeof req.query.scope === 'string' ? req.query.scope : '';
   const store = conversationStoreFor(req);
+  if (!store) {
+    res.json({ success: true, connected: false, conversations: [] });
+    return;
+  }
   try {
     let conversations = await store.list();
-    if (conversations.length === 0) {
+    if (conversations.length === 0 && (!scope || scope === 'local-workbench')) {
+      // 仅本地工作台保留旧版本"首次连接旧集群导入远程记录"的迁移行为
       await importClusterConversations(req);
       conversations = await store.list();
+    }
+    if (scope === 'local-workbench' || !scope) {
+      conversations = filterConversationsByScope(conversations, 'local-workbench');
     }
     res.json({ success: true, conversations });
   } catch (err: any) {
@@ -1042,6 +1179,10 @@ app.get('/api/conversations', async (req, res) => {
 
 app.get('/api/conversations/:id', async (req, res) => {
   const store = conversationStoreFor(req);
+  if (!store) {
+    res.status(409).json({ success: false, error: '目标集群当前未连接，无法读取该对话' });
+    return;
+  }
   try {
     const record = await store.get(String(req.params.id));
     if (!record) {
@@ -1056,6 +1197,10 @@ app.get('/api/conversations/:id', async (req, res) => {
 
 app.delete('/api/conversations/:id', async (req, res) => {
   const store = conversationStoreFor(req);
+  if (!store) {
+    res.status(409).json({ success: false, error: '目标集群当前未连接，无法删除该对话' });
+    return;
+  }
   try {
     await store.remove(String(req.params.id));
     res.json({ success: true });
@@ -1066,6 +1211,10 @@ app.delete('/api/conversations/:id', async (req, res) => {
 
 app.put('/api/conversations/:id', async (req, res) => {
   const store = conversationStoreFor(req);
+  if (!store) {
+    res.status(409).json({ success: false, error: '目标集群当前未连接，无法保存该对话' });
+    return;
+  }
   try {
     const existing = await store.get(String(req.params.id));
     if (!existing) {
@@ -1077,6 +1226,8 @@ app.put('/api/conversations/:id', async (req, res) => {
       ...(existing as ConversationRecord),
       contextKey: (existing as ConversationRecord).contextKey
         || normalizeConversationContextKey(contextKey, `saved-${existing.id}`),
+      // 旧记录没有 scopeKey：首次保存时按当前请求的计算目标补齐
+      scopeKey: (existing as ConversationRecord).scopeKey || conversationScopeKey(req),
       title: title || existing.title,
       messages: Array.isArray(messages) ? messages : (existing.messages as AIMessage[]),
       updatedAt: Date.now(),
@@ -1192,7 +1343,7 @@ app.post('/api/ai/stream', async (req, res) => {
   res.flushHeaders();
 
   const heartbeat = setInterval(() => {
-    res.write(': heartbeat\n\n');
+    if (!res.writableEnded && !res.destroyed) res.write(': heartbeat\n\n');
   }, 15_000);
 
   const sessionId = resolveRequestSessionId({
@@ -1208,7 +1359,22 @@ app.post('/api/ai/stream', async (req, res) => {
   const aiStartedAt = Date.now();
   const requestAbort = new AbortController();
   let terminalEvent = 'none';
+  // 登记在途运行：对话带 conversationId 时，客户端断连不再杀任务——
+  // 服务端转入后台继续跑（detached），终态回写对话存档并通知；
+  // 无 conversationId 的运行（QQ 机器人等）保持断连即中止的旧语义。
+  const runConversationId = typeof req.body?.conversationId === 'string' && req.body.conversationId ? req.body.conversationId : undefined;
+  const activeRun = registerActiveRun({
+    requestId: aiRequestId,
+    conversationId: runConversationId,
+    sessionId: sessionId ?? undefined,
+    abort: requestAbort,
+  });
   const onResponseClose = () => {
+    if (terminalEvent === 'none' && runConversationId) {
+      markRunDetached(activeRun);
+      console.warn('[AI:%s] client detached after %dms; run continues in background', aiRequestId, Date.now() - aiStartedAt);
+      return;
+    }
     if (!res.writableEnded) {
       console.warn('[AI:%s] client stream closed after %dms', aiRequestId, Date.now() - aiStartedAt);
     }
@@ -1217,6 +1383,7 @@ app.post('/api/ai/stream', async (req, res) => {
   res.once('close', onResponseClose);
 
   const send = (event: any) => {
+    pushRunEvent(activeRun, event);
     if (!res.writableEnded && !res.destroyed) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     }
@@ -1258,6 +1425,26 @@ app.post('/api/ai/stream', async (req, res) => {
           : '面向用户的内容使用中文。命令、路径、文件名、工具原始输出和科学标识符保持原样。',
       };
       const query = [...rawMessages].reverse().find((m) => m.role === 'user')?.content || '';
+      // 0.2.9 的 dsh 映射按 SSH 会话复用，表面上“记得更多”，但会让不同
+      // 对话串线。现在保持每个对话独立，同时从该对话的本地权威存档恢复
+      // 长期记忆；旧记录没有 structuredMemory 时在读取时无损补齐。
+      const requestedConversationId = typeof req.body?.conversationId === 'string'
+        ? req.body.conversationId
+        : undefined;
+      let persistedConversationMemory = mergeConversationMemory({
+        messages: rawMessages,
+      } as ConversationWithMemory);
+      if (requestedConversationId) {
+        const persisted = await localConversationStore.get(requestedConversationId);
+        if (persisted) {
+          persistedConversationMemory = mergeConversationMemory({
+            ...persisted,
+            messages: messagesFromBody(persisted),
+          } as ConversationWithMemory);
+        }
+      }
+      const effectiveConversationSummary = persistedConversationMemory.memory
+        || (typeof req.body?.summary === 'string' ? req.body.summary : undefined);
       // 正式流程上下文有独立的结构化请求字段，不再依赖最近聊天窗口里是否还留着
       // 最初那条 marker。旧客户端仍可从消息 marker 向后兼容恢复。
       const workflowRunContext = normalizeWorkflowExecutionContext(req.body?.workflowRunContext)
@@ -1326,7 +1513,7 @@ app.post('/api/ai/stream', async (req, res) => {
             baseUrl: profile.baseUrl,
           },
           userText: query,
-          summary: typeof req.body?.summary === 'string' ? req.body.summary : undefined,
+          summary: effectiveConversationSummary,
           locale: requestLocale,
           sshSessionId: sessionId ?? undefined,
           workspace,
@@ -1483,10 +1670,23 @@ app.post('/api/ai/stream', async (req, res) => {
       const workflowTurnText = parseWorkflowExecutionContext(query)
         ? '开始或继续当前结构化流程；直接从 RUN/run.json 的当前未完成步骤执行。'
         : query.slice(-2_000);
+      const workflowTurnMode = workflowRunContext
+        ? classifyWorkflowTurn(workflowTurnText)
+        : undefined;
+      const workflowConversationMessages = contextMessages
+        .filter(message => message.role === 'user' || message.role === 'assistant')
+        .slice(-6)
+        .map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const agentMessages = workflowRunContext
         ? [
             languageInstruction,
-            { role: 'user' as const, content: workflowTurnText || '继续当前结构化流程。' },
+            ...workflowConversationMessages,
+            ...(
+              workflowConversationMessages.at(-1)?.role === 'user'
+              && workflowConversationMessages.at(-1)?.content === workflowTurnText
+                ? []
+                : [{ role: 'user' as const, content: workflowTurnText || '继续当前结构化流程。' }]
+            ),
           ]
         : await buildSmartContext({
             messages: [languageInstruction, ...contextMessages],
@@ -1494,7 +1694,9 @@ app.post('/api/ai/stream', async (req, res) => {
             userQuery: query,
             clusterSnapshot,
             model: profile.model,
-            summary: req.body.summary,
+            locale: requestLocale,
+            summary: effectiveConversationSummary,
+            structuredMemory: persistedConversationMemory.structuredMemory,
             skillIndex: agentSkillIndex,
           });
       console.log(
@@ -1511,7 +1713,11 @@ app.post('/api/ai/stream', async (req, res) => {
       send({
         type: 'status',
         phase: 'requesting',
-        message: workflowRunContext ? '已恢复流程进度，正在执行当前步骤…' : `上下文已就绪，正在请求 ${profile.model}…`,
+        message: workflowRunContext
+          ? workflowTurnMode === 'inspect'
+            ? '已恢复流程状态，正在进行只读查询…'
+            : '已恢复流程进度，正在执行当前步骤…'
+          : `上下文已就绪，正在请求 ${profile.model}…`,
         requestId: aiRequestId,
       });
 
@@ -1526,7 +1732,7 @@ app.post('/api/ai/stream', async (req, res) => {
         requestId: aiRequestId,
       });
       const rawConfirmationPolicy = req.body?.agentConfig?.confirmationPolicy;
-      const agentConfirmationPolicy = rawConfirmationPolicy === 'state_changes' || rawConfirmationPolicy === 'every_command'
+      const agentConfirmationPolicy = rawConfirmationPolicy === 'never' || rawConfirmationPolicy === 'state_changes' || rawConfirmationPolicy === 'every_command'
         ? rawConfirmationPolicy
         : undefined;
       const ctx: AgentCtx = {
@@ -1573,6 +1779,10 @@ app.post('/api/ai/stream', async (req, res) => {
         runtimeConfig: req.body.agentConfig,
         resumePlan: req.body.resumePlan,
         workflowRun: workflowRunContext,
+        scheduler: s.cluster.scheduler,
+        moduleAvailable: s.cluster.moduleAvailable,
+        installers: s.cluster.installers,
+        workflowTurnMode,
         conversationId: agentConversationId,
         conversationKey: agentConversationKey,
         onJobsSubmitted: jobIds => {
@@ -1617,6 +1827,17 @@ app.post('/api/ai/stream', async (req, res) => {
           onPlan: (plan) => send({ type: 'plan', plan }),
           onPlanUpdate: (plan, stepId) => send({ type: 'plan_update', plan, stepId }),
           onWorkflowRunChanged: (run) => emitWorkflowRunChanged(sessionId, run),
+          onWorkflowRunMissing: (wf) => {
+            terminalEvent = 'error';
+            console.warn('[AI:%s] workflow run missing on cluster, detach: %s', aiRequestId, wf.runDir);
+            send({
+              type: 'workflow_run_missing',
+              workflowId: wf.workflowId,
+              runId: wf.runId,
+              runDir: wf.runDir,
+              requestId: aiRequestId,
+            });
+          },
           onActivity: (type) => {
             if (providerResponded || type === 'start' || type === 'start-step') return;
             providerResponded = true;
@@ -1647,7 +1868,12 @@ app.post('/api/ai/stream', async (req, res) => {
       // 未连接集群（无 SSH 会话）：本地模式。Agent 走本地工作区工具组
       // （list_local_files / read_local_file / write_local_file / run_local_command），
       // 读写由服务端强制限制在用户指定的本地工作区内；不注入集群快照。
-      const localWorkspace = normalizeWorkspace(req.body?.workspace);
+      const requestedLocalWorkspaces = Array.isArray(req.body?.workspaces) ? req.body.workspaces : [];
+      const localWorkspaces = [...new Set([
+        ...requestedLocalWorkspaces.map((value: unknown) => normalizeWorkspace(value)).filter((value): value is string => Boolean(value)),
+        normalizeWorkspace(req.body?.workspace),
+      ].filter((value): value is string => Boolean(value)))].slice(0, 20);
+      const localWorkspace = localWorkspaces[0];
       if (req.body?.workspace && !localWorkspace) {
         console.warn('[AI:%s] workspace 无效已忽略: %s', aiRequestId, String(req.body.workspace).slice(0, 200));
       }
@@ -1656,8 +1882,10 @@ app.post('/api/ai/stream', async (req, res) => {
         mode,
         userQuery: query,
         model: profile.model,
+        locale: requestLocale,
         selectedOutput: req.body.selectedOutput,
-        summary: req.body.summary,
+        summary: effectiveConversationSummary,
+        structuredMemory: persistedConversationMemory.structuredMemory,
       });
       send({ type: 'status', phase: 'requesting', message: `正在请求 ${profile.model}…`, requestId: aiRequestId });
 
@@ -1698,6 +1926,7 @@ app.post('/api/ai/stream', async (req, res) => {
         resumePlan: req.body.resumePlan,
         localOnly: true,
         workspace: localWorkspace,
+        workspaces: localWorkspaces,
         locale: requestLocale,
       };
 
@@ -1748,6 +1977,23 @@ app.post('/api/ai/stream', async (req, res) => {
     clearInterval(heartbeat);
     res.off('close', onResponseClose);
     if (!res.writableEnded && !res.destroyed) res.end();
+    // 后台（detached）运行的收尾：把最终答复追加进对话存档并广播 ai:resumed，
+    // 用户回到该对话时自动刷新出结果；未脱离的连接由客户端自己保存，不写两遍。
+    const terminalKind = terminalEvent === 'done' ? 'done' as const : 'error' as const;
+    finishActiveRun(activeRun, terminalKind, activeRun.text);
+    if (activeRun.detached && runConversationId) {
+      const text = activeRun.text.trim();
+      const content = terminalKind === 'done'
+        ? (text || '(后台任务已结束，未产生文本)')
+        : `${text ? `${text}\n\n` : ''}(后台任务中断：${terminalEvent === 'watchdog' ? '达到 15 分钟硬上限' : '出错或被停止'}，可点击“继续”接着做)`;
+      void appendJobResumeConversation(runConversationId, [{ role: 'assistant', content }], activeRun.sessionId);
+      const sid = activeRun.sessionId || 'local-workbench';
+      io.to(workflowRunRoom(sid)).emit('ai:resumed', {
+        type: 'ai:resumed',
+        conversationId: runConversationId,
+        preview: content.slice(0, 200),
+      });
+    }
     console.log(
       '[AI:%s] request finalized outcome=%s aborted=%s elapsed=%dms',
       aiRequestId,
@@ -1756,6 +2002,75 @@ app.post('/api/ai/stream', async (req, res) => {
       Date.now() - aiStartedAt,
     );
   }
+});
+
+// ─── 后台 AI 运行管理：查询 / 续流 / 中止 ──────────────────────────────
+// 切换对话/窗口后任务不停止：客户端断连只是 detached，可凭 conversationId 找回。
+app.get('/api/ai/active', (req, res) => {
+  const conversationId = String(req.query.conversationId || '');
+  if (!conversationId) {
+    res.status(400).json({ success: false, error: '缺少 conversationId' });
+    return;
+  }
+  const run = findActiveRunByConversation(conversationId);
+  res.json({
+    success: true,
+    running: Boolean(run),
+    requestId: run?.requestId,
+    startedAt: run?.startedAt,
+    textPreview: run?.text.slice(-200) || '',
+  });
+});
+
+app.post('/api/ai/abort', (req, res) => {
+  const requestId = String(req.body?.requestId || '');
+  const run = requestId ? getActiveRun(requestId) : undefined;
+  if (!run || run.terminal) {
+    res.status(404).json({ success: false, error: '运行已结束或不存在' });
+    return;
+  }
+  abortActiveRun(run);
+  res.json({ success: true });
+});
+
+// attach：重放脱连期间缓冲的事件，然后继续实时推送；终态后关闭
+app.get('/api/ai/stream/attach', (req, res) => {
+  const requestId = String(req.query.requestId || '');
+  const run = requestId ? getActiveRun(requestId) : undefined;
+  if (!run) {
+    res.status(404).json({ success: false, error: '运行已结束或不存在' });
+    return;
+  }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  const writeEvent = (event: any) => {
+    if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+  for (const event of run.events) writeEvent(event);
+  if (run.terminal) {
+    res.end();
+    return;
+  }
+  const detachListener = attachRunListener(run, writeEvent);
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) res.write(': heartbeat\n\n');
+  }, 15_000);
+  const cleanup = () => {
+    detachListener();
+    clearInterval(heartbeat);
+  };
+  res.once('close', cleanup);
+  // 终态后事件推送完毕即收尾（下一轮事件循环里 terminal 已写入）
+  const closer = setInterval(() => {
+    if (run.terminal) {
+      clearInterval(closer);
+      cleanup();
+      if (!res.writableEnded && !res.destroyed) res.end();
+    }
+  }, 500);
 });
 
 app.post('/api/ai/confirm', (req, res) => {

@@ -6,7 +6,11 @@ import { getPath7za } from 'app-builder-lib/out/toolsets/7zip.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const releaseDir = path.join(root, 'release');
+// 默认输出到 release/；HPCLAW_RELEASE_DIR 可改到别的目录（例如 release/ 里的旧
+// win-unpacked 被别的进程占用时，换个干净目录构建，构建产物不受影响）。
+const releaseDir = process.env.HPCLAW_RELEASE_DIR
+  ? path.resolve(root, process.env.HPCLAW_RELEASE_DIR)
+  : path.join(root, 'release');
 const intermediateArchive = path.join(releaseDir, `hpclaw-${pkg.version}-x64.nsis.7z`);
 const installer = path.join(releaseDir, `HPClaw-Setup-${pkg.version}-x64.exe`);
 const blockmap = `${installer}.blockmap`;
@@ -41,6 +45,7 @@ try {
     'nsis',
     '--config.compression=normal',
     `--config.electronDist=${electronDist}`,
+    `--config.directories.output=${releaseDir}`,
   ], {
     cwd: root,
     env: { ...process.env, ELECTRON_BUILDER_COMPRESSION_LEVEL: '1' },

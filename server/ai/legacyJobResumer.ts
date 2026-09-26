@@ -24,7 +24,7 @@ export interface LegacyResumeDeps {
   skillsDir?: string;
   lsfSkillDir?: string;
   userSkillsDir?: string;
-  appendConversation?: (conversationId: string, messages: AIMessage[]) => Promise<boolean>;
+  appendConversation?: (conversationId: string, messages: AIMessage[], sshSessionId?: string) => Promise<boolean>;
   emitToUi?: (sshSessionId: string, payload: unknown) => void;
   notify?: (title: string, content: string) => Promise<void>;
   /** 唤醒轮里 Agent 新提交的作业：交给服务端 trackJobs + 续登绑定，保持监控闭环。 */
@@ -165,7 +165,7 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
         await deps.appendConversation(binding.conversationId, [
           { role: 'user', content: buildSysMessage(binding, evt.jobId, evt.status) },
           { role: 'assistant', content: assistantText || fallback },
-        ]);
+        ], binding.sshSessionId);
       } catch (err) {
         console.warn('[legacy-resume] 会话回写失败: %s', err instanceof Error ? err.message : String(err));
       }

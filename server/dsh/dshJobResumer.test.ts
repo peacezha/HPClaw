@@ -153,7 +153,7 @@ describe('maybeResumeAgent', () => {
     expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
       { role: 'user', content: '【系统】作业 424242 已结束（DONE），已自动继续处理。' },
       { role: 'assistant', content: '任务完成，表达量正常。' },
-    ]);
+    ], 'ssh-1');
     expect(deps.emitToUi).toHaveBeenCalledWith('ssh-1', {
       type: 'ai:resumed',
       conversationId: 'conv-1',

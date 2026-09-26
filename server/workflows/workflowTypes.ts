@@ -2,11 +2,17 @@
 import type { FlowManifest } from '../../shared/flowManifest';
 
 export interface WorkflowStep {
+  /** 稳定步骤标识；依赖图使用它连边。 */
+  id?: string;
   title: string;
   /** 命令模板，支持 {{参数名}} 占位 */
   command: string;
   notes?: string;
   optional?: boolean;
+  /** 未提供表示依赖紧邻前一步；显式 [] 表示从开始节点进入。 */
+  dependsOn?: string[];
+  /** 流程图泳道/阶段标签。 */
+  phase?: string;
   /** 本步骤独立的可调参数（阈值、限定值等，带默认值），在运行面板逐步配置 */
   params?: WorkflowParam[];
   /** Agent 执行契约；BioSkills 导入流程用它追溯原始章节并按需加载关联技能。 */
@@ -77,10 +83,14 @@ export interface WorkflowPaperImport {
 }
 
 export interface WorkflowProvenance {
-  provider?: 'bioskills';
+  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'hpclaw' | 'hpclaw-native';
   sourcePath?: string;
   sourceName?: string;
   sourceDigest?: string;
+  sourceUrl?: string;
+  sourceRef?: string;
+  upstreamWorkflow?: string;
+  implementation?: 'official-wrapper' | 'compatible-reimplementation' | 'reference-extension';
   importerVersion?: string;
   /** 用户在流程编辑器修改过后置 true，后续自动种子升级不覆盖用户内容。 */
   customized?: boolean;

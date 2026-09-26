@@ -25,6 +25,8 @@ describe('agent stream chat flow', () => {
   it('renders useful system messages while hiding only noisy agent step markers', () => {
     expect(shouldRenderSystemMessage('[tool_call run_command] bjobs')).toBe(true);
     expect(shouldRenderSystemMessage('[Agent step 1]')).toBe(false);
+    expect(shouldRenderSystemMessage('[🔧 ask_user] {"question":"是否继续"}')).toBe(false);
+    expect(shouldRenderSystemMessage('[📋 ask_user] [AWAIT_USER]')).toBe(false);
     expect(shouldRenderSystemMessage('')).toBe(false);
   });
 

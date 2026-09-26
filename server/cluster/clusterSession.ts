@@ -83,6 +83,12 @@ export class ClusterSession extends EventEmitter {
   state: ConnectionState = 'disconnected';
   shell?: ClientChannel;
   sftp?: SFTPWrapper;
+  /** 登录后探测并缓存的调度器画像（lsf/slurm/pbs/none），按账号持久化打标签。 */
+  scheduler?: import('./schedulerProfile').SchedulerKind;
+  /** 是否有 Environment Modules；false 时装软件走直装（conda/mamba/pip/二进制） */
+  moduleAvailable?: boolean;
+  /** 探测到的直装包管理器（mamba/conda/uv/pip3） */
+  installers?: string[];
   /** shell 通道死亡（bash 退出/通道断开）时触发 */
   onShellDead?: (reason?: string) => void;
 

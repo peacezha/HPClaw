@@ -102,16 +102,18 @@ describe('bridgeRoutes', () => {
     expect(res.body).toEqual({ error: 'dsh_session_not_bound' });
   });
 
-  it('blocks rm commands with 422 even when confirmed', async () => {
-    const exec = vi.fn(async () => 'never\n');
+  it('allows an rm command only after destructive confirmation', async () => {
+    const exec = vi.fn(async () => 'ok\n');
     const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }) }));
-    const res = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/x', confirmed: true }, TOKEN);
-    expect(res.status).toBe(422);
-    expect(res.body).toEqual({ error: 'rm_blocked' });
-    expect(exec).not.toHaveBeenCalled();
+    const pending = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/x' }, TOKEN);
+    expect(pending.status).toBe(428);
+    expect(pending.body).toEqual({ error: 'confirmation_required', risk: 'destructive' });
+    const confirmed = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/x', confirmed: true }, TOKEN);
+    expect(confirmed.status).toBe(200);
+    expect(exec).toHaveBeenCalledWith('rm -rf /tmp/x', 30_000);
   });
 
-  it('requires confirmation for destructive and network commands with 428', async () => {
+  it('requires confirmation for destructive commands but runs ordinary network commands directly', async () => {
     const exec = vi.fn(async () => 'ok\n');
     const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }) }));
 
@@ -120,10 +122,9 @@ describe('bridgeRoutes', () => {
     expect(destructive.body).toEqual({ error: 'confirmation_required', risk: 'destructive' });
 
     const network = await post(base, '/api/bridge/exec', { command: 'curl -O https://example.com/a.sh' }, TOKEN);
-    expect(network.status).toBe(428);
-    expect(network.body).toEqual({ error: 'confirmation_required', risk: 'network' });
+    expect(network.status).toBe(200);
 
-    expect(exec).not.toHaveBeenCalled();
+    expect(exec).toHaveBeenCalledWith('curl -O https://example.com/a.sh', 30_000);
 
     const confirmed = await post(base, '/api/bridge/exec', { command: 'bkill 123', confirmed: true }, TOKEN);
     expect(confirmed.status).toBe(200);
@@ -149,6 +150,26 @@ describe('bridgeRoutes', () => {
       getDshSessionBinding: () => binding('every_command'),
     }));
     expect((await post(every, '/api/bridge/exec', { command: 'pwd' }, TOKEN)).status).toBe(428);
+  });
+
+  it('runs task-level cleanup without confirmation in never mode but blocks machine destruction', async () => {
+    const exec = vi.fn(async () => 'ok\n');
+    const base = await startApp(makeDeps({
+      getSession: () => makeSession({ exec }),
+      getDshSessionBinding: () => ({
+        dshSessionId: DSH_SESSION, sshSessionId: 'ssh-1', workspaceRoot: process.cwd(),
+        conversationKey: 'ssh-1:chat', confirmationPolicy: 'never', updatedAt: Date.now(),
+      }),
+    }));
+
+    const cleanup = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/hpclaw-old-output' }, TOKEN);
+    expect(cleanup.status).toBe(200);
+    expect(exec).toHaveBeenCalledWith('rm -rf /tmp/hpclaw-old-output', 30_000);
+
+    const catastrophic = await post(base, '/api/bridge/exec', { command: 'mkfs.ext4 /dev/sdb' }, TOKEN);
+    expect(catastrophic.status).toBe(422);
+    expect(catastrophic.body).toEqual({ error: 'catastrophic_command_blocked' });
+    expect(exec).not.toHaveBeenCalledWith('mkfs.ext4 /dev/sdb', 30_000);
   });
 
   it('returns 409 when there is no connected cluster session', async () => {

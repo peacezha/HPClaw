@@ -103,11 +103,17 @@ describe('resolveWorkspaceEntry escape guards', () => {
       linkCreated = true;
     } catch { /* 无权限创建链接的环境跳过该用例 */ }
     if (!linkCreated) return;
-    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'secret');
-    expect(() => resolveWorkspaceEntry(workspace, 'escape-link', { mustExist: true }))
-      .toThrowError(expect.objectContaining({ failure: 'outside' }));
-    expect(() => readLocalWorkspaceFile(workspace, 'escape-link/secret.txt'))
-      .toThrowError(expect.objectContaining({ failure: 'outside' }));
+    try {
+      fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'secret');
+      expect(() => resolveWorkspaceEntry(workspace, 'escape-link', { mustExist: true }))
+        .toThrowError(expect.objectContaining({ failure: 'outside' }));
+      expect(() => readLocalWorkspaceFile(workspace, 'escape-link/secret.txt'))
+        .toThrowError(expect.objectContaining({ failure: 'outside' }));
+    } finally {
+      // Windows 的 fs.rmSync(parent, recursive) 可能把 junction 当目录处理并留下
+      // ENOTEMPTY；先显式解除 junction，避免测试临时目录清理不稳定。
+      fs.unlinkSync(linkPath);
+    }
   });
 });
 
@@ -192,6 +198,12 @@ describe('writeLocalWorkspaceFile', () => {
     expect(fs.readFileSync(path.join(workspace, 'once.txt'), 'utf8')).toBe('first');
   });
 
+  it('overwrites an existing file only when full-access mode explicitly enables it', () => {
+    writeLocalWorkspaceFile(workspace, 'replace.txt', 'first');
+    writeLocalWorkspaceFile(workspace, 'replace.txt', 'second', { overwrite: true });
+    expect(fs.readFileSync(path.join(workspace, 'replace.txt'), 'utf8')).toBe('second');
+  });
+
   it('refuses to write through a path that escapes the workspace', () => {
     expect(() => writeLocalWorkspaceFile(workspace, '../evil.txt', 'x'))
       .toThrowError(expect.objectContaining({ failure: 'outside' }));
@@ -233,6 +245,14 @@ describe('runLocalWorkspaceCommand', () => {
       expect(err).toBeInstanceOf(LocalWorkspaceError);
       expect((err as LocalWorkspaceError).failure).toBe('blocked');
     }
+  });
+
+  it('allows task-level cleanup when full-access mode explicitly enables destructive commands', async () => {
+    fs.writeFileSync(path.join(workspace, 'old.txt'), 'old');
+    const command = process.platform === 'win32' ? 'del /q old.txt' : 'rm -f old.txt';
+    const result = await runLocalWorkspaceCommand(workspace, command, { allowDestructive: true });
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(workspace, 'old.txt'))).toBe(false);
   });
 
   it('rejects empty commands', () => {

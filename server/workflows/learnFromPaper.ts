@@ -208,6 +208,7 @@ JSON 格式：
 
 硬性规则：
 1. 先识别论文真正的主分析路径。基准比较、对照算法、替代分支和补充实验不得混入主步骤，放入 excludedBranches；只有生物学设计确实要求二选一时才建立 decision 步骤。
+1.1 只提取生信/计算分析步骤。湿实验操作（材料种植与处理、DNA/RNA 提取、文库构建、PCR/电泳/转化/测序上机等 bench 操作）一律不得成为流程步骤，只能在 excludedBranches 中一句话说明；用户粘贴的片段若不含任何计算分析内容，输出 steps 为空并在 warnings 中明确说明，不要硬凑步骤。
 2. 步骤按数据依赖排列，不限制为 5-10 步；每步必须有可监控的 inputs、outputs 和来源。不要把整篇 Methods 压成一个步骤，也不要为凑数量拆空步骤。
 3. 论文/仓库明确给出的软件版本、参数、阈值和参考数据库版本才可写默认值。没有依据时留空、required=true 或 requiresReview=true，并加入 unresolvedQuestions；严禁写“推测版本”或虚构 QC 阈值。
 4. 仓库代码存在时，命令和文件依赖以仓库为事实来源，论文用于解释方法；若二者冲突，加入 warnings，不要自行选一个后隐瞒冲突。
@@ -486,4 +487,49 @@ export async function fetchRepoCodeExcerpt(repoUrl: string): Promise<{ repoUrl: 
   } catch {
     return null;
   }
+}
+
+// ── 学习草稿的交互式修订（「学的不对，告诉 AI 哪里改」） ─────────────────────
+
+const REVISE_SYSTEM_PROMPT = `你是文献流程修订器。用户审阅了从论文提取的分析流程 JSON，指出其中不对的地方。
+你的任务：按用户反馈修订这份 JSON，输出修订后的完整 JSON（与学习时完全相同的 {workflow, extraction} 结构）。
+
+硬性规则：
+1. 只改用户指出的问题；用户没提到的步骤、参数、阈值、证据一律原样保留，不得顺手重写。
+2. 仍受学习时的证据纪律约束：论文/仓库明确给出的版本、参数、阈值才可写默认值；用户反馈本身可以
+   作为修改依据（用户是领域专家），但用户没有提供具体值时不要编造——留空、requiresReview=true
+   或加入 unresolvedQuestions。
+3. 用户的反馈若与论文证据冲突，按用户意见修改，同时在 extraction.warnings 里明确记录冲突点。
+4. 在 extraction 里加一条 "revisionNote" 字段，用一句话概括本次改了什么（面向用户，中文）。
+5. 所有 {{PARAM}} 仍必须在全局或步骤 params 中声明；步骤保持数据依赖顺序。
+6. 只输出 JSON。`;
+
+/**
+ * 按用户反馈修订文献流程草稿。paperContext 是学习时选取的论文方法上下文（可空），
+ * 回灌给模型作为核对证据，避免修订偏离文献。
+ */
+export async function reviseWorkflowDraftWithFeedback(
+  currentDraftJson: string,
+  feedback: string,
+  paperContext: string | undefined,
+  profile: AIProfile,
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+): Promise<string> {
+  const languageRule = locale === 'en-US'
+    ? '\n\nLANGUAGE OVERRIDE: Write every human-readable JSON value in English. Keep commands, paths, filenames, software names and scientific identifiers unchanged.'
+    : '\n\n语言要求：所有面向用户的 JSON 文本使用中文；命令、路径、文件名、软件名、数据库名和科学标识符保持原样。';
+  const paperSection = paperContext?.trim()
+    ? `\n\n【论文方法上下文（核对证据）】\n${paperContext.slice(0, MAX_MODEL_TEXT)}`
+    : '\n\n（本次没有论文原文可核对；仍以用户反馈为准，不要编造论文证据。）';
+  const { text, finishReason } = await generateText({
+    model: buildModel(profile),
+    system: REVISE_SYSTEM_PROMPT + languageRule,
+    prompt: `【当前流程 JSON】\n${currentDraftJson.slice(0, 60_000)}\n\n【用户反馈】\n${feedback.slice(0, 4_000)}${paperSection}\n\n请输出修订后的完整 JSON。`,
+    temperature: 0.2,
+    maxOutputTokens: /reasoner|v4-pro|reasoning/i.test(profile.model || '') ? 32000 : 16000,
+  });
+  if (finishReason === 'length') {
+    console.warn('[paper-workflow] revise output reached token limit; JSON completion will be attempted');
+  }
+  return text;
 }

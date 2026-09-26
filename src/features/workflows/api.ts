@@ -1,7 +1,7 @@
 // 流程（Workflow）前端 API 客户端
 import type { Workflow, WorkflowPaperImport } from '@/shared/workflow';
 import type { PreflightResult } from '@/shared/flowManifest';
-import { workflowSlug, workflowSlugLegacy } from '@/shared/flowManifest';
+import { workflowSlug, workflowSlugLegacy, workflowSlugParenLegacy } from '@/shared/flowManifest';
 import { getStoredLocale } from '../../i18n';
 
 export type { Workflow, WorkflowStep, WorkflowParam } from '@/shared/workflow';
@@ -60,10 +60,12 @@ export async function draftWorkflow(description: string, profile: { provider: st
 
 /** 从文献学习流程：DOI 或 PDF 提取的论文文本 → AI 提取为流程草稿 */
 export async function learnFromPaper(
-  input: { doi?: string; paperText?: string },
+  input: { doi?: string; paperText?: string; pasteSource?: 'paste' },
   profile: { provider: string; model: string; apiKey: string },
 ): Promise<{
   draft: Partial<Workflow>;
+  /** 草稿箱条目 id：学习内容已持久化，可找回、可继续修订 */
+  draftId: string | null;
   source: string;
   paperChars: number;
   repoUsed: string | null;
@@ -83,6 +85,7 @@ export async function learnFromPaper(
   });
   return {
     draft: data.draft,
+    draftId: data.draftId || null,
     source: data.source || '',
     paperChars: data.paperChars || 0,
     repoUsed: data.repoUsed || null,
@@ -91,6 +94,60 @@ export async function learnFromPaper(
     paperImport: data.paperImport,
     context: data.context || { selectedChars: 0, methodSections: [], selectionMode: 'fulltext-fallback', truncated: false },
   };
+}
+
+// ── 文献学习草稿箱（持久化，避免切走页面后学习内容丢失） ────────────────────
+
+export interface LearnDraftSummary {
+  id: string;
+  name: string;
+  sourceLabel: string;
+  doi?: string;
+  repoUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+  revisionNotes: string[];
+  stepCount: number;
+  qualityScore?: number;
+}
+
+export async function listLearnDrafts(): Promise<LearnDraftSummary[]> {
+  const data = await request('/api/workflows/learn-drafts');
+  return data.drafts || [];
+}
+
+export async function getLearnDraft(id: string): Promise<{
+  id: string;
+  name: string;
+  sourceLabel: string;
+  createdAt: number;
+  updatedAt: number;
+  revisionNotes: string[];
+  draft: Partial<Workflow>;
+}> {
+  const data = await request(`/api/workflows/learn-drafts/${encodeURIComponent(id)}`);
+  return data.draft;
+}
+
+export async function deleteLearnDraftApi(id: string): Promise<void> {
+  await request(`/api/workflows/learn-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** 按用户反馈让 AI 修订学习草稿；返回修订后的完整草稿与一句话修订说明 */
+export async function reviseLearnDraft(
+  id: string,
+  feedback: string,
+  profile: { provider: string; model: string; apiKey: string },
+): Promise<{
+  draft: Partial<Workflow>;
+  revisionNote: string;
+  paperImport: WorkflowPaperImport;
+}> {
+  const data = await request(`/api/workflows/learn-drafts/${encodeURIComponent(id)}/revise`, {
+    method: 'POST',
+    body: JSON.stringify({ feedback, profile, locale: getStoredLocale() }),
+  });
+  return { draft: data.draft, revisionNote: data.revisionNote || '', paperImport: data.paperImport };
 }
 
 /** 执行流程预检（SSH 核查必要软件与参考数据，需要集群会话）；only 可做单项校验 */
@@ -128,6 +185,8 @@ export async function fetchRunLog(runDir: string, sessionId?: string | null, n =
 export interface WorkflowRunStep {
   n: number;
   stepId?: string;
+  dependsOn?: string[];
+  phase?: string;
   title: string;
   status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
   startedAt?: number;
@@ -317,7 +376,12 @@ export async function deployWorkflowAssets(
  */
 export function runBelongsToWorkflow(run: WorkflowRun, workflow: Workflow): boolean {
   if (run.workflowId && run.workflowId === workflow.id) return true;
-  const slugs = new Set([workflowSlug(workflow.name), workflowSlugLegacy(workflow.name)]);
+  const slugs = new Set([
+    workflowSlug(workflow.name),
+    workflowSlugLegacy(workflow.name),
+    // v0.4.19–v0.4.20 生成的带括号 slug 目录也要认得回来
+    workflowSlugParenLegacy(workflow.name),
+  ]);
   if (run.workflowName) {
     const runNameSlug = workflowSlug(run.workflowName);
     const runNameLegacy = workflowSlugLegacy(run.workflowName);

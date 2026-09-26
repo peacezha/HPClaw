@@ -14,9 +14,17 @@ export const ENV_CHECK_MODULE_INIT = [
 const CHECK_FUNCS = [
   'FAIL=0',
   'check_mod() {',
-  '  if module load "$2" >/dev/null 2>&1; then echo "OK   $1 ($2)"; else',
+  '  if type module >/dev/null 2>&1; then',
+  '    if module load "$2" >/dev/null 2>&1; then echo "OK   $1 ($2)"; else',
   '    echo "MISS $1 ($2) —— 集群可用版本："; module -t avail "${2%%/*}" 2>&1 | grep -i "${2%%/*}" | head -5 || true',
   '    if [ "$3" = "required" ]; then FAIL=1; fi',
+  '  fi',
+  '  else',
+  '    # 无 module 系统：按直装处理，直接在 PATH 里按命令名探测',
+  '    direct_cmd="${2%%/*}"',
+  '    if command -v "$direct_cmd" >/dev/null 2>&1; then echo "OK   $1 ($direct_cmd 直装)"; else',
+  '    echo "MISS $1（无 module 系统，需直接安装 $2）"; if [ "$3" = "required" ]; then FAIL=1; fi',
+  '  fi',
   '  fi',
   '}',
   'check_cmd() {',
@@ -87,7 +95,7 @@ export function buildEnvCheckCommand(spec: EnvCheckSpec): string {
   }
   lines.push(
     `echo "--- 已加载模块 ---"`,
-    'module -t list 2>&1 | tail -30 || true',
+    'if type module >/dev/null 2>&1; then module -t list 2>&1 | tail -30 || true; else echo "（本机无 module 系统，软件均为直装）"; fi',
     'exit $FAIL',
   );
   return lines.join('\n');

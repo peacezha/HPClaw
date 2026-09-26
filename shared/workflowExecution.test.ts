@@ -3,11 +3,14 @@ import {
   findLatestWorkflowExecutionContext,
   formatWorkflowConfigureDirective,
   formatWorkflowExecutionContext,
+  formatWorkflowRunDetached,
   normalizeWorkflowConfigureDirective,
   normalizeWorkflowExecutionContext,
   parseWorkflowConfigureDirective,
   parseWorkflowExecutionContext,
+  parseWorkflowRunDetached,
   stripWorkflowConfigureDirectives,
+  stripWorkflowRunDetachedMarkers,
 } from './workflowExecution';
 
 describe('workflow execution marker', () => {
@@ -67,5 +70,42 @@ describe('workflow configure marker', () => {
     const runLine = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'r1', runDir: '/home/u/runs/r1' });
     expect(parseWorkflowConfigureDirective(runLine)).toBeNull();
     expect(parseWorkflowExecutionContext(formatWorkflowConfigureDirective({ workflowId: 'wf-1' }))).toBeNull();
+  });
+});
+
+describe('workflow run detached marker', () => {
+  it('round trips a detached runDir', () => {
+    const line = formatWorkflowRunDetached('/home/u/hpclaw_flows/wf/03_workspace/runs/run-1');
+    expect(parseWorkflowRunDetached(`note\n${line}`)).toBe('/home/u/hpclaw_flows/wf/03_workspace/runs/run-1');
+    expect(parseWorkflowRunDetached('no marker')).toBeNull();
+    expect(parseWorkflowRunDetached('[HPCLAW_WORKFLOW_RUN_DETACHED] nope')).toBeNull();
+  });
+
+  it('strips detached marker lines for rendering', () => {
+    const line = formatWorkflowRunDetached('/home/u/runs/r1');
+    expect(stripWorkflowRunDetachedMarkers(`${line}\n已退出流程执行模式。`)).toBe('已退出流程执行模式。');
+    expect(stripWorkflowRunDetachedMarkers(line)).toBe('');
+  });
+
+  it('detached runs are skipped when restoring the latest workflow context', () => {
+    const runDir = '/home/u/hpclaw_flows/wf/03_workspace/runs/run-1';
+    const marker = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir });
+    const messages = [
+      { content: marker },
+      { content: '用户补充说明' },
+      { content: `${formatWorkflowRunDetached(runDir)}\n已退出流程执行模式` },
+    ];
+    expect(findLatestWorkflowExecutionContext(messages)).toBeNull();
+  });
+
+  it('a detached marker for one runDir does not hide a different live run', () => {
+    const dead = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/runs/dead' });
+    const live = formatWorkflowExecutionContext({ workflowId: 'wf-2', runId: 'run-2', runDir: '/home/u/runs/live' });
+    const messages = [
+      { content: dead },
+      { content: formatWorkflowRunDetached('/home/u/runs/dead') },
+      { content: live },
+    ];
+    expect(findLatestWorkflowExecutionContext(messages)?.runId).toBe('run-2');
   });
 });

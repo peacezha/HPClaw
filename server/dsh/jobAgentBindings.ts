@@ -24,7 +24,7 @@ export interface JobAgentBinding {
   engine?: 'dsh' | 'legacy';
   conversationId?: string;
   workspace?: string;
-  confirmationPolicy?: 'dangerous' | 'state_changes' | 'every_command';
+  confirmationPolicy?: 'never' | 'dangerous' | 'state_changes' | 'every_command';
   profile?: JobAgentBindingProfile;
   locale?: 'zh-CN' | 'en-US';
   submittedAt: number;
@@ -39,7 +39,7 @@ export interface JobBindingContext {
   engine?: 'dsh' | 'legacy';
   conversationId?: string;
   workspace?: string;
-  confirmationPolicy?: 'dangerous' | 'state_changes' | 'every_command';
+  confirmationPolicy?: 'never' | 'dangerous' | 'state_changes' | 'every_command';
   profile?: JobAgentBindingProfile;
   locale?: 'zh-CN' | 'en-US';
 }

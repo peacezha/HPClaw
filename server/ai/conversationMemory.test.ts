@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeConversationMemory, summarizeConversation } from './conversationMemory';
+import { buildStructuredConversationMemory, mergeConversationMemory, summarizeConversation } from './conversationMemory';
 
 describe('conversation memory', () => {
   it('adds optional memory fields without dropping legacy conversation data', () => {
@@ -53,5 +53,35 @@ describe('conversation memory', () => {
     expect(updated.memory).toContain('samtools sort');
     expect(updated.skillHints).not.toContain('fastqc');
     expect(updated.skillHints).toContain('samtools');
+  });
+
+  it('preserves the original goal, confirmed paths, job ids and recent progress in isolated memory', () => {
+    const messages = [
+      { role: 'user' as const, content: '在 /data/project-a 做 RNA-seq，输出放到 /data/project-a/results' },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        role: (index % 2 === 0 ? 'assistant' : 'user') as 'assistant' | 'user',
+        content: `普通中间消息 ${index}`,
+      })),
+      { role: 'assistant' as const, content: '已提交 Job <81234>，选择 normal 队列。' },
+      { role: 'user' as const, content: '继续并保留线程数 16。' },
+    ];
+
+    const updated = mergeConversationMemory({ messages });
+
+    expect(updated.summary).toContain('/data/project-a');
+    expect(updated.memory).toContain('81234');
+    expect(updated.memory).toContain('线程数 16');
+    expect(updated.structuredMemory.task).toContain('RNA-seq');
+    expect(updated.structuredMemory.keyFacts.some(fact => fact.fact.includes('81234'))).toBe(true);
+  });
+
+  it('does not invent a resolution for an unresolved error', () => {
+    const memory = buildStructuredConversationMemory([
+      { role: 'user', content: '任务报错 Permission denied' },
+    ]);
+
+    expect(memory.errors).toContainEqual(expect.objectContaining({
+      resolution: '尚无已验证的解决记录',
+    }));
   });
 });

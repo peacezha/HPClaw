@@ -17,4 +17,12 @@ describe('request session resolution', () => {
     expect(resolveRequestSessionId({ cookie: 'cookie', header: 'stale', auth: 'auth' }, hasSession)).toBe('auth');
     expect(resolveRequestSessionId({ cookie: 'cookie', header: undefined, auth: undefined }, hasSession)).toBe('cookie');
   });
+
+  it('an explicit local-workbench sentinel forces local mode and is never hijacked by a live cluster cookie', () => {
+    const hasSession = (id: string) => id === 'cluster-1';
+
+    // 用户点了本地 AI 工作台：即使 cookie 里还有连着网的集群会话，也必须本地执行
+    expect(resolveRequestSessionId({ cookie: 'cluster-1', header: 'local-workbench', auth: undefined }, hasSession)).toBeUndefined();
+    expect(resolveRequestSessionId({ cookie: 'cluster-1', header: undefined, auth: 'local-workbench' }, hasSession)).toBeUndefined();
+  });
 });

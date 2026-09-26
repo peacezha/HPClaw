@@ -4,10 +4,19 @@ import type { FlowManifest } from './flowManifest';
 export type { FlowManifest } from './flowManifest';
 
 export interface WorkflowStep {
+  /** 稳定步骤标识；依赖图使用它连边。旧流程未提供时运行时生成 step-NN。 */
+  id?: string;
   title: string;
   command: string;
   notes?: string;
   optional?: boolean;
+  /**
+   * 本步骤依赖的步骤 id。未提供表示沿用旧版串行语义（依赖紧邻前一步）；
+   * 显式 [] 表示可直接从“开始”节点进入，用于并行分支。
+   */
+  dependsOn?: string[];
+  /** 流程图泳道/阶段标签，仅用于表达真实任务分支，不改变命令内容。 */
+  phase?: string;
   /** 本步骤独立的可调参数（阈值、限定值等，带默认值），在运行面板逐步配置 */
   params?: WorkflowParam[];
   /** Agent 执行契约；BioSkills 导入流程用它追溯原始章节并按需加载关联技能。 */
@@ -84,10 +93,15 @@ export interface WorkflowPaperImport {
 }
 
 export interface WorkflowProvenance {
-  provider?: 'bioskills';
+  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'hpclaw';
   sourcePath?: string;
   sourceName?: string;
   sourceDigest?: string;
+  /** 上游权威来源及固定版本，避免“参考某流程”被误标成官方实现。 */
+  sourceUrl?: string;
+  sourceRef?: string;
+  upstreamWorkflow?: string;
+  implementation?: 'official-wrapper' | 'compatible-reimplementation' | 'reference-extension';
   importerVersion?: string;
   customized?: boolean;
 }

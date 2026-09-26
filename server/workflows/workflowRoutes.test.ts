@@ -329,4 +329,16 @@ describe('ENCODE 内置流程经 sanitize 字段不丢（抽查 encode-chipseq-t
       if (original.params) expect(step.params).toEqual(original.params);
     });
   });
+
+  it('DAG 的稳定 id、显式空依赖、分支依赖和 phase 经清洗后保留', () => {
+    expect(sanitizeSteps([
+      { id: 'prepare', title: '准备', command: 'echo prepare', dependsOn: [], phase: '准备' },
+      { id: 'star', title: 'STAR', command: 'echo star', dependsOn: ['prepare'], phase: '比对' },
+      { id: 'report', title: '报告', command: 'echo report', dependsOn: ['star', 'bad id', 'star'], phase: '报告' },
+    ])).toEqual([
+      expect.objectContaining({ id: 'prepare', dependsOn: [], phase: '准备' }),
+      expect.objectContaining({ id: 'star', dependsOn: ['prepare'], phase: '比对' }),
+      expect.objectContaining({ id: 'report', dependsOn: ['star'], phase: '报告' }),
+    ]);
+  });
 });

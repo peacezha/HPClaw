@@ -4,17 +4,32 @@ export function normalizeAgentWorkspace(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function loadAgentWorkspace(): string {
+export function normalizeAgentWorkspaces(value: unknown): string[] {
+  const source = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  return [...new Set(source.map(item => normalizeAgentWorkspace(item).trim()).filter(Boolean))].slice(0, 20);
+}
+
+export function loadAgentWorkspaces(): string[] {
   try {
-    return normalizeAgentWorkspace(JSON.parse(localStorage.getItem(STORAGE_KEY) || '""'));
+    return normalizeAgentWorkspaces(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'));
   } catch {
-    return '';
+    return [];
   }
+}
+
+export function saveAgentWorkspaces(paths: string[]): string[] {
+  const normalized = normalizeAgentWorkspaces(paths);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+export function loadAgentWorkspace(): string {
+  return loadAgentWorkspaces()[0] || '';
 }
 
 export function saveAgentWorkspace(path: string): string {
   const normalized = normalizeAgentWorkspace(path);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+  saveAgentWorkspaces(normalized ? [normalized] : []);
   return normalized;
 }
 

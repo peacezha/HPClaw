@@ -39,8 +39,11 @@ import {
   buildAgentSystemPrompt,
   buildLocalWorkspacePromptSection,
   buildWorkflowExecutorPrompt,
+  buildWorkflowInspectorPrompt,
+  extractUserAuthorizedPaths,
   normalizeAgentRuntimeConfig,
   runAgent,
+  selectCurrentWorkflowRunStep,
   workflowRuntimeConfig,
   workflowExecutionProfile,
 } from './agentRunner';
@@ -52,9 +55,13 @@ beforeEach(() => {
 
 describe('agent runtime limits', () => {
   it('uses the longer default and accepts the configurable upper limits', () => {
-    expect(normalizeAgentRuntimeConfig({})).toMatchObject({ maxCommands: 40, maxSteps: 200 });
+    expect(normalizeAgentRuntimeConfig({})).toMatchObject({
+      confirmationPolicy: 'never', pathPolicy: 'full_access', maxCommands: 40, maxSteps: 200,
+    });
     expect(normalizeAgentRuntimeConfig({ maxCommands: 200, maxSteps: 500 }))
       .toMatchObject({ maxCommands: 200, maxSteps: 500 });
+    expect(normalizeAgentRuntimeConfig({ confirmationPolicy: 'never', pathPolicy: 'scoped' }))
+      .toMatchObject({ confirmationPolicy: 'never', pathPolicy: 'scoped' });
   });
 
   it('clamps values outside the supported range', () => {
@@ -62,6 +69,16 @@ describe('agent runtime limits', () => {
       .toMatchObject({ maxCommands: 200, maxSteps: 500 });
     expect(normalizeAgentRuntimeConfig({ maxCommands: 1, maxSteps: 1 }))
       .toMatchObject({ maxCommands: 5, maxSteps: 10 });
+  });
+});
+
+describe('user-authorized workflow paths', () => {
+  it('extracts only paths explicitly written by the user from recent conversation', () => {
+    expect(extractUserAuthorizedPaths([
+      { role: 'assistant', content: '也许可以操作 /assistant/not-authorized' },
+      { role: 'user', content: '清理 `/scratch/u/old-output`，然后把 ~/project/result.txt 重跑' },
+      { role: 'user', content: '参考 https://example.com/page，不要把网址当路径' },
+    ])).toEqual(['/scratch/u/old-output', '~/project/result.txt']);
   });
 });
 
@@ -77,6 +94,9 @@ describe('agent response language', () => {
     const prompt = buildAgentSystemPrompt(config, false);
     expect(prompt).toContain('全程用中文');
     expect(prompt).toContain('用中文回答');
+    expect(prompt).not.toContain('智能体质量契约');
+    expect(prompt).not.toContain('TASK SIZING');
+    expect(prompt).not.toContain('AGENT DISCIPLINE');
   });
 
   it('requires English user-facing responses when the UI is English', () => {
@@ -125,10 +145,61 @@ describe('lightweight workflow execution mode', () => {
       ...workflowRun, status: 'running', currentStep: 2, totalSteps: 5,
       steps: [{ n: 2, title: '比对', status: 'running', scriptPath: `${workflowRun.runDir}/code/step-02.sh` }],
     });
-    expect(prompt).toContain('deterministic workflow executor');
+    expect(prompt).toContain('workflow executor');
     expect(prompt).toContain('step-02.sh');
-    expect(prompt).toContain('never recreate the plan');
+    expect(prompt).toContain('restartFromStep');
+    expect(prompt).toContain('Do not hand shell commands back to the user');
     expect(prompt.length).toBeLessThan(5_000);
+  });
+
+  it('adds an environment-repair mode section only when the run starts blocked_env', () => {
+    // v0.4.25：修复轮被停止门一轮掐断的根因修复——提示词必须显式告诉模型
+    // 直接修、修完显式翻回 running、修不了带精确 error 重新断言 blocked_env。
+    const blocked = buildWorkflowExecutorPrompt(config, workflowRun, {
+      ...workflowRun, status: 'blocked_env', error: 'phantompeakqualtools 未就绪',
+    });
+    expect(blocked).toContain('ENVIRONMENT REPAIR MODE');
+    expect(blocked).toContain('update_workflow_run(status=running)');
+    expect(blocked).toContain('登录节点');
+    const running = buildWorkflowExecutorPrompt(config, workflowRun, {
+      ...workflowRun, status: 'running', currentStep: 1, totalSteps: 5,
+      steps: [{ n: 1, title: '预检', status: 'pending' }],
+    });
+    expect(running).not.toContain('ENVIRONMENT REPAIR MODE');
+  });
+
+  it('builds a read-only inspector prompt that forbids workflow mutations and fake ETA claims', () => {
+    const prompt = buildWorkflowInspectorPrompt(workflowRun, {
+      ...workflowRun, status: 'waiting_jobs', currentStep: 3, totalSteps: 5,
+      steps: [{ n: 3, title: 'STAR 比对', status: 'running', jobIds: ['75512132'] }],
+      jobStates: { '75512132': 'PEND' },
+    });
+    expect(prompt).toContain('conversational HPC assistant');
+    expect(prompt).toContain('75512132');
+    expect(prompt).toContain('never resubmit');
+    expect(prompt).toContain('RUN/PEND totals alone cannot establish a reliable start time');
+  });
+
+  it('uses run.currentStep before a stale earlier running step', () => {
+    const selected = selectCurrentWorkflowRunStep({
+      currentStep: 3,
+      steps: [
+        { n: 2, status: 'running', title: 'stale FastQC' },
+        { n: 3, status: 'running', title: 'STAR', jobIds: ['75512132'] },
+      ],
+    });
+    expect(selected?.n).toBe(3);
+  });
+
+  it('falls forward when run.currentStep already points to a completed step', () => {
+    const selected = selectCurrentWorkflowRunStep({
+      currentStep: 2,
+      steps: [
+        { n: 2, status: 'done', title: 'FastQC' },
+        { n: 3, status: 'pending', title: 'STAR' },
+      ],
+    });
+    expect(selected?.n).toBe(3);
   });
 });
 
@@ -332,6 +403,7 @@ describe('runAgent ask_user handling', () => {
       {
         sid: 'session-1', home: '/public/home/u', run: clusterRun,
         workflowRun: { workflowId: 'wf-rna', runId: 'run-1', runDir, policy: 'isolated-run-v1' },
+        runtimeConfig: { pathPolicy: 'scoped' },
         profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
       },
       {
@@ -350,8 +422,96 @@ describe('runAgent ask_user handling', () => {
     expect(clusterRun.mock.calls.map(call => call[1]))
       .toContain(`cd '${runDir}' && echo ok > results/status.txt`);
     expect(clusterRun.mock.calls.map(call => call[1]).join('\n')).not.toContain(`ls /public/home/u > results/homescan.txt`);
-    expect(mockStreamText.mock.calls[0][0].system).toContain('not a workflow planner');
+    expect(mockStreamText.mock.calls[0][0].system).toContain('workflow executor');
+    expect(mockStreamText.mock.calls[0][0].system).toContain('Default to doing the work with tools');
     expect(Object.keys(mockStreamText.mock.calls[0][0].tools)).not.toContain('set_plan');
+  });
+
+  it('answers a workflow status question once with read-only tools and cannot ask, submit, or update', async () => {
+    const runDir = '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-inspect';
+    const authoritativeRun = {
+      runId: 'run-inspect', workflowId: 'wf-rna', workflowName: 'RNA', workflowVersion: 1,
+      runDir, workspacePolicy: 'isolated-run-v1', status: 'waiting_jobs', startedAt: 1,
+      updatedAt: 1, heartbeatAt: 1, currentStep: 3, totalSteps: 5,
+      config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [
+        { n: 2, stepId: 'step-02', title: 'FastQC', status: 'done', summary: '质控完成' },
+        { n: 3, stepId: 'step-03', title: 'STAR', status: 'running', jobIds: ['75512132'] },
+      ],
+      jobStates: { '75512132': 'PEND' },
+    };
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        expect(Object.keys(options.tools).sort()).toEqual(['get_workflow_run', 'run_command']);
+        await options.tools.run_command.execute({ command: 'bjobs -l 75512132' });
+        yield { type: 'text-delta', text: '75512132 正在排队；当前证据不足以给出可靠 ETA。' };
+      })(),
+    }));
+    const clusterRun = vi.fn(async (_sid: string, command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(authoritativeRun);
+      if (command.includes('bjobs -l 75512132')) return 'Job <75512132>, Status <PEND>, PENDING REASONS: Not enough hosts';
+      return '';
+    });
+    const visibleText: string[] = [];
+    const dones: string[] = [];
+
+    await runAgent(
+      {
+        sid: 'session-1', home: '/public/home/u', run: clusterRun,
+        workflowRun: { workflowId: 'wf-rna', runId: 'run-inspect', runDir, policy: 'isolated-run-v1' },
+        workflowTurnMode: 'inspect',
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: text => visibleText.push(text), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(), onDone: text => dones.push(text), onErr: vi.fn(), sig: () => undefined,
+      },
+      [
+        { role: 'user', content: 'STAR 作业还在排队' },
+        { role: 'assistant', content: '作业号是 75512132。' },
+        { role: 'user', content: '大概还要多久？' },
+      ],
+    );
+
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+    expect(mockStreamText.mock.calls[0][0].system).toContain('conversational HPC assistant');
+    expect(mockStreamText.mock.calls[0][0].messages).toHaveLength(3);
+    expect(visibleText.join('')).toContain('不足以给出可靠 ETA');
+    expect(dones).toEqual([expect.stringContaining('不足以给出可靠 ETA')]);
+    expect(clusterRun.mock.calls.map(call => call[1]).join('\n')).not.toMatch(/bsub|bkill|run\.json\.tmp/);
+  });
+
+  it('detaches the conversation instead of erroring forever when RUN/run.json is gone on the cluster', async () => {
+    const runDir = '/public/home/u/hpclaw_flows/atac/03_workspace/runs/run-deleted';
+    const clusterRun = vi.fn(async (_sid: string, command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) {
+        throw new Error(`cat: ${runDir}/run.json: No such file or directory`);
+      }
+      return '';
+    });
+    const errors: string[] = [];
+    const missing: string[] = [];
+
+    await runAgent(
+      {
+        sid: 'session-1', home: '/public/home/u', run: clusterRun,
+        workflowRun: { workflowId: 'wf-atac', runId: 'run-deleted', runDir, policy: 'isolated-run-v1' },
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(), onDone: vi.fn(),
+        onErr: error => errors.push(error),
+        onWorkflowRunMissing: wf => missing.push(wf.runDir),
+        sig: () => undefined,
+      },
+      [{ role: 'user', content: '回到这个文件夹：/public/home/u/RNA-seq' }],
+    );
+
+    // run.json 丢失是终态：只发解绑事件，不再走会刷屏卡死的通用错误
+    expect(missing).toEqual([runDir]);
+    expect(errors).toEqual([]);
+    expect(mockStreamText).not.toHaveBeenCalled();
   });
 
   it('keeps a formal workflow in the same request when the model tries to finish early', async () => {
@@ -667,6 +827,104 @@ describe('formal workflow command budget', () => {
   });
 });
 
+describe('formal workflow environment repair turn (blocked_env at turn start)', () => {
+  // v0.4.25 根因回归：run 以 blocked_env 进入本轮时，停止门不得把“仍是 blocked_env”
+  // 当结束信号（修复要多轮），只有 Agent 重新断言 blocked_env 或翻回 running 才收尾。
+  const runDir = '/public/home/u/hpclaw_flows/chip/03_workspace/runs/run-repair';
+
+  function setup(rounds: (round: number, options: any) => AsyncGenerator<unknown, void, unknown>) {
+    let authoritativeRun: any = {
+      runId: 'run-repair', workflowId: 'wf-chip', workflowName: 'ChIP', workflowVersion: 1,
+      runDir, workspacePolicy: 'isolated-run-v1', status: 'blocked_env', startedAt: 1,
+      updatedAt: 1, heartbeatAt: 1, currentStep: 1, totalSteps: 1,
+      error: 'phantompeakqualtools 未就绪',
+      config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [{ n: 1, stepId: 'step-01', title: '预检', status: 'pending' }],
+    };
+    let round = 0;
+    mockStreamText.mockImplementation((options: any) => {
+      const currentRound = round++;
+      return { fullStream: (async function* () { yield* rounds(currentRound, options); })() };
+    });
+    const clusterRun = vi.fn(async (_sid: string, command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(authoritativeRun);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded) {
+        authoritativeRun = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+        return '';
+      }
+      return 'ok';
+    });
+    const dones: string[] = [];
+    const errors: string[] = [];
+    const start = () => runAgent(
+      {
+        sid: 'session-1', home: '/public/home/u', run: clusterRun,
+        workflowRun: { workflowId: 'wf-chip', runId: 'run-repair', runDir, policy: 'isolated-run-v1' },
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(),
+        onDone: text => dones.push(text),
+        onErr: err => errors.push(err),
+        sig: () => undefined,
+      },
+      [{ role: 'user', content: '请直接修复 phantompeakqualtools 并继续流程。' }],
+    );
+    return { dones, errors, start, getRun: () => authoritativeRun };
+  }
+
+  it('auto-continues a repair turn instead of cutting it off after one probing round', async () => {
+    const env = setup(async function* (round, options) {
+      if (round === 0) {
+        // 第一轮只做修复动作，run 仍是 blocked_env——旧逻辑会在这里直接掐断本轮。
+        await options.tools.run_command.execute({ command: 'module load R/4.3.2' });
+        await options.tools.run_command.execute({ command: 'Rscript -e "install.packages(\'spp\')"' });
+        yield { type: 'text-delta', text: '依赖已安装，正在验证。' };
+        return;
+      }
+      // 第二轮验证通过，显式翻回 running 并完成当前步骤，流程自动判 done。
+      await options.tools.run_command.execute({ command: 'test -s run_spp.R && echo ready' });
+      await options.tools.update_workflow_run.execute({
+        runDir, status: 'running', step: { n: 1, status: 'running' },
+      });
+      await options.tools.update_workflow_run.execute({
+        runDir, step: { n: 1, status: 'done', summary: '环境修复并预检通过', evidence: ['test -s run_spp.R -> ready'] },
+      });
+      yield { type: 'text-delta', text: '环境已修复，流程已完成。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    expect(mockStreamText).toHaveBeenCalledTimes(2);
+    expect(mockStreamText.mock.calls[1][0].messages.at(-1).content).toContain('环境修复仍在进行');
+    expect(env.getRun().status).toBe('done');
+    expect(env.dones).toEqual(['环境已修复，流程已完成。']);
+    expect(env.dones[0]).not.toContain('已明确暂停');
+  });
+
+  it('ends the turn immediately when the agent re-asserts blocked_env with a precise error', async () => {
+    const env = setup(async function* (_round, options) {
+      await options.tools.run_command.execute({ command: 'timeout 8 curl -sI https://github.com' });
+      await options.tools.update_workflow_run.execute({
+        runDir, status: 'blocked_env', error: '登录节点无外网，需管理员预装 R 包 spp',
+      });
+      yield { type: 'text-delta', text: '无法自动修复：登录节点无外网，需管理员预装 R 包 spp。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+    expect(env.getRun().status).toBe('blocked_env');
+    expect(env.getRun().error).toContain('无外网');
+    expect(env.dones).toHaveLength(1);
+    expect(env.dones[0]).toContain('无法自动修复');
+  });
+});
+
 describe('web API tools (search_web_apis / call_web_api)', () => {
   const ctx = {
     sid: 'session-1',
@@ -698,25 +956,18 @@ describe('web API tools (search_web_apis / call_web_api)', () => {
     expect(prompt).toContain('标注来源');
   });
 
-  it('documents task sizing so simple lookups skip plan and verification ceremony', () => {
+  it('keeps the native prompt close to the less rigid 0.2.9 behavior', () => {
     const prompt = buildAgentSystemPrompt(normalizeAgentRuntimeConfig({}), false);
-    expect(prompt).toContain('TASK SIZING');
-    expect(prompt).toContain('禁止 set_plan');
-    expect(prompt).toContain('禁止写校验脚本');
+    expect(prompt).not.toContain('TASK SIZING');
+    expect(prompt).not.toContain('AGENT DISCIPLINE');
+    expect(prompt).not.toContain('智能体质量契约');
+    expect(prompt).toContain('TOP PRIORITY');
+    expect(prompt).toContain('THINKING PROTOCOL');
     const localZh = buildLocalWorkspacePromptSection('D:\\ws', 'zh-CN');
     expect(localZh).toContain('任务分级');
     expect(localZh).toContain('不要写校验脚本');
     const localEn = buildLocalWorkspacePromptSection('D:\\ws', 'en-US');
     expect(localEn).toContain('Task sizing');
-  });
-
-  it('documents agent discipline: observe-adapt, error recovery, pre-answer self-check', () => {
-    const prompt = buildAgentSystemPrompt(normalizeAgentRuntimeConfig({}), false);
-    expect(prompt).toContain('AGENT DISCIPLINE');
-    expect(prompt).toContain('观察-调整');
-    expect(prompt).toContain('失败恢复');
-    expect(prompt).toContain('完成前自检');
-    expect(prompt).toContain('上下文复用');
   });
 
   it('registers both tools for the general agent alongside the existing ones', async () => {
@@ -880,6 +1131,7 @@ describe('local mode (no cluster session)', () => {
     localOnly: true,
     workspace,
     confirmCommand,
+    runtimeConfig: { pathPolicy: 'scoped' as const },
   });
 
   const localCbs = (toolResults: string[]) => ({
@@ -925,7 +1177,7 @@ describe('local mode (no cluster session)', () => {
     // 系统提示含本地工作区约束段与真实工作区路径
     expect(capturedSystem).toContain('LOCAL MODE');
     expect(capturedSystem).toContain(tmpWorkspace);
-    expect(capturedSystem).toContain('只能新建文件');
+    expect(capturedSystem).toContain('已配置工作区根目录');
     expect(capturedSystem).toContain('write_local_file');
   });
 
@@ -934,7 +1186,7 @@ describe('local mode (no cluster session)', () => {
     mockStreamText.mockImplementation((options: any) => ({
       fullStream: (async function* () {
         const first = await options.tools.write_local_file.execute({ path: 'result.txt', content: 'alpha' });
-        expect(first).toContain('已新建本地文件');
+        expect(first).toContain('已写入本地文件');
         const second = await options.tools.write_local_file.execute({ path: 'result.txt', content: 'beta' });
         expect(second).toContain('文件已存在，不允许覆盖');
       })(),
@@ -944,6 +1196,40 @@ describe('local mode (no cluster session)', () => {
 
     expect(fs.readFileSync(path.join(tmpWorkspace, 'result.txt'), 'utf8')).toBe('alpha');
     expect(toolResults.some(result => result.includes('文件已存在，不允许覆盖'))).toBe(true);
+  });
+
+  it('full access can select another configured root, overwrite files, and clean task outputs without prompting', async () => {
+    const secondWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-agent-local-second-')));
+    const confirmCommand = vi.fn();
+    fs.writeFileSync(path.join(secondWorkspace, 'result.txt'), 'old');
+    fs.writeFileSync(path.join(secondWorkspace, 'cleanup.txt'), 'remove me');
+    try {
+      mockStreamText.mockImplementation((options: any) => ({
+        fullStream: (async function* () {
+          const writeResult = await options.tools.write_local_file.execute({
+            workspace: secondWorkspace, path: 'result.txt', content: 'new',
+          });
+          expect(writeResult).toContain(secondWorkspace);
+          const cleanupCommand = process.platform === 'win32' ? 'del /q cleanup.txt' : 'rm -f cleanup.txt';
+          const cleanupResult = await options.tools.run_local_command.execute({
+            workspace: secondWorkspace, command: cleanupCommand,
+          });
+          expect(cleanupResult).toContain('命令执行成功');
+        })(),
+      }));
+
+      await runAgent({
+        ...localCtx(tmpWorkspace, confirmCommand),
+        workspaces: [tmpWorkspace, secondWorkspace],
+        runtimeConfig: { pathPolicy: 'full_access' as const, confirmationPolicy: 'never' as const },
+      } as any, localCbs([]) as any, [{ role: 'user', content: '覆盖结果并清理旧文件' }]);
+
+      expect(fs.readFileSync(path.join(secondWorkspace, 'result.txt'), 'utf8')).toBe('new');
+      expect(fs.existsSync(path.join(secondWorkspace, 'cleanup.txt'))).toBe(false);
+      expect(confirmCommand).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(secondWorkspace, { recursive: true, force: true });
+    }
   });
 
   it('write_local_file rejects escape paths outside the workspace', async () => {
@@ -1002,9 +1288,9 @@ describe('local mode (no cluster session)', () => {
   it('buildLocalWorkspacePromptSection renders both locales', () => {
     const zh = buildLocalWorkspacePromptSection('D:\data', 'zh-CN');
     expect(zh).toContain('D:\data');
-    expect(zh).toContain('不能覆盖');
+    expect(zh).toContain('完全路径权限下允许覆盖已有文件');
     const en = buildLocalWorkspacePromptSection(undefined, 'en-US');
     expect(en).toContain('(not set)');
-    expect(en).toContain('only CREATE new files');
+    expect(en).toContain('existing files may be overwritten');
   });
 });

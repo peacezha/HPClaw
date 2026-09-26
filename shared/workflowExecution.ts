@@ -38,15 +38,52 @@ export function parseWorkflowExecutionContext(text: string): WorkflowExecutionCo
 /**
  * 从完整对话中恢复最近一次正式流程。调用方应在裁剪聊天窗口之前使用，
  * 避免长流程跑过多轮后最初的运行标记被传输预算丢弃。
+ * 已解绑（detached）的运行目录会被跳过：集群上 RUN/run.json 被清理后，
+ * 对话不再反复尝试恢复一个不存在的运行状态。
  */
 export function findLatestWorkflowExecutionContext(
   messages: Array<{ content?: unknown }> = [],
 ): WorkflowExecutionContext | null {
+  const detachedRunDirs = new Set<string>();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const parsed = parseWorkflowExecutionContext(String(messages[index]?.content || ''));
-    if (parsed) return parsed;
+    const content = String(messages[index]?.content || '');
+    const detached = parseWorkflowRunDetached(content);
+    if (detached) detachedRunDirs.add(detached);
+    const parsed = parseWorkflowExecutionContext(content);
+    if (parsed && !detachedRunDirs.has(parsed.runDir)) return parsed;
   }
   return null;
+}
+
+// ─── 流程运行解绑标记 ─────────────────────────────────────────────────
+// 集群上的 RUN 目录被删除/移动后，服务端回发 workflow_run_missing，前端把该标记
+// 随系统消息写入对话存档：从后往前扫描时先遇到解绑标记即跳过对应运行上下文。
+export const WORKFLOW_RUN_DETACHED_MARKER = '[HPCLAW_WORKFLOW_RUN_DETACHED]';
+
+export function formatWorkflowRunDetached(runDir: string): string {
+  return `${WORKFLOW_RUN_DETACHED_MARKER} ${JSON.stringify({ runDir: String(runDir || '') })}`;
+}
+
+/** 解析消息里的运行解绑标记，返回 runDir；没有则返回 null。 */
+export function parseWorkflowRunDetached(text: string): string | null {
+  const line = String(text || '').split(/\r?\n/).find(item => item.startsWith(`${WORKFLOW_RUN_DETACHED_MARKER} `));
+  if (!line) return null;
+  try {
+    const parsed = JSON.parse(line.slice(WORKFLOW_RUN_DETACHED_MARKER.length).trim());
+    const runDir = typeof parsed?.runDir === 'string' ? parsed.runDir.trim() : '';
+    return runDir || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 去掉消息中的所有解绑标记行，返回剩余可读文本（渲染时用）。 */
+export function stripWorkflowRunDetachedMarkers(text: string): string {
+  return String(text || '')
+    .split(/\r?\n/)
+    .filter(line => !line.trim().startsWith(WORKFLOW_RUN_DETACHED_MARKER))
+    .join('\n')
+    .trim();
 }
 
 // ─── 对话内流程配置卡标记 ─────────────────────────────────────────────

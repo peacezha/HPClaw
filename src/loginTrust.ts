@@ -13,6 +13,9 @@ export interface LoginResponse {
     success?: boolean;
     sessionId?: string;
     home?: string;
+    /** 登录探测到的调度器（lsf/slurm/pbs/none）与展示标签 */
+    scheduler?: string;
+    schedulerLabel?: string;
     code?: string;
     fingerprint?: string;
     error?: string;

@@ -8,7 +8,11 @@ import {
 import { loadNotifyConfig, saveNotifyConfig, sendNotification, type NotifyConfig } from './notifyService';
 
 interface NotifyRouteSession {
-  cluster: { exec: (cmd: string, timeout?: number) => Promise<string> };
+  cluster: {
+    exec: (cmd: string, timeout?: number) => Promise<string>;
+    /** 登录探测打标签的调度器；旧会话可能缺省 */
+    scheduler?: SchedulerType;
+  };
 }
 
 type ResolveSession = (sessionId: string | undefined) => NotifyRouteSession | undefined;
@@ -34,12 +38,32 @@ export function registerNotificationRoutes(app: Express, resolveSession: Resolve
     return session;
   };
 
+  // 对话工作台顶部的轻量状态条只需要调度器作业，不应每次轮询都额外执行 ps。
+  app.get('/api/jobs/summary', async (req, res) => {
+    const session = withSession(req, res);
+    if (!session) return;
+    try {
+      // 会话登录时已探测打标签的调度器优先；旧会话回退全局配置
+      const scheduler = session.cluster.scheduler ?? await loadSchedulerType();
+      const jobsRaw = await session.cluster.exec(jobsCommand(scheduler), 15_000);
+      res.json({
+        success: true,
+        jobs: parseJobsOutput(scheduler, jobsRaw),
+        scheduler,
+        updatedAt: Date.now(),
+      });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
   // 当前作业列表 + 当前用户的 Linux 进程
   app.get('/api/jobs', async (req, res) => {
     const session = withSession(req, res);
     if (!session) return;
     try {
-      const scheduler = await loadSchedulerType();
+      // 会话登录时已探测打标签的调度器优先；旧会话回退全局配置
+      const scheduler = session.cluster.scheduler ?? await loadSchedulerType();
       const [jobsRaw, psRaw] = await Promise.all([
         session.cluster.exec(jobsCommand(scheduler), 15_000),
         // ps 失败不阻塞作业列表

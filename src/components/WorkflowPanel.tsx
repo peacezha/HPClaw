@@ -14,6 +14,8 @@ import {
   createWorkflow, deleteWorkflow, draftWorkflow, getCachedPreflight, learnFromPaper,
   fetchWorkflowRuns, listWorkflows, mergeWorkflowRunUpdate, reconcileWorkflowRunSnapshot,
   runBelongsToWorkflow, runPreflight, updateWorkflow, type WorkflowRun,
+  listLearnDrafts, getLearnDraft, deleteLearnDraftApi, reviseLearnDraft,
+  type LearnDraftSummary,
 } from '../features/workflows/api';
 
 const RUN_STATUS: Record<string, { label: string; cls: string }> = {
@@ -52,6 +54,15 @@ const SOURCE_LABELS: Record<string, string> = {
   ai: 'AI 生成',
 };
 
+function workflowSourceLabel(workflow: Workflow): string {
+  if (workflow.provenance?.provider === 'encode-dcc') return 'ENCODE-DCC 官方包装';
+  if (workflow.provenance?.provider === 'encode-partner') return 'ENCODE 合作方协议';
+  if (workflow.provenance?.provider === 'bioskills') {
+    return `BioSkills v${workflow.provenance.importerVersion}${workflow.provenance.customized ? ' · 已自定义' : ''}`;
+  }
+  return SOURCE_LABELS[workflow.source] || workflow.source;
+}
+
 /** 未设置分类的流程归入的展示分组 */
 const UNCATEGORIZED_CATEGORY = '其他';
 
@@ -77,6 +88,8 @@ type EditorState = {
   manifest?: FlowManifest;
   /** 文献导入证据与质量审计；保存后仍可追溯。 */
   paperImport?: WorkflowPaperImport;
+  /** 文献学习草稿箱条目 id：编辑器内容来自持久化草稿，可找回、可与 AI 交流修订 */
+  learnDraftId?: string;
   source?: Workflow['source'];
 };
 
@@ -109,10 +122,16 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   const [drafting, setDrafting] = useState(false);
   const [learnMode, setLearnMode] = useState(false);
   const [learnDoi, setLearnDoi] = useState('');
+  const [learnPasteText, setLearnPasteText] = useState('');
   const [learning, setLearning] = useState(false);
   const [learnStatus, setLearnStatus] = useState('');
   const [learnNotice, setLearnNotice] = useState<LearnNotice | null>(null);
   const [paperReviewConfirmed, setPaperReviewConfirmed] = useState(false);
+  // 文献学习草稿箱：学习内容持久化在服务端，切走页面也能找回
+  const [learnDrafts, setLearnDrafts] = useState<LearnDraftSummary[]>([]);
+  const [reviseText, setReviseText] = useState('');
+  const [revising, setRevising] = useState(false);
+  const [reviseNote, setReviseNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(() => !!socket?.connected);
@@ -202,7 +221,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
     onOpenRunner(w);
   };
 
-  // 让 AI 补齐缺失项（安装软件/下载参考数据，AI 会先征得用户同意）
+  // 让 AI 补齐缺失项（安装软件/下载参考数据，直接修复；只有真正需要抉择才询问）
   const handleProvision = (w: Workflow, result: PreflightResult) => {
     const missing = [
       ...result.software.filter(i => !i.ok && i.required).map(i => `软件「${i.name}」：${i.detail || '缺失'}`),
@@ -212,8 +231,8 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       `流程「${w.name}」（ID: ${w.id}）预检发现以下必需项未就绪：`,
       ...missing.map(m => `- ${m}`),
       '',
-      '请帮我补齐：先告诉我你的方案（安装哪个 module/包、参考数据放哪里），征得我同意后再操作；',
-      '注意：下载和安装只能在登录节点进行（计算节点无网络）。补齐后请重新核查并更新预检结果。',
+      '请直接修复，不用先报方案等我确认：优先 module load 或安装到流程家目录（或你判断的合适位置）；下载和安装只能在登录节点进行（计算节点无网络）。',
+      '每项修复后用一条精确命令验证，全部完成后重新核查并更新预检结果；只有确实需要我抉择时才 ask_user。',
       `流程家目录：~/hpclaw_flows/（软件清单见 01_software/manifest.json，参考数据清单见 02_reference/manifest.json）`,
     ];
     onUseWorkflow(lines.join('\n'));
@@ -296,6 +315,10 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       };
       if (editor.id) await updateWorkflow(editor.id, payload);
       else await createWorkflow(payload);
+      // 学习草稿已正式入库：从草稿箱移除对应条目（未保存的草稿仍留在草稿箱可找回）
+      if (editor.learnDraftId) {
+        void deleteLearnDraftApi(editor.learnDraftId).catch(() => { /* 清理失败不影响保存 */ });
+      }
       setEditor(null);
       setLearnNotice(null);
       await refresh();
@@ -333,7 +356,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
     }
   };
 
-  /** 把学习到的流程草稿装进编辑器 */
+  /** 把学习到的流程草稿装进编辑器；draftId 指向服务端草稿箱条目（可找回/可修订） */
   const openLearnedDraft = (
     draft: Partial<Workflow>,
     notice?: {
@@ -341,6 +364,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       softwareCheck: Array<{ name: string; status: string; hit?: string }>;
       paperImport: WorkflowPaperImport;
     },
+    learnDraftId?: string,
   ) => {
     setEditor({
       name: draft.name || '',
@@ -350,6 +374,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       steps: draft.steps?.length ? draft.steps : [{ title: '', command: '' }],
       manifest: draft.manifest,
       paperImport: notice?.paperImport || draft.paperImport,
+      learnDraftId,
       source: 'ai',
     });
     if (notice) {
@@ -376,9 +401,10 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
     setError('');
     setLearnStatus('正在解析 DOI 并获取全文…');
     try {
-      const { draft, source, paperChars, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ doi: learnDoi.trim() }, aiProfile);
-      setLearnStatus(`已学习 ${source}（${Math.round(paperChars / 1000)}k 字符）`);
-      openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport });
+      const { draft, draftId, source, paperChars, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ doi: learnDoi.trim() }, aiProfile);
+      setLearnStatus(`已学习 ${source}（${Math.round(paperChars / 1000)}k 字符），草稿已保存到学习草稿箱`);
+      openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport }, draftId || undefined);
+      void refreshLearnDrafts();
     } catch (e: any) {
       setLearnStatus('');
       setError(e.message || '文献学习失败');
@@ -412,13 +438,98 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       const paperText = parts.join('\n');
       if (paperText.length < 800) throw new Error('PDF 提取的文本太少（可能是扫描件图片型 PDF）');
       setLearnStatus(`已提取 ${Math.round(paperText.length / 1000)}k 字符，AI 学习中…`);
-      const { draft, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ paperText }, aiProfile);
-      openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport });
+      const { draft, draftId, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ paperText }, aiProfile);
+      openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport }, draftId || undefined);
+      void refreshLearnDrafts();
     } catch (e: any) {
       setLearnStatus('');
       setError(e.message || 'PDF 学习失败');
     } finally {
       setLearning(false);
+    }
+  };
+
+  // 从粘贴的方法学文本学习：只贴生信分析部分可避免湿实验内容混入流程
+  const handleLearnPaste = async () => {
+    const text = learnPasteText.trim();
+    if (text.length < 100 || !aiProfile.apiKey) return;
+    setLearning(true);
+    setError('');
+    setLearnStatus('AI 正在从粘贴文本学习…');
+    try {
+      const { draft, draftId, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ paperText: text, pasteSource: 'paste' }, aiProfile);
+      setLearnStatus(`已学习粘贴文本（${Math.round(text.length / 1000)}k 字符），草稿已保存到学习草稿箱`);
+      openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport }, draftId || undefined);
+      void refreshLearnDrafts();
+    } catch (e: any) {
+      setLearnStatus('');
+      setError(e.message || '粘贴文本学习失败');
+    } finally {
+      setLearning(false);
+    }
+  };
+
+  // ─── 学习草稿箱：持久化在学习面板，切走页面后仍可找回 ───
+  const refreshLearnDrafts = useCallback(async () => {
+    try {
+      setLearnDrafts(await listLearnDrafts());
+    } catch { /* 草稿箱读取失败不影响主流程 */ }
+  }, []);
+
+  useEffect(() => {
+    if (learnMode) void refreshLearnDrafts();
+  }, [learnMode, refreshLearnDrafts]);
+
+  const openSavedLearnDraft = async (id: string) => {
+    setError('');
+    try {
+      const entry = await getLearnDraft(id);
+      openLearnedDraft(entry.draft, undefined, entry.id);
+      setLearnNotice(null);
+      setLearnMode(false);
+      setReviseNote('');
+      setReviseText('');
+    } catch (e: any) {
+      setError(e.message || '打开学习草稿失败');
+    }
+  };
+
+  const removeLearnDraft = async (id: string) => {
+    try {
+      await deleteLearnDraftApi(id);
+      setLearnDrafts(list => list.filter(item => item.id !== id));
+    } catch (e: any) {
+      setError(e.message || '删除学习草稿失败');
+    }
+  };
+
+  /** 与 AI 交流修订：把用户的修改意见发给服务端，草稿箱条目原地更新 */
+  const handleRevise = async () => {
+    if (!editor?.learnDraftId || !reviseText.trim() || !aiProfile.apiKey) return;
+    setRevising(true);
+    setError('');
+    setReviseNote('');
+    try {
+      const { draft, revisionNote, paperImport } = await reviseLearnDraft(editor.learnDraftId, reviseText.trim(), aiProfile);
+      setEditor({
+        ...editor,
+        name: draft.name ?? editor.name,
+        description: draft.description ?? editor.description,
+        keywords: (draft.keywords || []).join(', '),
+        params: draft.params || [],
+        steps: draft.steps?.length ? draft.steps : editor.steps,
+        manifest: draft.manifest ?? editor.manifest,
+        paperImport: paperImport || editor.paperImport,
+      });
+      setReviseNote(revisionNote || '已按反馈修订，请复核改动。');
+      setReviseText('');
+      // 修订会改变审计结论，要求重新勾选复核
+      setPaperReviewConfirmed(false);
+      void refreshLearnDrafts();
+    } catch (e: any) {
+      setError(e.message || '修订失败，草稿保持原样');
+    } finally {
+      setRevising(false);
     }
   };
 
@@ -439,6 +550,24 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
           <button onClick={() => { setEditor(null); setLearnNotice(null); }} className="btn-icon" aria-label="返回"><X className="w-4 h-4" /></button>
         </div>
         {error && <p className="text-xs text-red-600 flex items-center gap-1 shrink-0"><AlertCircle className="w-3 h-3" />{error}</p>}
+        {editor.learnDraftId && (
+          <div className="rounded-lg border border-accent/25 bg-accent/5 p-2.5 space-y-1.5 shrink-0">
+            <p className="text-[11px] font-medium text-scholar-200 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-accent" /> 学的不对？告诉 AI 哪里改（草稿已存草稿箱，随时可找回）
+            </p>
+            <textarea value={reviseText} onChange={e => setReviseText(e.target.value)} rows={2}
+              placeholder="例如：第 3 步不应该用 SPP，改成 MACS2 callpeak；或：比对步骤加上 MAPQ≥30 过滤"
+              className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-accent/50 resize-none" />
+            <div className="flex items-center gap-2">
+              <button onClick={() => void handleRevise()} disabled={revising || !reviseText.trim() || !aiProfile.apiKey}
+                className="btn-primary !px-2.5 !py-1 !text-[11px]">
+                {revising ? <><Loader2 className="w-3 h-3 animate-spin" /> 修订中…</> : '让 AI 修改'}
+              </button>
+              {reviseNote && <span className="text-[10px] text-emerald-500">{reviseNote}</span>}
+            </div>
+            <p className="text-[10px] text-scholar-500">只改你指出的问题，其余步骤原样保留；修订后质量审计会重新计算，需重新勾选复核。</p>
+          </div>
+        )}
         {learnNotice && (
           <div className="text-[11px] rounded-lg border border-accent/20 bg-accent/5 p-2 space-y-0.5 shrink-0">
             {learnNotice.repoUsed && (
@@ -852,8 +981,43 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             </label>
             {learnStatus && <span className="text-[10px] text-scholar-400">{learnStatus}</span>}
           </div>
+          {/* 直接粘贴方法学文本：只贴生信分析部分，避免整篇投喂带入湿实验步骤 */}
+          <details className="rounded-md bg-scholar-950/60 px-2 py-1.5">
+            <summary className="text-[10px] text-scholar-400 cursor-pointer select-none">或直接粘贴方法学文本（推荐：只贴生信分析部分，湿实验操作会自动排除）</summary>
+            <textarea value={learnPasteText} onChange={e => setLearnPasteText(e.target.value)} rows={4}
+              placeholder="粘贴论文中数据分析相关的 Methods 段落（英文原文即可）…"
+              className="mt-1.5 w-full bg-scholar-950 border border-scholar-600 rounded-lg px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-accent/50 resize-y" />
+            <button onClick={() => void handleLearnPaste()} disabled={learning || learnPasteText.trim().length < 100 || !aiProfile.apiKey}
+              className="btn-primary !px-2.5 !py-1 !text-[11px] mt-1">
+              {learning ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />} 从粘贴文本学习
+            </button>
+          </details>
           <p className="text-[10px] text-scholar-500">DOI 优先取 PMC 开放全文；非开放论文请上传 PDF（最多 50 页）。低可信步骤、未匹配工具和缺失参数会明确标出，必须人工确认后才能保存。</p>
           {!aiProfile.apiKey && <p className="text-[10px] text-scholar-400">需要先在 AI 设置里配置 API Key</p>}
+          {/* 学习草稿箱：每次学习自动存档；点错/切走页面后可从这里找回继续编辑或修订 */}
+          {learnDrafts.length > 0 && (
+            <div className="border-t border-accent/15 pt-2 space-y-1">
+              <p className="text-[10px] font-medium text-scholar-400">学习草稿箱（自动保存，最多保留 20 条）：</p>
+              {learnDrafts.map(item => (
+                <div key={item.id} className="flex items-center gap-1.5 rounded-md bg-scholar-950/70 px-2 py-1">
+                  <button type="button" onClick={() => void openSavedLearnDraft(item.id)}
+                    className="flex-1 min-w-0 text-left" title="打开继续编辑/修订">
+                    <span className="block text-[11px] text-scholar-200 truncate">{item.name}</span>
+                    <span className="block text-[9px] text-scholar-500 truncate">
+                      {new Date(item.updatedAt).toLocaleString()} · {item.stepCount} 步
+                      {typeof item.qualityScore === 'number' ? ` · ${item.qualityScore}/100` : ''}
+                      {item.revisionNotes.length > 0 ? ` · 已修订 ${item.revisionNotes.length} 次` : ''}
+                      {item.doi ? ` · DOI ${item.doi}` : ''}
+                    </span>
+                  </button>
+                  <button type="button" onClick={() => void removeLearnDraft(item.id)}
+                    className="btn-icon !p-1 shrink-0" title="删除这条草稿">
+                    <Trash2 className="w-3 h-3 text-scholar-500 hover:text-red-500" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -900,9 +1064,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-medium text-scholar-100 truncate">{w.name}</span>
                   <span className="text-[9px] px-1 rounded bg-accent/10 text-accent shrink-0">
-                    {w.provenance?.provider === 'bioskills'
-                      ? `BioSkills v${w.provenance.importerVersion}${w.provenance.customized ? ' · 已自定义' : ''}`
-                      : SOURCE_LABELS[w.source] || w.source}
+                    {workflowSourceLabel(w)}
                   </span>
                   <span className="text-[9px] text-scholar-500 shrink-0">{w.steps.length} 步</span>
                   {w.paperImport && (
@@ -973,6 +1135,17 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                   </div>
                   <code className="block mt-1 text-[9px] text-scholar-500 break-all">~/hpclaw_flows/{workflowSlug(w.name)}/</code>
                 </div>
+                {w.provenance?.sourceUrl && (
+                  <div className="rounded-md border border-sky-500/20 bg-sky-500/5 px-2 py-1.5 text-[9px] text-scholar-400">
+                    <p className="flex items-center gap-1">
+                      <BookOpen className="w-3 h-3 text-sky-500 shrink-0" />
+                      <span className="text-scholar-300">{workflowSourceLabel(w)}</span>
+                      <a href={w.provenance.sourceUrl} target="_blank" rel="noreferrer" className="ml-auto text-accent hover:underline">查看上游源码</a>
+                    </p>
+                    <p className="mt-0.5 break-all">固定版本：{w.provenance.sourceRef || '未记录'}</p>
+                    {w.provenance.upstreamWorkflow && <p className="break-all">入口：{w.provenance.upstreamWorkflow}</p>}
+                  </div>
+                )}
                 <button onClick={() => handleUse(w)} className="btn-primary w-full !text-xs mt-1.5">
                   <Play className="w-3 h-3" /> 选择数据并运行
                 </button>

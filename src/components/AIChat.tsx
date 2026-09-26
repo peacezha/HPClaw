@@ -38,9 +38,11 @@ import {
 import {
   findLatestWorkflowExecutionContext,
   formatWorkflowConfigureDirective,
+  formatWorkflowRunDetached,
   parseWorkflowConfigureDirective,
   parseWorkflowExecutionContext,
   stripWorkflowConfigureDirectives,
+  stripWorkflowRunDetachedMarkers,
 } from '@/shared/workflowExecution';
 import { closeSseReader, type SseReaderCloseReason } from '../services/sseReaderLifecycle';
 import { prepareAiRequestBody } from '../services/aiRequestBody';
@@ -59,11 +61,12 @@ import {
   saveAgentSettings,
   type AgentEnginePreference,
   type AgentConfirmationPolicy,
+  type AgentPathPolicy,
   type AgentPlanningPolicy,
 } from '../services/agentSettings';
 import {
-  loadAgentWorkspace,
-  saveAgentWorkspace,
+  loadAgentWorkspaces,
+  saveAgentWorkspaces,
   clearAgentWorkspace,
   needsAgentWorkspaceHint,
 } from '../services/agentWorkspace';
@@ -130,10 +133,14 @@ interface AIChatProps {
   workspaceTargetLabel?: string;
   workspaceTargetConnected?: boolean;
   onOpenComputeBackend?: () => void;
+  /** 主对话标题栏下方的集群任务概览。由 App 提供，避免 AIChat 承担作业领域状态。 */
+  jobStatusBar?: React.ReactNode;
   /** 打开右侧网页栏：http(s) 链接或集群远程 HTML（report.html 等） */
   onOpenWebPanel?: (request: WebPanelRequest) => void;
   /** 启动流程运行：交给 App 开该次运行专属的对话执行（避免串对话）；缺省时回退为当前对话内执行 */
   onStartWorkflowRun?: (message: string) => void;
+  /** 提交前确保对话已入存档并返回 id：后台运行（detached）要凭 conversationId 回写结果 */
+  onEnsureConversation?: (messages: Message[]) => Promise<string | null>;
 }
 
 //  Provider defaults 
@@ -279,8 +286,9 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
 
   if (msg.role === 'system') {
     // Filter noisy system messages
-    const text = msg.content || '';
-    if (!shouldRenderSystemMessage(text)) {
+    // 流程解绑标记（[HPCLAW_WORKFLOW_RUN_DETACHED]…）是协议行，不展示原始文本
+    const text = stripWorkflowRunDetachedMarkers(msg.content || '');
+    if (!text || !shouldRenderSystemMessage(text)) {
       return null; // Don't render noisy progress messages
     }
     return (
@@ -442,10 +450,12 @@ function AgentSettingsFields({
   onEngineChange,
   planningPolicy,
   confirmationPolicy,
+  pathPolicy,
   maxCommands,
   maxSteps,
   onPlanningPolicyChange,
   onConfirmationPolicyChange,
+  onPathPolicyChange,
   onMaxCommandsChange,
   onMaxStepsChange,
 }: {
@@ -453,10 +463,12 @@ function AgentSettingsFields({
   onEngineChange: (value: AgentEnginePreference) => void;
   planningPolicy: AgentPlanningPolicy;
   confirmationPolicy: AgentConfirmationPolicy;
+  pathPolicy: AgentPathPolicy;
   maxCommands: number;
   maxSteps: number;
   onPlanningPolicyChange: (value: AgentPlanningPolicy) => void;
   onConfirmationPolicyChange: (value: AgentConfirmationPolicy) => void;
+  onPathPolicyChange: (value: AgentPathPolicy) => void;
   onMaxCommandsChange: (value: number) => void;
   onMaxStepsChange: (value: number) => void;
 }) {
@@ -489,9 +501,18 @@ function AgentSettingsFields({
         </select>
       </div>
       <div>
+        <label className="block text-xs text-scholar-300 mb-1">集群路径权限</label>
+        <select value={pathPolicy} onChange={e => onPathPolicyChange(e.target.value as AgentPathPolicy)} className={fieldClass}>
+          <option value="full_access">全部路径 / 多路径（推荐）</option>
+          <option value="scoped">仅流程与明确指定路径</option>
+        </select>
+        <p className="mt-1 text-[10px] text-scholar-500">全部路径模式允许 AI 在同一任务中切换、复制和处理 SSH 账号可访问的多个目录。</p>
+      </div>
+      <div>
         <label className="block text-xs text-scholar-300 mb-1">执行前确认</label>
         <select value={confirmationPolicy} onChange={e => onConfirmationPolicyChange(e.target.value as AgentConfirmationPolicy)} className={fieldClass}>
-          <option value="dangerous">高风险与联网操作（推荐）</option>
+          <option value="dangerous">仅高风险操作（推荐）</option>
+          <option value="never">完全自动（不弹确认）</option>
           <option value="state_changes">写入、联网、提交作业都确认</option>
           <option value="every_command">每条命令都确认</option>
         </select>
@@ -512,7 +533,7 @@ function AgentSettingsFields({
 // 
 // AIChat Component
 // 
-export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSkillsChange, messages, onMessagesChange, onNewChat, triggerAI, activeConversationId, conversationContextId, loadingConversationId, onSaveToCluster, aiClusterControl, conversationSummary, onPickRemoteFolder, onOpenRemoteFolder, workspaceLayout = false, workspaceTargetLabel, workspaceTargetConnected = false, onOpenComputeBackend, onOpenWebPanel, onStartWorkflowRun }: AIChatProps) {
+export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSkillsChange, messages, onMessagesChange, onNewChat, triggerAI, activeConversationId, conversationContextId, loadingConversationId, onSaveToCluster, aiClusterControl, conversationSummary, onPickRemoteFolder, onOpenRemoteFolder, workspaceLayout = false, workspaceTargetLabel, workspaceTargetConnected = false, onOpenComputeBackend, jobStatusBar, onOpenWebPanel, onStartWorkflowRun, onEnsureConversation }: AIChatProps) {
   const { locale, isEnglish, t } = useI18n();
   // AI Config
   // 惰性初始化：localStorage 同步读取 + JSON.parse 仅在挂载时执行一次；
@@ -528,6 +549,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   );
   const [agentPlanningPolicy, setAgentPlanningPolicy] = useState<AgentPlanningPolicy>(initialAgentSettings.planningPolicy);
   const [agentConfirmationPolicy, setAgentConfirmationPolicy] = useState<AgentConfirmationPolicy>(initialAgentSettings.confirmationPolicy);
+  const [agentPathPolicy, setAgentPathPolicy] = useState<AgentPathPolicy>(initialAgentSettings.pathPolicy);
   const [agentMaxCommands, setAgentMaxCommands] = useState(initialAgentSettings.maxCommands);
   const [agentMaxSteps, setAgentMaxSteps] = useState(initialAgentSettings.maxSteps);
   const [isAiSetup, setIsAiSetup] = useState(!!initialProfile.apiKey);
@@ -551,7 +573,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   // Agent 本地工作区：dsh 引擎本地工具的落点目录（随 agent 请求体发给服务端）
-  const [agentWorkspace, setAgentWorkspace] = useState(() => loadAgentWorkspace());
+  const [agentWorkspaces, setAgentWorkspaces] = useState<string[]>(() => loadAgentWorkspaces());
+  const agentWorkspace = agentWorkspaces[0] || '';
   const [workspaceError, setWorkspaceError] = useState('');
 
   const handlePickAgentWorkspace = useCallback(async () => {
@@ -563,29 +586,38 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       const stat = await desktop.localFiles.stat(picked);
       if (stat.kind !== 'directory') throw new Error('not a directory');
       setWorkspaceError('');
-      setAgentWorkspace(saveAgentWorkspace(picked));
+      setAgentWorkspaces(saveAgentWorkspaces([...agentWorkspaces, picked]));
     } catch {
       setWorkspaceError(t('所选路径不是有效文件夹'));
     }
-  }, [t]);
+  }, [agentWorkspaces, t]);
 
   const handleClearAgentWorkspace = useCallback(() => {
     clearAgentWorkspace();
-    setAgentWorkspace('');
+    setAgentWorkspaces([]);
     setWorkspaceError('');
   }, []);
+
+  const handleRemoveAgentWorkspace = useCallback((workspace: string) => {
+    const next = agentWorkspaces.filter(item => item !== workspace);
+    if (next.length > 0) setAgentWorkspaces(saveAgentWorkspaces(next));
+    else {
+      clearAgentWorkspace();
+      setAgentWorkspaces([]);
+    }
+  }, [agentWorkspaces]);
 
   // 纯 Web 开发环境没有桌面目录选择器，也无法校验路径，blur 时原样保存
   const handleWorkspaceInputBlur = useCallback((value: string) => {
     const trimmed = value.trim();
     if (trimmed) {
-      setAgentWorkspace(saveAgentWorkspace(trimmed));
+      const added = trimmed.split(/[;\n]+/).map(item => item.trim()).filter(Boolean);
+      setAgentWorkspaces(saveAgentWorkspaces([...agentWorkspaces, ...added]));
     } else {
-      clearAgentWorkspace();
-      setAgentWorkspace('');
+      setAgentWorkspaces(agentWorkspaces);
     }
     setWorkspaceError('');
-  }, []);
+  }, [agentWorkspaces]);
 
   //  对话附件：仅保存路径引用，发送时把路径追加进消息文本 
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -681,16 +713,18 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       engine: IS_COMPETITION_EDITION ? 'native' : agentEngine,
       planningPolicy: agentPlanningPolicy,
       confirmationPolicy: agentConfirmationPolicy,
+      pathPolicy: agentPathPolicy,
       maxCommands: agentMaxCommands,
       maxSteps: agentMaxSteps,
     });
     setAgentEngine(agentSettings.engine);
     setAgentPlanningPolicy(agentSettings.planningPolicy);
     setAgentConfirmationPolicy(agentSettings.confirmationPolicy);
+    setAgentPathPolicy(agentSettings.pathPolicy);
     setAgentMaxCommands(agentSettings.maxCommands);
     setAgentMaxSteps(agentSettings.maxSteps);
     pushAiProfileToServer(saved);
-  }, [aiProvider, aiModel, aiApiKey, aiBaseUrl, agentEngine, agentPlanningPolicy, agentConfirmationPolicy, agentMaxCommands, agentMaxSteps, pushAiProfileToServer]);
+  }, [aiProvider, aiModel, aiApiKey, aiBaseUrl, agentEngine, agentPlanningPolicy, agentConfirmationPolicy, agentPathPolicy, agentMaxCommands, agentMaxSteps, pushAiProfileToServer]);
 
   // 启动时同步一次已有配置，保证服务端（QQ 机器人）开箱即用
   useEffect(() => {
@@ -708,6 +742,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const agentReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const aiRunIdRef = useRef(0);
   const aiRunningRef = useRef(false); // ref guard — avoids stale isAiLoading races
+  const aiRequestIdRef = useRef(''); // 服务端在 SSE 事件里下发的 requestId，用于后台运行管理
   const stoppedByUserRef = useRef(false); // distinguish user stop from timeout abort
   const lastUserTextRef = useRef(''); // 最近一次提交的用户输入，断流重试用
   const agentPlanRef = useRef<any>(null); // ask_user/断线后的跨轮结构化计划
@@ -806,10 +841,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     else if (!aiRunningRef.current) agentPlanRef.current = null;
   }, [activeConversationId, messages]);
 
-  // 组件卸载（切换集群标签页触发重挂载）时中止在途的 AI 流式请求
+  // 组件卸载（切换对话/计算目标/视图触发重挂载）时只安静断开连接：
+  // 服务端会把带 conversationId 的运行转为后台 detached 继续执行，
+  // 终态自动回写对话存档；回到该对话时由 attach 机制接续显示。
   useEffect(() => {
     return () => {
-      abortRef.current?.abort();
       if (agentReaderRef.current) {
         void closeSseReader(agentReaderRef.current, 'stale-run');
         agentReaderRef.current = null;
@@ -946,6 +982,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     setStreamingContent('');
     setAiStatus(workflowRunContext ? '正在恢复流程进度…' : '正在连接 HPClaw Agent…');
 
+    // 后台运行（detached）要凭 conversationId 回写对话存档：新对话先落库拿 id 再发请求，
+    // 否则用户在任务中途切走时服务端无法归属这次运行
+    const ensuredConversationId = activeConversationId
+      || (onEnsureConversation ? await onEnsureConversation(requestMessages).catch(() => null) : null)
+      || undefined;
+
     let fullText = '';
     let fullReasoning = '';
     let lastPreviewUpdateAt = 0;
@@ -972,6 +1014,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           engine: IS_COMPETITION_EDITION ? 'native' : agentEngine,
           planningPolicy: agentPlanningPolicy,
           confirmationPolicy: agentConfirmationPolicy,
+          pathPolicy: agentPathPolicy,
           maxCommands: agentMaxCommands,
           maxSteps: agentMaxSteps,
         },
@@ -979,7 +1022,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
         workflowRunContext: workflowRunContext || undefined,
         locale,
         workspace: agentWorkspace || undefined,
-        conversationId: activeConversationId || undefined,
+        workspaces: agentWorkspaces.length > 0 ? agentWorkspaces : undefined,
+        conversationId: ensuredConversationId,
         conversationContextId: conversationContextId || undefined,
       };
       const { body: reqBody, headers } = await prepareAiRequestBody(reqPayload);
@@ -1066,6 +1110,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
           try {
             const event = JSON.parse(trimmed.slice(6));
+            if (typeof event.requestId === 'string' && event.requestId) aiRequestIdRef.current = event.requestId;
 
             switch (event.type) {
               case 'status':
@@ -1094,7 +1139,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   const args = typeof event.args === 'string' ? event.args : JSON.stringify(event.args);
                   const command = (event.args as { command?: string })?.command || args;
                   addMessage({ role: 'system', content: `[AI 执行命令] ${command}` });
-                } else {
+                } else if (event.name !== 'ask_user') {
                   addMessage({
                     role: 'system',
                     content: `[🔧 ${event.name}] ${typeof event.args === 'string' ? event.args : JSON.stringify(event.args)}`,
@@ -1108,7 +1153,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                     role: 'system',
                     content: `[命令输出已隐藏]\n${(event.result || '').slice(0, 500)}`,
                   });
-                } else {
+                } else if (event.name !== 'ask_user') {
                   // validate_dsh_ui 的 UI spec JSON 需要完整可解析才能渲染成卡片，放宽截断
                   const toolResultLimit = event.name === 'validate_dsh_ui' ? 4000 : 500;
                   addMessage({
@@ -1216,6 +1261,22 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 setIsStreaming(false);
                 setAiStatus('SSH 主连接已断开');
                 break;
+              case 'workflow_run_missing': {
+                // 集群上的 RUN 目录/run.json 已被清理或移动：写入解绑标记（隐藏行），
+                // 之后 findLatestWorkflowExecutionContext 不再把本对话绑回这个死运行，
+                // 用户的新指令直接按普通对话处理，不再每轮重复同一个报错。
+                const goneRunDir = String(event.runDir || '');
+                const note = isEnglish
+                  ? `⚠️ The workflow run state no longer exists on the cluster (run.json under ${goneRunDir} is missing — the directory was probably cleaned up or moved). This conversation has left workflow execution mode; new messages will run as a normal chat.`
+                  : `⚠️ 流程运行状态在集群上已不存在（${goneRunDir} 下的 run.json 丢失，目录可能已被清理或移动）。本对话已退出流程执行模式，之后的消息将按普通对话处理。`;
+                addMessage({ role: 'system', content: `${formatWorkflowRunDetached(goneRunDir)}\n${note}` });
+                aiRunningRef.current = false;
+                if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
+                setIsStreaming(false);
+                setStreamingContent('');
+                setAiStatus(isEnglish ? 'Workflow run detached' : '已退出流程执行模式');
+                break;
+              }
               case 'error':
                 addMessage({ role: 'system', content: `[❌ Error] ${event.error}` });
                 setErrorMessage(String(event.error || 'AI 请求出错'));
@@ -1271,6 +1332,141 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     }
   };
 
+  // ─── 后台运行接续 ────────────────────────────────────────────────
+  // 回到一个仍在后台运行的对话时，attach 到服务端缓冲流：先重放脱连期间
+  // 的事件，再实时接收后续；终态后服务端关闭连接。
+  const attachToRun = async (requestId: string, runId: number) => {
+    stoppedByUserRef.current = false;
+    aiRunningRef.current = true;
+    setIsAiLoading(true);
+    setIsStreaming(true);
+    setAiStatus('正在恢复后台任务…');
+    let fullText = '';
+    let lastPreviewUpdateAt = 0;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+      const response = await fetch(`/api/ai/stream/attach?requestId=${encodeURIComponent(requestId)}`, {
+        headers: sessionId ? { 'X-SSH-Session-Id': sessionId } : {},
+      });
+      if (!response.ok || !response.body) return;
+      reader = response.body.getReader();
+      agentReaderRef.current = reader;
+      aiRequestIdRef.current = requestId;
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        if (!isCurrentAiRun(aiRunIdRef.current, runId)) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(trimmedLine.slice(6));
+            switch (event.type) {
+              case 'status':
+                if (event.message) setAiStatus(String(event.message));
+                break;
+              case 'content':
+                fullText += event.content;
+                if (Date.now() - lastPreviewUpdateAt >= 50) {
+                  lastPreviewUpdateAt = Date.now();
+                  setStreamingContent(fullText);
+                }
+                setAiStatus('AI 正在组织结果…');
+                break;
+              case 'tool_call':
+                setAiStatus(`AI 正在使用 ${event.name || '工具'}…`);
+                break;
+              case 'done': {
+                aiRunningRef.current = false;
+                aiRequestIdRef.current = '';
+                if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
+                setIsStreaming(false);
+                setStreamingContent('');
+                // detached 运行的终态由服务端追加进对话存档：这里重新拉取，
+                // 避免与服务端回写重复；拉取失败才退回本地追加
+                const fallbackText = fullText.trim() || String(event.content || '');
+                const convId = activeConversationId;
+                void (async () => {
+                  await new Promise(r => setTimeout(r, 400));
+                  try {
+                    const res = await fetch(`/api/conversations/${convId}`, {
+                      credentials: 'include' as RequestCredentials,
+                      headers: sessionId ? { 'X-SSH-Session-Id': sessionId } : {},
+                    });
+                    const data = await res.json();
+                    if (data?.success && Array.isArray(data.conversation?.messages)) {
+                      onMessagesChange(data.conversation.messages.filter(
+                        (m: any) => m && ['system', 'user', 'assistant'].includes(m.role) && typeof m.content === 'string',
+                      ));
+                      return;
+                    }
+                  } catch { /* fall through to local append */ }
+                  if (fallbackText) addMessage({ role: 'assistant', content: fallbackText });
+                })();
+                setAiStatus('AI 已完成');
+                break;
+              }
+              case 'error':
+                aiRunningRef.current = false;
+                aiRequestIdRef.current = '';
+                if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
+                setIsStreaming(false);
+                setStreamingContent('');
+                addMessage({ role: 'system', content: `[❌ Error] ${event.error}` });
+                break;
+              case 'workflow_run_missing': {
+                const goneRunDir = String(event.runDir || '');
+                const note = isEnglish
+                  ? `⚠️ The workflow run state no longer exists on the cluster (run.json under ${goneRunDir} is missing). This conversation has left workflow execution mode.`
+                  : `⚠️ 流程运行状态在集群上已不存在（${goneRunDir} 下的 run.json 丢失）。本对话已退出流程执行模式，之后的消息将按普通对话处理。`;
+                addMessage({ role: 'system', content: `${formatWorkflowRunDetached(goneRunDir)}\n${note}` });
+                aiRunningRef.current = false;
+                if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
+                setIsStreaming(false);
+                break;
+              }
+              default:
+                break;
+            }
+          } catch { /* skip malformed SSE lines */ }
+        }
+      }
+    } catch { /* attach 失败静默：对话存档里已有/将有结果 */ }
+    if (reader) {
+      agentReaderRef.current = null;
+      await closeSseReader(reader, 'completed');
+    }
+    if (isCurrentAiRun(aiRunIdRef.current, runId)) {
+      setIsStreaming(false);
+      setStreamingContent('');
+    }
+  };
+
+  // 回到某对话时若它有后台运行，自动 attach 接续显示
+  useEffect(() => {
+    if (!activeConversationId || aiRunningRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/ai/active?conversationId=${encodeURIComponent(activeConversationId)}`, {
+          credentials: 'include' as RequestCredentials,
+          headers: sessionId ? { 'X-SSH-Session-Id': sessionId } : {},
+        });
+        const data = await res.json();
+        if (cancelled || !data?.success || !data.running || !data.requestId) return;
+        const runId = ++aiRunIdRef.current;
+        await attachToRun(String(data.requestId), runId);
+      } catch { /* 查询失败不影响对话 */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversationId]);
+
   // Clear stream on new submit
 
   const submitToAI = async (
@@ -1288,6 +1484,15 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       // browser's connection pool can get confused and ECONNRESET the new POST.
       aiRunningRef.current = false;
       aiRunIdRef.current += 1;
+      // 同一对话里以新指令取代旧运行：显式中止服务端旧任务（单纯断连现在会转后台）
+      if (aiRequestIdRef.current) {
+        void fetch('/api/ai/abort', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId: aiRequestIdRef.current }),
+        }).catch(() => {});
+        aiRequestIdRef.current = '';
+      }
       const prevReader = agentReaderRef.current;
       agentReaderRef.current = null;
       if (prevReader) {
@@ -1514,6 +1719,15 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     abortRef.current?.abort();
     void closeSseReader(agentReaderRef.current, 'stale-run');
     agentReaderRef.current = null;
+    // 显式停止：中止服务端任务（仅断开连接现在会转后台，所以停止必须显式发出）
+    if (aiRequestIdRef.current) {
+      void fetch('/api/ai/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: aiRequestIdRef.current }),
+      }).catch(() => {});
+      aiRequestIdRef.current = '';
+    }
     stoppedByUserRef.current = true;
     if (confirmResolveRef.current) {
       confirmResolveRef.current('reject');
@@ -1658,6 +1872,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
         </div>
       </div>
 
+      {workspaceLayout && activeTab === 'chat' && jobStatusBar}
+
       {/* AI 设置作为独立浮层，不再挤压主对话。 */}
       <AnimatePresence>
         {showSettings && (
@@ -1702,10 +1918,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   onEngineChange={setAgentEngine}
                   planningPolicy={agentPlanningPolicy}
                   confirmationPolicy={agentConfirmationPolicy}
+                  pathPolicy={agentPathPolicy}
                   maxCommands={agentMaxCommands}
                   maxSteps={agentMaxSteps}
                   onPlanningPolicyChange={setAgentPlanningPolicy}
                   onConfirmationPolicyChange={setAgentConfirmationPolicy}
+                  onPathPolicyChange={setAgentPathPolicy}
                   onMaxCommandsChange={setAgentMaxCommands}
                   onMaxStepsChange={setAgentMaxSteps}
                 />
@@ -1778,10 +1996,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               onEngineChange={setAgentEngine}
               planningPolicy={agentPlanningPolicy}
               confirmationPolicy={agentConfirmationPolicy}
+              pathPolicy={agentPathPolicy}
               maxCommands={agentMaxCommands}
               maxSteps={agentMaxSteps}
               onPlanningPolicyChange={setAgentPlanningPolicy}
               onConfirmationPolicyChange={setAgentConfirmationPolicy}
+              onPathPolicyChange={setAgentPathPolicy}
               onMaxCommandsChange={setAgentMaxCommands}
               onMaxStepsChange={setAgentMaxSteps}
             />
@@ -2090,17 +2310,21 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                       className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-scholar-800 text-scholar-300 border border-scholar-700 hover:text-scholar-100 hover:border-scholar-500 transition-colors shrink-0"
                       title={t('工作区（dsh 引擎本地工具的落点目录）')}
                     >
-                      <FolderOpen className="w-3 h-3" /> {t('选择工作文件夹')}
+                      <FolderOpen className="w-3 h-3" /> {t('添加工作文件夹')}
                     </button>
-                    <span
-                      className="text-[10px] text-scholar-400 truncate max-w-[200px]"
-                      title={agentWorkspace || t('未设置工作区（默认数据目录）')}
-                    >
-                      {agentWorkspace
-                        ? (agentWorkspace.length > 30 ? '…' + agentWorkspace.slice(-29) : agentWorkspace)
-                        : t('未设置工作区（默认数据目录）')}
-                    </span>
-                    {agentWorkspace && (
+                    <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                      {agentWorkspaces.length > 0 ? agentWorkspaces.map(workspace => (
+                        <span key={workspace} className="inline-flex max-w-[240px] items-center gap-1 rounded bg-scholar-800 px-1.5 py-0.5 text-[10px] text-scholar-300" title={workspace}>
+                          <span className="truncate">{workspace.length > 34 ? `…${workspace.slice(-33)}` : workspace}</span>
+                          <button type="button" onClick={() => handleRemoveAgentWorkspace(workspace)} className="text-scholar-500 hover:text-scholar-100" aria-label={t('清除')}>
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        </span>
+                      )) : (
+                        <span className="text-[10px] text-scholar-400">{t('未设置工作区（默认数据目录）')}</span>
+                      )}
+                    </div>
+                    {agentWorkspaces.length > 0 && (
                       <button
                         type="button"
                         onClick={handleClearAgentWorkspace}
@@ -2114,11 +2338,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   </>
                 ) : (
                   <input
-                    key={agentWorkspace}
+                    key={agentWorkspaces.join('|')}
                     type="text"
-                    defaultValue={agentWorkspace}
+                    defaultValue=""
                     onBlur={e => handleWorkspaceInputBlur(e.target.value)}
-                    placeholder={t('本地工作区路径（本地分析必填）')}
+                    placeholder={t('添加本地工作区路径；多个路径用分号分隔')}
                     title={t('工作区（dsh 引擎本地工具的落点目录）')}
                     className="flex-1 min-w-0 bg-scholar-950 border border-scholar-700 rounded-md px-2 py-1 text-[11px] text-scholar-300 placeholder-scholar-500 focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent"
                   />

@@ -1,7 +1,7 @@
 {
   "name": "hpclaw",
   "private": true,
-  "version": "0.4.12",
+  "version": "0.4.26",
   "productName": "HPClaw",
   "type": "module",
   "main": "electron/main.cjs",
@@ -73,8 +73,9 @@
     ],
     "publish": [
       {
-        "provider": "generic",
-        "url": "https://updates.hpclaw.invalid/"
+        "provider": "github",
+        "owner": "peacezha",
+        "repo": "HPClaw"
       }
     ]
   },

@@ -1,10 +1,10 @@
-// 作业监控器：按配置的调度器（LSF bjobs / Slurm squeue）轮询，检测作业完成（DONE/EXIT/消失），产生事件并触发通知。
+// 作业监控器：按会话标签的调度器（LSF bjobs / Slurm squeue / PBS qstat / 无）轮询，检测作业完成（DONE/EXIT/消失），产生事件并触发通知。
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { dataPath } from '../paths';
 import {
   loadSchedulerType, jobsCommand, parseJobsOutput, lsfFinalStateCommand, slurmFinalStateCommand,
-  lsfOutputTailCommand, slurmOutputTailCommand, type SchedulerType,
+  pbsFinalStateCommand, lsfOutputTailCommand, slurmOutputTailCommand, type SchedulerType,
 } from './scheduler';
 import type { JobEntry } from '../ai/types';
 import { loadNotifyConfig, sendNotification, type NotifyConfig } from './notifyService';
@@ -72,6 +72,8 @@ export function detectFinishedJobs(
 export interface WatchSessionLike {
   cluster: { exec: (cmd: string, timeout?: number) => Promise<string>; state?: string };
   username: string;
+  /** 该账号登录时探测并打标签的调度器；缺省回退到全局手动配置 */
+  scheduler?: SchedulerType;
 }
 
 interface WatcherDeps {
@@ -87,6 +89,7 @@ interface WatcherDeps {
 
 export class JobWatcher {
   private timers = new Map<string, ReturnType<typeof setInterval>>();
+  private sessions = new Map<string, WatchSessionLike>();
   private prevJobs = new Map<string, JobEntry[]>();
   private notifiedJobIds = new Set<string>();
 
@@ -99,10 +102,17 @@ export class JobWatcher {
 
   /** 开始监控某个集群会话的作业 */
   start(sessionId: string, session: WatchSessionLike, intervalMs = 45_000): void {
+    this.sessions.set(sessionId, session);
     if (this.timers.has(sessionId)) return;
     void this.poll(sessionId, session);
     const timer = setInterval(() => void this.poll(sessionId, session), intervalMs);
     this.timers.set(sessionId, timer);
+  }
+
+  /** 用户手动重探调度器后同步到在跑的监控会话 */
+  setScheduler(sessionId: string, scheduler: SchedulerType): void {
+    const session = this.sessions.get(sessionId);
+    if (session) session.scheduler = scheduler;
   }
 
   /**
@@ -131,6 +141,7 @@ export class JobWatcher {
     const timer = this.timers.get(sessionId);
     if (timer) clearInterval(timer);
     this.timers.delete(sessionId);
+    this.sessions.delete(sessionId);
     this.prevJobs.delete(sessionId);
   }
 
@@ -169,6 +180,19 @@ export class JobWatcher {
     }
   }
 
+  /** PBS 作业离开 qstat 后用 qstat -x -f 补查：Exit_status=0 判 DONE。 */
+  private async resolvePbsFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT'> {
+    try {
+      const raw = await session.cluster.exec(pbsFinalStateCommand(jobId), 10_000);
+      if (!raw.trim()) return 'DONE';
+      if (/job_state\s*=\s*[CF]/i.test(raw) && /Exit_status\s*=\s*0\b/.test(raw)) return 'DONE';
+      if (/Exit_status\s*=\s*0\b/.test(raw)) return 'DONE';
+      return 'EXIT';
+    } catch {
+      return 'DONE';
+    }
+  }
+
   private async resolveLsfFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT'> {
     try {
       const raw = await session.cluster.exec(lsfFinalStateCommand(jobId), 10_000);
@@ -180,7 +204,8 @@ export class JobWatcher {
   }
 
   private async poll(sessionId: string, session: WatchSessionLike): Promise<void> {
-    const scheduler = await loadSchedulerType();
+    // 会话级调度器标签优先（登录探测打标）；老会话无标签时回退全局手动配置
+    const scheduler = session.scheduler ?? await loadSchedulerType();
     let jobs: JobEntry[];
     try {
       const raw = await session.cluster.exec(jobsCommand(scheduler), 15_000);
@@ -213,19 +238,17 @@ export class JobWatcher {
 
     const finished = detectFinishedJobs(prev, jobs);
     // Slurm 的 squeue 只显示活跃作业，结束即消失，失败会被"消失=DONE"误判，用 sacct 补查
-    if (scheduler === 'slurm') {
-      const nextIds = new Set(jobs.map(j => j.jobId));
-      for (const job of finished) {
-        if (!nextIds.has(job.jobId)) {
-          job.status = await this.resolveSlurmFinalStatus(session, job.jobId);
-        }
-      }
-    } else {
-      const nextIds = new Set(jobs.map(j => j.jobId));
-      for (const job of finished) {
-        if (!nextIds.has(job.jobId)) {
-          job.status = await this.resolveLsfFinalStatus(session, job.jobId);
-        }
+    const nextIds = new Set(jobs.map(j => j.jobId));
+    for (const job of finished) {
+      if (nextIds.has(job.jobId)) continue;
+      if (scheduler === 'slurm') {
+        job.status = await this.resolveSlurmFinalStatus(session, job.jobId);
+      } else if (scheduler === 'pbs') {
+        job.status = await this.resolvePbsFinalStatus(session, job.jobId);
+      } else if (scheduler === 'none') {
+        job.status = 'DONE'; // 无调度器：进程消失即结束，成败由后续验证产物判定
+      } else {
+        job.status = await this.resolveLsfFinalStatus(session, job.jobId);
       }
     }
     for (const job of finished) {
@@ -235,6 +258,8 @@ export class JobWatcher {
 
   /** 作业输出尾部摘要：bpeek/slurm-out 读取失败或无输出时留空，不阻塞事件。 */
   private async fetchOutputExcerpt(session: WatchSessionLike, scheduler: SchedulerType, jobId: string): Promise<string | undefined> {
+    // PBS 无 bpeek 等价物（输出直接落工作目录文件）；无调度器时没有作业输出概念
+    if (scheduler === 'pbs' || scheduler === 'none') return undefined;
     try {
       const command = scheduler === 'slurm' ? slurmOutputTailCommand(jobId) : lsfOutputTailCommand(jobId);
       const raw = (await session.cluster.exec(command, 10_000)).trim();

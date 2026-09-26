@@ -14,7 +14,7 @@ export interface BridgeState {
 
 let bridgeState: BridgeState | undefined;
 
-export type DshConfirmationPolicy = 'dangerous' | 'state_changes' | 'every_command';
+export type DshConfirmationPolicy = 'never' | 'dangerous' | 'state_changes' | 'every_command';
 
 export interface DshBridgeBinding {
   dshSessionId: string;
@@ -66,9 +66,9 @@ export function bindDshSession(binding: Omit<DshBridgeBinding, 'updatedAt'>): Ds
     ...binding,
     dshSessionId,
     sshSessionId,
-    confirmationPolicy: binding.confirmationPolicy === 'state_changes' || binding.confirmationPolicy === 'every_command'
+    confirmationPolicy: binding.confirmationPolicy === 'dangerous' || binding.confirmationPolicy === 'state_changes' || binding.confirmationPolicy === 'every_command'
       ? binding.confirmationPolicy
-      : 'dangerous',
+      : 'never',
     updatedAt: Date.now(),
   };
   dshBindings.delete(dshSessionId);

@@ -89,6 +89,15 @@ function moduleCheckBody(item: SoftwareItem, idx: number, requestedModule: strin
       `if [ $version_rc -ne 0 ]; then echo "${tag}|0|module 可加载: $loaded_module，但版本检查失败: $version_first"; ` +
       `else echo "${tag}|1|module 可加载: $loaded_module; $version_first"; fi`
     : `echo "${tag}|1|module 可加载: $loaded_module"`;
+  // 无 module 系统的直装回退：在 PATH 里按常见可执行名直接探测，装过（conda/pip 直装）即算就绪
+  const directCandidates = executableCandidates(item.name).map(shq).join(' ');
+  const directFallback = [
+    'elif ! type module >/dev/null 2>&1; then',
+    `  direct_found=""; for hpclaw_tool in ${directCandidates}; do`,
+    '    if command -v "$hpclaw_tool" >/dev/null 2>&1; then direct_found=$(command -v "$hpclaw_tool"); break; fi; done',
+    `  if [ -n "$direct_found" ]; then echo "${tag}|1|无 module，直装可用: $direct_found"; `,
+    `  else echo "${tag}|0|无 module 系统且 PATH 未找到: ${base}（需要直接安装，不走 module）"; fi`,
+  ].join('\n');
   return [
     `requested_module=${shq(requestedModule)}`,
     `module_base=${shq(base)}`,
@@ -115,8 +124,8 @@ function moduleCheckBody(item: SoftwareItem, idx: number, requestedModule: strin
     '  fi',
     'fi',
     `if [ $load_rc -eq 0 ]; then ${versionProbe}; ` +
-      `elif ! type module >/dev/null 2>&1; then echo "${tag}|0|module 系统不可用：请检查非交互 shell 初始化"; ` +
-      `elif [ -n "$prerequisite_failed" ]; then echo "${tag}|0|前置 module 加载失败: $prerequisite_failed"; ` +
+      directFallback +
+      ` elif [ -n "$prerequisite_failed" ]; then echo "${tag}|0|前置 module 加载失败: $prerequisite_failed"; ` +
       `elif [ -n "$candidate" ]; then echo "${tag}|0|找到 module 候选 $candidate，但无法加载要求的 $requested_module${exactVersion ? '（可能版本不匹配或缺少前置模块）' : '（可能缺少前置模块）'}"; ` +
       `else spider_out=$(module spider "$module_base" 2>&1 | head -12); ` +
       `if printf '%s' "$spider_out" | grep -qiF "$module_base"; then echo "${tag}|0|module spider 找到 $module_base，但当前层级不可直接加载（请查看前置模块）"; ` +

@@ -5,11 +5,12 @@ import { loadAgentSettings, normalizeAgentSettings, saveAgentSettings } from './
 describe('agent settings', () => {
   beforeEach(() => localStorage.clear());
 
-  it('uses safe bounded defaults', () => {
+  it('uses full-access bounded defaults', () => {
     expect(normalizeAgentSettings({ maxCommands: 999, maxSteps: 1 })).toEqual({
       engine: 'auto',
       planningPolicy: 'auto',
-      confirmationPolicy: 'dangerous',
+      confirmationPolicy: 'never',
+      pathPolicy: 'full_access',
       maxCommands: 200,
       maxSteps: 10,
     });
@@ -30,17 +31,28 @@ describe('agent settings', () => {
     expect(loadAgentSettings().maxSteps).toBe(50);
   });
 
+  it('migrates the old confirmation default to fully automatic but preserves a new explicit restriction', () => {
+    localStorage.setItem('hpclaw_agent_settings', JSON.stringify({
+      version: 3, confirmationPolicy: 'dangerous', maxCommands: 40, maxSteps: 200,
+    }));
+    expect(loadAgentSettings().confirmationPolicy).toBe('never');
+
+    saveAgentSettings({ confirmationPolicy: 'dangerous' });
+    expect(loadAgentSettings().confirmationPolicy).toBe('dangerous');
+  });
+
   it('allows the new upper limits but still clamps oversized values', () => {
     expect(normalizeAgentSettings({ maxCommands: 200, maxSteps: 500 })).toMatchObject({ maxCommands: 200, maxSteps: 500 });
     expect(normalizeAgentSettings({ maxCommands: 201, maxSteps: 501 })).toMatchObject({ maxCommands: 200, maxSteps: 500 });
   });
 
   it('persists user policy choices', () => {
-    saveAgentSettings({ engine: 'native', planningPolicy: 'always', confirmationPolicy: 'state_changes', maxCommands: 20, maxSteps: 30 });
+    saveAgentSettings({ engine: 'native', planningPolicy: 'always', confirmationPolicy: 'never', pathPolicy: 'scoped', maxCommands: 20, maxSteps: 30 });
     expect(loadAgentSettings()).toMatchObject({
       engine: 'native',
       planningPolicy: 'always',
-      confirmationPolicy: 'state_changes',
+      confirmationPolicy: 'never',
+      pathPolicy: 'scoped',
       maxCommands: 20,
       maxSteps: 30,
     });

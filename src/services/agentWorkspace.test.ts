@@ -1,5 +1,7 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest';
-import { needsAgentWorkspaceHint } from './agentWorkspace';
+import { loadAgentWorkspaces, needsAgentWorkspaceHint, saveAgentWorkspaces } from './agentWorkspace';
 
 describe('needsAgentWorkspaceHint（本地工作区提示显示条件）', () => {
   it('shows the hint only when there is no cluster session and the workspace is empty', () => {
@@ -15,5 +17,12 @@ describe('needsAgentWorkspaceHint（本地工作区提示显示条件）', () =>
     // 已连接集群 → 不提示（本地工作区是集群场景的可选项）
     expect(needsAgentWorkspaceHint('session-1', '')).toBe(false);
     expect(needsAgentWorkspaceHint('session-1', 'D:\\data')).toBe(false);
+  });
+
+  it('persists multiple unique workspace roots and keeps their order', () => {
+    localStorage.clear();
+    expect(saveAgentWorkspaces(['D:\\data-a', 'D:\\data-b', 'D:\\data-a']))
+      .toEqual(['D:\\data-a', 'D:\\data-b']);
+    expect(loadAgentWorkspaces()).toEqual(['D:\\data-a', 'D:\\data-b']);
   });
 });

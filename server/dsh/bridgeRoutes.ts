@@ -1,13 +1,13 @@
 // dsh → HPClaw 桥路由：dsh 插件（hpclaw-dsh-plugin）通过这些端点在用户集群上执行
 // 命令 / 探测 SSH 连通性 / 读写集群文件。鉴权头 X-HPClaw-Bridge 必须等于桥 token
-// （见 bridgeState）。安全策略与 server/ai/agentRunner 对齐：rm 直接禁止；
+// （见 bridgeState）。安全策略与 server/ai/agentRunner 对齐：高风险命令确认后可执行；
 // 确认策略来自每个 dsh 会话绑定；远程文件限制在该 SSH 用户 home，
 // 本地传输限制在该 dsh 会话选择的工作区。
 
 import fs from 'node:fs';
 import type { Express, NextFunction, Request, Response } from 'express';
 import type { SFTPWrapper } from 'ssh2';
-import { classifyCommandRisk } from '../ai/commandSafety';
+import { classifyCommandRisk, isCatastrophicCommand } from '../ai/commandSafety';
 import { invokeWebApi } from '../webapis/invoke';
 import { SftpFileService } from '../files/sftpFileService';
 import { assertRemotePathWithinRoot } from '../files/pathSafety';
@@ -75,8 +75,9 @@ function requiresConfirmation(
   risk: ReturnType<typeof classifyCommandRisk>,
   policy: DshBridgeBinding['confirmationPolicy'],
 ): boolean {
+  if (policy === 'never') return false;
   if (policy === 'every_command') return true;
-  if (risk === 'destructive' || risk === 'network') return true;
+  if (risk === 'destructive') return true;
   return policy === 'state_changes' && risk !== 'read';
 }
 
@@ -234,8 +235,8 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
       res.status(400).json({ error: 'invalid_request' });
       return;
     }
-    if (/\brm\b/.test(command)) {
-      res.status(422).json({ error: 'rm_blocked' });
+    if (isCatastrophicCommand(command)) {
+      res.status(422).json({ error: 'catastrophic_command_blocked' });
       return;
     }
     const cluster = requireCluster(req, res);

@@ -6,6 +6,7 @@ const scope = {
   runDir: '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-1',
   inputs: ['/public/home/u/projects/rna/fastq'],
   references: ['/share/ref/hg38'],
+  userAuthorizedPaths: ['/scratch/u/temporary-output'],
 };
 
 describe('workflow command scope', () => {
@@ -38,6 +39,16 @@ describe('workflow command scope', () => {
     expect(scopeWorkflowCommand('ls /public/home/u/projects/rna/fastq > results/x.txt', scope).ok).toBe(true);
   });
 
+  it('允许精确清理 RUN 或已选择输入目录中的旧产物，但保护根目录与参考数据', () => {
+    expect(scopeWorkflowCommand('rm -f results/old.log', scope).ok).toBe(true);
+    expect(scopeWorkflowCommand('rm -f /public/home/u/projects/rna/fastq/*.old.bam', scope).ok).toBe(true);
+    expect(scopeWorkflowCommand('rm -rf /public/home/u/projects/rna/fastq', scope).ok).toBe(false);
+    expect(scopeWorkflowCommand('rm -f /share/ref/hg38/genome.fa', scope).ok).toBe(false);
+    expect(scopeWorkflowCommand('rm -rf /public/home/u', scope).ok).toBe(false);
+    expect(scopeWorkflowCommand('rm -f /scratch/u/temporary-output/old.tmp', scope).ok).toBe(true);
+    expect(scopeWorkflowCommand('rm -f /scratch/other/not-mentioned.tmp', scope).ok).toBe(false);
+  });
+
   it('模块名与变量不会被误判为路径', () => {
     expect(scopeWorkflowCommand('module load R/3.6.0 && Rscript -e "cat(1)"', scope).ok).toBe(true);
     expect(scopeWorkflowCommand('module load R/$v 2>/dev/null; Rscript -e "cat(1)"', scope).ok).toBe(true);
@@ -54,5 +65,11 @@ describe('workflow command scope', () => {
     expect(scopeWorkflowCommand('ls -R .', scope).ok).toBe(true);
     expect(scopeWorkflowCommand('ls -R /public/home/u/projects/rna/fastq | head -20', scope).ok).toBe(true);
     expect(scopeWorkflowCommand('ls -R /etc/ssl', scope).ok).toBe(false);
+  });
+
+  it('完全授权模式允许多路径、切换目录和授权根以外的操作', () => {
+    expect(scopeWorkflowCommand('cd /scratch/a && cp one.txt /project/b/', { ...scope, unrestricted: true }))
+      .toEqual({ ok: true, command: 'cd /scratch/a && cp one.txt /project/b/' });
+    expect(scopeWorkflowCommand('rm -f /project/b/old.txt', { ...scope, unrestricted: true }).ok).toBe(true);
   });
 });

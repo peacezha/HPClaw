@@ -6,6 +6,7 @@ import LoginForm from './components/LoginForm';
 import TerminalAI from './components/TerminalAI';
 import { TerminalHandle } from './components/Terminal';
 import AIChat from './components/AIChat';
+import ClusterJobStatusBar from './components/ClusterJobStatusBar';
 import JobsPanel from './components/JobsPanel';
 import WorkbenchSidebar, { type WorkbenchSidebarTab } from './components/WorkbenchSidebar';
 import ComputeBackendDrawer from './components/ComputeBackendDrawer';
@@ -66,6 +67,8 @@ interface ClusterTab {
   sessionId: string;
   connInfo: { host: string; port: string; username: string };
   home: string;
+  /** 登录时探测并打标签的调度器（LSF/Slurm/PBS/无调度器），用于界面展示 */
+  schedulerLabel?: string;
   messages: Message[];
   activeConversationId: string | null;
   /** 独立于 SSH 会话的 AI 上下文键；新对话在首次保存前也必须有自己的键。 */
@@ -104,13 +107,15 @@ export default function App() {
   const [tabs, setTabs] = useState<ClusterTab[]>(() => [createLocalWorkbenchTab()]);
   const [activeTabId, setActiveTabId] = useState<string | null>(LOCAL_WORKBENCH_ID);
   const [addingCluster, setAddingCluster] = useState(false);
-  // 对话是全局工作台状态；activeTabId 只表示 AI 当前使用的计算目标。
-  // 切换集群不会再切换或清空对话。
-  const activeTab = tabs.find(t => t.kind === 'local') ?? null;
-  const activeComputeTab = tabs.find(t => t.sessionId === activeTabId) ?? activeTab;
+  // 对话按计算目标隔离：本地工作台与每个集群各自持有自己的对话，
+  // 切换目标即切换到该目标的对话（本地任务与集群任务不再共用上下文）。
+  const activeTab = tabs.find(t => t.sessionId === activeTabId) ?? tabs.find(t => t.kind === 'local') ?? null;
+  const activeComputeTab = activeTab;
   const activeClusterTab = activeComputeTab?.kind === 'cluster' ? activeComputeTab : null;
   const tabsRef = useRef<ClusterTab[]>(tabs);
   tabsRef.current = tabs;
+  const activeTabIdRef = useRef<string | null>(activeTabId);
+  activeTabIdRef.current = activeTabId;
 
   // ─── Auth State ────────────────────────────────────────────────
   const [loginError, setLoginError] = useState('');
@@ -430,6 +435,7 @@ export default function App() {
           activeConversationId: null,
           conversationContextId: createConversationContextId(),
           conversationSummary: '',
+          schedulerLabel: data.schedulerLabel,
         };
         setTabs(prev => [...prev, tab]);
         setActiveTabId(data.sessionId);
@@ -507,29 +513,28 @@ export default function App() {
 
   // ─── Conversation handlers ─────────────────────────────────────
   // seed：用给定内容直接替换出一个新对话（流程运行专属对话走这里）；不传则是空对话
+  // 新建在当前选中的计算目标下进行（本地工作台 / 某集群各自独立的对话）
   const handleNewConversation = useCallback((seed?: WorkflowRunConversationSeed) => {
     if (loadAbortRef.current) loadAbortRef.current.abort();
-    const conversationTabId = LOCAL_WORKBENCH_ID;
-    if (conversationTabId) {
-      const current = tabsRef.current.find(tab => tab.sessionId === conversationTabId);
-      if (!current) return;
-      const storageKey = conversationStorageKey(current);
-      const timer = autoSaveTimersRef.current.get(storageKey);
-      if (timer) clearTimeout(timer);
-      autoSaveTimersRef.current.delete(storageKey);
-      autoSaveEpochRef.current.set(storageKey, (autoSaveEpochRef.current.get(storageKey) || 0) + 1);
-      updateTab(conversationTabId, seed ?? {
-        activeConversationId: null,
-        conversationContextId: createConversationContextId(),
-        conversationSummary: '',
-        messages: [],
-      });
-    }
+    const conversationTabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
+    const current = tabsRef.current.find(tab => tab.sessionId === conversationTabId);
+    if (!current) return;
+    const storageKey = conversationStorageKey(current);
+    const timer = autoSaveTimersRef.current.get(storageKey);
+    if (timer) clearTimeout(timer);
+    autoSaveTimersRef.current.delete(storageKey);
+    autoSaveEpochRef.current.set(storageKey, (autoSaveEpochRef.current.get(storageKey) || 0) + 1);
+    updateTab(conversationTabId, seed ?? {
+      activeConversationId: null,
+      conversationContextId: createConversationContextId(),
+      conversationSummary: '',
+      messages: [],
+    });
     setLoadingConversationId(null);
   }, [updateTab]);
 
   const handleLoadConversation = useCallback(async (id: string) => {
-    const tabId = LOCAL_WORKBENCH_ID;
+    const tabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
     const current = tabsRef.current.find(tab => tab.sessionId === tabId);
     if (!current) return;
     const currentStorageKey = conversationStorageKey(current);
@@ -605,7 +610,18 @@ export default function App() {
   const openConversationFromNotification = useCallback((conversationId: string) => {
     setWorkspaceView('chat');
     setWorkbenchSidebarTab('conversations');
-    void handleLoadConversation(conversationId);
+    // 先查出对话归属的计算目标并切换过去，再加载，避免跨目标错载
+    void (async () => {
+      try {
+        const res = await fetch(`/api/conversations/${conversationId}`, { credentials: 'include' as RequestCredentials });
+        const data = await res.json();
+        const scope = data?.conversation?.scopeKey;
+        if (scope && scope !== activeTabIdRef.current && tabsRef.current.some(t => t.sessionId === scope)) {
+          setActiveTabId(scope);
+        }
+      } catch { /* 查不到就按当前目标加载 */ }
+      void handleLoadConversation(conversationId);
+    })();
   }, [handleLoadConversation]);
 
   const jobNotificationCenter = useJobNotificationCenter({
@@ -623,14 +639,15 @@ export default function App() {
     const text = selectedText.length > 5000
       ? selectedText.slice(0, 5000) + '\n...[truncated]'
       : selectedText;
-    const tab = tabsRef.current.find(t => t.kind === 'local');
+    const targetTabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
+    const tab = tabsRef.current.find(t => t.sessionId === targetTabId);
     const msg: Message = {
       role: 'user',
       content: isEnglish
         ? `I encountered the following terminal output. Analyze it and suggest a solution:\n\`\`\`\n${text}\n\`\`\`\n(The current context is an HPC cluster terminal.)`
         : `我在终端遇到了以下终端输出，请分析并给出建议：\n\`\`\`\n${text}\n\`\`\`\n（当前在 HPC 计算资源终端中操作）`,
     };
-    if (tab) updateTab(LOCAL_WORKBENCH_ID, { messages: [...tab.messages, msg] });
+    if (tab) updateTab(targetTabId, { messages: [...tab.messages, msg] });
     setWorkspaceView('chat');
     setWorkbenchSidebarTab('conversations');
     setTimeout(() => setTriggerAI(prev => ({ tabId: activeTabId, count: prev.count + 1 })), 0);
@@ -641,14 +658,15 @@ export default function App() {
     const text = selectedText.length > 5000
       ? selectedText.slice(0, 5000) + '\n...[truncated]'
       : selectedText;
-    const tab = tabsRef.current.find(t => t.kind === 'local');
+    const targetTabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
+    const tab = tabsRef.current.find(t => t.sessionId === targetTabId);
     const msg: Message = {
       role: 'user',
       content: isEnglish
         ? `Please explain the following terminal output:\n\`\`\`\n${text}\n\`\`\`\n(The current context is an HPC cluster terminal.)`
         : `我在终端看到了以下输出，请帮我解读：\n\`\`\`\n${text}\n\`\`\`\n（当前在 HPC 计算资源终端中操作）`,
     };
-    if (tab) updateTab(LOCAL_WORKBENCH_ID, { messages: [...tab.messages, msg] });
+    if (tab) updateTab(targetTabId, { messages: [...tab.messages, msg] });
     setWorkspaceView('chat');
     setWorkbenchSidebarTab('conversations');
     setTimeout(() => setTriggerAI(prev => ({ tabId: activeTabId, count: prev.count + 1 })), 0);
@@ -675,9 +693,14 @@ export default function App() {
       startWorkflowRunConversation(message);
       return;
     }
-    const tab = tabsRef.current.find(item => item.kind === 'local');
+    const targetTabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
+    const tab = tabsRef.current.find(item => item.sessionId === targetTabId);
     if (!tab) return;
-    updateTab(LOCAL_WORKBENCH_ID, { messages: [...tab.messages, { role: 'user', content: message }] });
+    updateTab(targetTabId, { messages: [...tab.messages, { role: 'user', content: message }] });
+    // 与终端“发给 AI/分析错误”一致：消息进对话后立即切到对话视图，
+    // 否则用户停在流程页看不到任何反应，会误以为没有点成功（v0.4.26 修复）。
+    setWorkspaceView('chat');
+    setWorkbenchSidebarTab('conversations');
     setTimeout(() => setTriggerAI(previous => ({ tabId: activeTabId, count: previous.count + 1 })), 0);
   }, [activeTabId, updateTab, startWorkflowRunConversation]);
 
@@ -738,7 +761,9 @@ export default function App() {
   const computeTargets = tabs.map(t => ({
     id: t.sessionId,
     label: t.kind === 'local' ? '本地 AI 工作台' : `${t.connInfo.username}@${t.connInfo.host}`,
-    detail: t.kind === 'local' ? '无需服务器，可本地分析' : `${t.connInfo.host}:${t.connInfo.port} · SSH 已连接`,
+    detail: t.kind === 'local'
+      ? '无需服务器，可本地分析'
+      : `${t.connInfo.host}:${t.connInfo.port} · SSH 已连接${t.schedulerLabel ? ` · ${t.schedulerLabel}` : ''}`,
     kind: t.kind,
   }));
   const activeComputeLabel = activeClusterTab
@@ -746,9 +771,10 @@ export default function App() {
     : '本地 AI · 未使用计算资源';
   const connectedComputeCount = computeTargets.filter(target => target.kind === 'cluster').length;
   const conversationTab = activeTab;
-  const executionSessionId = activeClusterTab?.sessionId ?? LOCAL_WORKBENCH_ID;
+  // 对话在哪个计算目标上打开，就在哪里执行：本地工作台 = 本地模式，集群 = 该集群
+  const executionSessionId = conversationTab?.sessionId ?? LOCAL_WORKBENCH_ID;
   const chatCallbacks = conversationTab
-    ? getTabCallbacks(executionSessionId, conversationTab.conversationContextId, LOCAL_WORKBENCH_ID)
+    ? getTabCallbacks(executionSessionId, conversationTab.conversationContextId, conversationTab.sessionId)
     : null;
 
   return (
@@ -762,7 +788,7 @@ export default function App() {
         onOpenUpdateCenter={() => setShowUpdateCenter(true)}
         theme={theme}
         onToggleTheme={handleToggleTheme}
-        sessionId={activeClusterTab?.sessionId}
+        sessionId={activeTab?.sessionId}
         home={activeClusterTab?.home}
         activeConversationId={conversationTab?.activeConversationId}
         loadingConversationId={loadingConversationId}
@@ -829,24 +855,49 @@ export default function App() {
                 workspaceTargetLabel={activeComputeLabel}
                 workspaceTargetConnected={!!activeClusterTab}
                 onOpenComputeBackend={() => setWorkspaceView('cluster')}
+                jobStatusBar={(
+                  <ClusterJobStatusBar
+                    sessionId={activeClusterTab?.sessionId}
+                    targetLabel={activeComputeLabel}
+                    onOpenDetails={() => {
+                      if (!activeClusterTab) {
+                        setComputeBackendOpen(true);
+                        return;
+                      }
+                      setClusterJobsOpen(true);
+                      setWorkspaceView('cluster');
+                    }}
+                  />
+                )}
                 onOpenWebPanel={openWebPanel}
                 onStartWorkflowRun={startWorkflowRunConversation}
+                onEnsureConversation={async (msgs) => {
+                  const targetTabId = activeTabIdRef.current || LOCAL_WORKBENCH_ID;
+                  const tab = tabsRef.current.find(t => t.sessionId === targetTabId);
+                  if (!tab) return null;
+                  if (tab.activeConversationId) return tab.activeConversationId;
+                  return saveConversation(msgs, null, tab.sessionId, tab.conversationContextId);
+                }}
               />
             </div>
           )}
 
-          {workspaceView === 'workflow' && selectedWorkflow && (
-            <FlowRunnerDrawer
-              key={selectedWorkflow.id}
-              embedded
-              workflow={selectedWorkflow}
-              sessionId={activeClusterTab?.sessionId}
-              socket={activeClusterTab ? (sockets[activeClusterTab.sessionId] ?? null) : null}
-              onClose={() => setWorkspaceView('chat')}
-              onRun={handleRunWorkflow}
-              onPickFolder={activeClusterTab ? requestRemotePath : undefined}
-              onOpenRunFolder={path => openRemoteFolder(path, activeClusterTab?.sessionId)}
-            />
+          {/* 流程运行面板常驻挂载（hidden 保活）：切去对话再回来，已选输入/参数/预检结果不丢失。
+              与集群终端的保活策略一致；换个流程时靠 key 重置。 */}
+          {selectedWorkflow && (
+            <div className={workspaceView === 'workflow' ? 'h-full' : 'hidden'}>
+              <FlowRunnerDrawer
+                key={selectedWorkflow.id}
+                embedded
+                workflow={selectedWorkflow}
+                sessionId={activeClusterTab?.sessionId}
+                socket={activeClusterTab ? (sockets[activeClusterTab.sessionId] ?? null) : null}
+                onClose={() => setWorkspaceView('chat')}
+                onRun={handleRunWorkflow}
+                onPickFolder={activeClusterTab ? requestRemotePath : undefined}
+                onOpenRunFolder={path => openRemoteFolder(path, activeClusterTab?.sessionId)}
+              />
+            </div>
           )}
 
           {workspaceView === 'workflow' && !selectedWorkflow && (

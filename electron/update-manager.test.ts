@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { createUpdateManager, normalizeUpdateUrl } from './update-manager.cjs';
+import { createUpdateManager, normalizeUpdateUrl, parseGithubRepoUrl } from './update-manager.cjs';
 
 function createMemoryFs(initial = '') {
   const values = new Map<string, string>();
@@ -92,11 +92,37 @@ describe('update manager', () => {
     expect(state).toMatchObject({ phase: 'downloaded', percent: 100, availableVersion: '0.2.5' });
   });
 
-  it('returns a clear error when no online update source is configured', async () => {
-    const { manager } = createManager();
-    await expect(manager.check()).resolves.toMatchObject({
-      phase: 'error',
-      message: '请先填写并保存更新服务器地址',
+  it('uses the built-in GitHub Releases feed when no custom server is configured', async () => {
+    const { manager, updater } = createManager();
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit('update-not-available', { version: '0.2.4' });
+      return undefined;
     });
+
+    const state = await manager.check();
+
+    expect(updater.setFeedURL).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'github',
+      owner: 'peacezha',
+      repo: 'HPClaw',
+    }));
+    expect(state).toMatchObject({ phase: 'not-available', currentVersion: '0.2.4' });
+  });
+
+  it('routes a saved github.com repo URL to the github provider instead of generic', async () => {
+    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw/')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw.git')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw/releases')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
+    expect(parseGithubRepoUrl('https://updates.example.com/hpclaw/')).toBeNull();
+    expect(parseGithubRepoUrl('https://github.com/peacezha')).toBeNull();
+
+    const { manager, updater } = createManager('https://github.com/peacezha/HPClaw/');
+    updater.checkForUpdates.mockImplementation(async () => undefined);
+    await manager.check();
+    expect(updater.setFeedURL).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'github',
+      owner: 'peacezha',
+      repo: 'HPClaw',
+    }));
   });
 });

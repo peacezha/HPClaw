@@ -6,6 +6,10 @@ export interface WorkflowCommandScope {
   home?: string;
   inputs?: string[];
   references?: string[];
+  /** 用户在本轮或最近对话中明确给出的、允许变更的其他绝对路径。 */
+  userAuthorizedPaths?: string[];
+  /** 完全授权模式：允许切换和操作 SSH 账号本身有权限访问的任意路径。 */
+  unrestricted?: boolean;
 }
 
 export interface WorkflowCommandDecision {
@@ -50,6 +54,14 @@ function authorizedRoots(scope: WorkflowCommandScope, runDir: string): string[] 
     .filter((item): item is string => Boolean(item));
 }
 
+function writableRoots(scope: WorkflowCommandScope, runDir: string): string[] {
+  // 参考数据永远只读；用户明确选择的输入目录可能同时承载旧版流程产物，
+  // 因此允许在确认后精确清理其中的旧输出。
+  return [runDir, ...(scope.inputs || []), ...(scope.userAuthorizedPaths || [])]
+    .map(item => normalizeRemotePath(item, scope.home))
+    .filter((item): item is string => Boolean(item));
+}
+
 /**
  * Workflow commands are executed inside the formal run directory.
  * 守卫职责：防越权写入与无界发现；只读的环境探查（ls/cat/module/conda 等）
@@ -59,6 +71,11 @@ export function scopeWorkflowCommand(command: string, scope: WorkflowCommandScop
   const trimmed = String(command || '').trim();
   const runDir = normalizeRemotePath(scope.runDir, scope.home);
   if (!trimmed || !runDir) return { ok: false, reason: '流程运行目录无效。' };
+  if (scope.unrestricted) {
+    // 保持没有显式 cd 的相对命令仍从 RUN 启动；包含 cd 时尊重用户开启的完全路径权限。
+    const hasCd = /[\r\n]\s*cd\s|(^|[;&|])\s*cd\s|^cd\s/i.test(trimmed);
+    return { ok: true, command: hasCd ? trimmed : `cd ${shq(runDir)} && ${trimmed}` };
+  }
   if (/[\r\n]\s*cd\s|(^|[;&|])\s*cd\s|^cd\s/i.test(trimmed)) {
     return { ok: false, reason: '流程命令不能自行切换目录；系统会自动固定在本次 RUN 工作目录。' };
   }
@@ -67,6 +84,10 @@ export function scopeWorkflowCommand(command: string, scope: WorkflowCommandScop
   }
 
   const roots = authorizedRoots(scope, runDir);
+  const mutationRoots = writableRoots(scope, runDir);
+  const protectedRoots = [runDir, ...(scope.inputs || [])]
+    .map(item => normalizeRemotePath(item, scope.home))
+    .filter((item): item is string => Boolean(item));
 
   // locate/tree 本质就是全库/递归发现工具，一律拦截。
   if (/\blocate\b|\btree\b/i.test(trimmed)) {
@@ -84,6 +105,20 @@ export function scopeWorkflowCommand(command: string, scope: WorkflowCommandScop
 
   // 路径授权检查只对可能改变状态的命令生效；只读命令（含环境探测）不限制路径。
   const risk = classifyCommandRisk(trimmed);
+  if (risk === 'destructive') {
+    const targets = absolutePathTokens(trimmed, scope.home);
+    for (const candidate of targets) {
+      if (!mutationRoots.some(root => isInside(candidate, root))) {
+        return {
+          ok: false,
+          reason: `破坏性操作仅限本次 RUN 或用户已选择的输入目录，不能修改：${candidate}。`,
+        };
+      }
+      if (protectedRoots.includes(candidate)) {
+        return { ok: false, reason: `不能删除整个授权根目录：${candidate}。请明确指定要清理的旧产物。` };
+      }
+    }
+  }
   const traversal = /\b(?:find|du|ls)\b/i.test(trimmed);
   if (traversal && risk !== 'read') {
     for (const candidate of absolutePathTokens(trimmed, scope.home)) {

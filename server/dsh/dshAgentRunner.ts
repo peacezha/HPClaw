@@ -161,8 +161,12 @@ export async function runDshAgent(opts: DshAgentOptions): Promise<DshAgentOutcom
     const displayInstruction = zh
       ? '在对话中展示图片或图表时，直接用标准 Markdown 图片语法写文件路径（![描述](路径)）：集群绝对路径、本地绝对路径（C:\\...）和工作区相对路径都会被客户端自动内联渲染；不要为此启动临时 HTTP 服务，也不要 base64 内联。表格用标准 Markdown 表格语法。'
       : 'To show images or charts in chat, write standard Markdown image syntax with plain file paths (![desc](path)): cluster absolute paths, local absolute paths (C:\\...) and workspace-relative paths are all rendered inline by the client. Never start a temporary HTTP server or inline base64 for this. Use standard Markdown tables for tabular data.';
+    const autonomyInstruction = zh
+      ? '目标和路径明确时直接使用工具完成安全操作并验证结果，不要只把命令发给用户自己执行；仅在缺少关键科学参数或遇到高风险操作确认时暂停。'
+      : 'When the goal and paths are clear, use tools to complete safe operations and verify the result instead of handing commands back to the user; pause only for a missing scientific decision or a high-risk confirmation.';
     const text = languageInstruction
       + `\n${displayInstruction}`
+      + `\n${autonomyInstruction}`
       + (opts.summary ? `\n\n对话摘要：${opts.summary}` : '')
       + `\n\n${opts.userText}`;
     // 必须先完成 mux WebSocket 握手，再提交 prompt。否则极快的回答可能在

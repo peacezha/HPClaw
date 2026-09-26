@@ -42,11 +42,14 @@ export function buildOutgoingMessages(
   return [...currentMessages, { role: 'user', content: userText }];
 }
 
-const MAX_TRANSPORT_MESSAGES = 18;
-const MAX_TRANSPORT_TOTAL_CHARS = 20_000;
-const MAX_TRANSPORT_USER_CHARS = 4_000;
-const MAX_TRANSPORT_ASSISTANT_CHARS = 4_000;
-const MAX_TRANSPORT_SYSTEM_CHARS = 1_000;
+// 0.2.9 与此前版本都只传 18 条 / 2 万字符。隔离 dsh 会话后，这个窗口
+// 容易让原生引擎在长对话中丢掉刚刚确认的参数。服务端仍会按模型 token
+// 预算二次裁剪，因此这里扩大到一个保守的连续窗口，不会无限增长请求体。
+const MAX_TRANSPORT_MESSAGES = 32;
+const MAX_TRANSPORT_TOTAL_CHARS = 48_000;
+const MAX_TRANSPORT_USER_CHARS = 8_000;
+const MAX_TRANSPORT_ASSISTANT_CHARS = 8_000;
+const MAX_TRANSPORT_SYSTEM_CHARS = 2_000;
 
 function truncateForTransport(content: string, maxChars: number): string {
   if (content.length <= maxChars) return content;
@@ -130,6 +133,8 @@ export function shouldRenderSystemMessage(content: string): boolean {
   // 不渲染 Agent 步骤提示和命令类工具的原始输出
   if (/^\[Agent step \d+\]/.test(text)) return false;
   if (/^\[命令输出已隐藏\]/.test(text)) return false;
+  // ask_user 已有正式问题卡片；隐藏旧会话中遗留的原始工具 JSON，避免重复提问。
+  if (/^\[(?:🔧|📋)\s+ask_user\]/.test(text)) return false;
   return true;
 }
 

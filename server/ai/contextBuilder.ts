@@ -24,6 +24,7 @@ export interface SmartContextInput {
   structuredMemory?: StructuredMemory;
   taskPlan?: TaskPlan;
   model?: string;
+  locale?: 'zh-CN' | 'en-US';
   observations?: string;
   selectedOutput?: string;
   /** 历史对话摘要（来自会话存储） */

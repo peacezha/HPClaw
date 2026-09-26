@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { appPath } from '../paths';
 import { renderWorkflowCommand, type Workflow } from './workflowTypes';
+import { translateSchedulerDirectives } from '../notifications/scheduler';
 import { workflowSlug } from '../../shared/flowManifest';
 import type {
   WorkflowRun,
@@ -31,6 +32,8 @@ export function resolveAssetLocalPath(source: string): string {
 /** createWorkflowRun 的可选部署上下文：有 sftp 时把 workflow.assets 上传进 RUN 目录。 */
 export interface CreateRunDeployContext {
   sftp?: { fastPut: (localPath: string, remotePath: string, cb: (err?: Error) => void) => void } | undefined;
+  /** 目标集群调度器：非 LSF 时步骤脚本里的 #BSUB 指令会被翻译（#SBATCH/#PBS/剥除）。 */
+  scheduler?: 'lsf' | 'slurm' | 'pbs' | 'none';
 }
 
 const RUN_STATUSES = new Set<WorkflowRunStatus>([
@@ -175,19 +178,30 @@ export function buildWorkflowStepScript(
   config: WorkflowRunConfig,
   stepNumber: number,
   runDir: string,
+  scheduler: 'lsf' | 'slurm' | 'pbs' | 'none' = 'lsf',
 ): string {
   const step = workflow.steps[stepNumber - 1];
   if (!step) throw new Error(`步骤不存在: ${stepNumber}`);
   const flowDir = runDir.split('/03_workspace/runs/')[0] || runDir;
   const template = config.stepCommandOverrides[stepNumber] || step.command || '';
-  const rendered = renderWorkflowCommand(template, workflowRunValues(config, stepNumber, runDir, flowDir))
-    .replaceAll('<RUN>', runDir)
-    .replaceAll('<FLOW>', flowDir)
-    .trim();
+  const rendered = translateSchedulerDirectives(
+    renderWorkflowCommand(template, workflowRunValues(config, stepNumber, runDir, flowDir))
+      .replaceAll('<RUN>', runDir)
+      .replaceAll('<FLOW>', flowDir)
+      .trim(),
+    scheduler,
+  );
+  // LSF/Slurm 只识别脚本首个可执行语句之前的调度器指令。流程模板通常以
+  // #BSUB/#SBATCH 开头，因此必须把它们放到 shebang 后、set 命令前；否则
+  // `bsub < step-NN.sh` 会悄悄忽略队列、核数和作业名。
+  const renderedLines = rendered.split(/\r?\n/);
+  const schedulerDirectives = renderedLines.filter(line => /^\s*#(?:BSUB|SBATCH)\b/.test(line));
+  const renderedBody = renderedLines.filter(line => !/^\s*#(?:BSUB|SBATCH)\b/.test(line)).join('\n').trim();
   const unresolved = [...rendered.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)].map(match => match[1]);
   const uniqueUnresolved = [...new Set(unresolved)];
   return [
     '#!/usr/bin/env bash',
+    ...schedulerDirectives,
     'set -eo pipefail',
     '',
     `# HPClaw 流程：${workflow.name}`,
@@ -199,14 +213,17 @@ export function buildWorkflowStepScript(
       ? [`# HPCLAW_REVIEW_REQUIRED：以下参数尚未确定，请在运行前补齐：${uniqueUnresolved.join(', ')}`]
       : []),
     '',
-    rendered || '# 当前步骤没有可直接执行的命令，请在此处补充。',
+    renderedBody || '# 当前步骤没有可直接执行的命令，请在此处补充。',
     '',
   ].join('\n');
 }
 
 function buildCodeReadme(workflow: Workflow, runDir: string): string {
-  const stepLines = workflow.steps.map((step, index) =>
-    `- 步骤 ${index + 1}：\`step-${String(index + 1).padStart(2, '0')}.sh\` — ${step.title}`);
+  const graph = resolveWorkflowStepGraph(workflow);
+  const stepLines = workflow.steps.map((step, index) => {
+    const deps = graph[index].dependsOn.length ? `；依赖 ${graph[index].dependsOn.join('、')}` : '；无前置依赖';
+    return `- 步骤 ${index + 1} [${graph[index].stepId}]：\`step-${String(index + 1).padStart(2, '0')}.sh\` — ${step.title}${deps}`;
+  });
   return [
     `# ${workflow.name} — 本次运行代码`,
     '',
@@ -221,6 +238,39 @@ function buildCodeReadme(workflow: Workflow, runDir: string): string {
     '日志保存在 `../logs/`，结果保存在 `../results/`，运行状态保存在 `../run.json`。',
     '',
   ].join('\n');
+}
+
+export interface ResolvedWorkflowGraphStep {
+  stepId: string;
+  dependsOn: string[];
+}
+
+/**
+ * 把旧版串行步骤和新版显式 DAG 统一成稳定依赖图。
+ * 显式依赖必须指向排在当前步骤之前的节点，保证现有逐步执行器可安全执行。
+ */
+export function resolveWorkflowStepGraph(workflow: Pick<Workflow, 'steps'>): ResolvedWorkflowGraphStep[] {
+  const graph: ResolvedWorkflowGraphStep[] = [];
+  const seen = new Set<string>();
+  workflow.steps.forEach((step, index) => {
+    const fallback = `step-${String(index + 1).padStart(2, '0')}`;
+    const stepId = String(step.id || fallback).trim();
+    if (!stepId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stepId)) {
+      throw new Error(`步骤 ${index + 1} 的 id 无效: ${stepId || '(空)'}`);
+    }
+    if (seen.has(stepId)) throw new Error(`流程步骤 id 重复: ${stepId}`);
+    const dependsOn = step.dependsOn === undefined
+      ? (index > 0 ? [graph[index - 1].stepId] : [])
+      : [...new Set(step.dependsOn.map(String).map(id => id.trim()).filter(Boolean))];
+    for (const dependency of dependsOn) {
+      if (!seen.has(dependency)) {
+        throw new Error(`步骤 ${stepId} 的依赖 ${dependency} 不存在或未排在它之前`);
+      }
+    }
+    graph.push({ stepId, dependsOn });
+    seen.add(stepId);
+  });
+  return graph;
 }
 
 export async function writeWorkflowRun(exec: RunExec, home: string, run: WorkflowRun): Promise<void> {
@@ -288,8 +338,9 @@ export async function createWorkflowRun(
   const runDir = `${home.replace(/\/+$/, '')}/hpclaw_flows/${slug}/03_workspace/runs/${runId}`;
   const codeDir = `${runDir}/code`;
   const config = sanitizeRunConfig(rawConfig);
+  const graph = resolveWorkflowStepGraph(workflow);
   const stepScripts = workflow.steps.map((_step, index) =>
-    buildWorkflowStepScript(workflow, config, index + 1, runDir));
+    buildWorkflowStepScript(workflow, config, index + 1, runDir, deploy?.scheduler ?? 'lsf'));
   const run: WorkflowRun = {
     runId,
     workflowId: workflow.id,
@@ -308,7 +359,9 @@ export async function createWorkflowRun(
     config,
     steps: workflow.steps.map((step, index) => ({
       n: index + 1,
-      stepId: `step-${String(index + 1).padStart(2, '0')}`,
+      stepId: graph[index].stepId,
+      dependsOn: graph[index].dependsOn,
+      phase: step.phase,
       title: step.title,
       status: config.skippedSteps.includes(index + 1) ? 'skipped' : 'pending',
       scriptPath: workflowStepScriptPath(runDir, index + 1),
@@ -441,6 +494,35 @@ export async function updateWorkflowRun(
   }
   const now = Date.now();
 
+  if (Number.isInteger(patch.restartFromStep)) {
+    const restartFromStep = Number(patch.restartFromStep);
+    if (restartFromStep < 1 || restartFromStep > run.totalSteps) {
+      throw new Error(`重跑起始步骤无效: ${restartFromStep}`);
+    }
+    const resetSteps = run.steps.filter(step => step.n >= restartFromStep);
+    if (resetSteps.length === 0) throw new Error(`找不到重跑起始步骤: ${restartFromStep}`);
+    const resetJobIds = new Set(resetSteps.flatMap(step => step.jobIds || []));
+    for (const step of resetSteps) {
+      step.status = 'pending';
+      delete step.startedAt;
+      delete step.finishedAt;
+      delete step.jobIds;
+      delete step.summary;
+      delete step.qc;
+      delete step.outputs;
+      delete step.evidence;
+      delete step.submittedScriptHash;
+    }
+    if (run.jobStates) {
+      for (const jobId of resetJobIds) delete run.jobStates[jobId];
+    }
+    run.currentStep = restartFromStep;
+    run.status = 'running';
+    delete run.endedAt;
+    delete run.error;
+    delete run.reportPath;
+  }
+
   if (patch.status && RUN_STATUSES.has(patch.status)) run.status = patch.status;
   if (patch.status === 'running' || patch.status === 'waiting_user' || patch.status === 'waiting_jobs' || patch.status === 'blocked_env') {
     delete run.endedAt;
@@ -457,8 +539,15 @@ export async function updateWorkflowRun(
     if (patch.step.status && STEP_STATUSES.has(patch.step.status)) {
       assertWorkflowStepTransition(step.status, patch.step.status);
       if (patch.step.status === 'running') {
-        const unfinishedPrevious = run.steps.find(s => s.n < step.n && s.status !== 'done' && s.status !== 'skipped');
-        if (unfinishedPrevious) throw new Error(`前置步骤 ${unfinishedPrevious.n} 尚未完成，不能启动步骤 ${step.n}`);
+        const dependencies = Array.isArray(step.dependsOn)
+          ? step.dependsOn
+          : run.steps.filter(s => s.n < step.n).map(s => s.stepId);
+        const unfinishedDependency = dependencies
+          .map(id => run.steps.find(s => s.stepId === id))
+          .find((candidate): candidate is WorkflowRun['steps'][number] => Boolean(candidate && candidate.status !== 'done' && candidate.status !== 'skipped'));
+        if (unfinishedDependency) {
+          throw new Error(`前置步骤 ${unfinishedDependency.n}（${unfinishedDependency.title}）尚未完成，不能启动步骤 ${step.n}`);
+        }
       }
       const completionSummary = typeof patch.step.summary === 'string' ? patch.step.summary.trim() : step.summary?.trim();
       if (patch.step.status === 'done' && !completionSummary) {

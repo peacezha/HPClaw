@@ -97,8 +97,9 @@ function shortHash(input: string): string {
 
 /**
  * 由流程名生成集群目录 slug。
- * 集群路径必须是纯 ASCII（中文会导致 SFTP/shell 报错）：
- * - 纯 ASCII 名：与旧规则一致（非法字符替换为 _）；
+ * 集群路径必须是纯 ASCII 且不含 shell 特殊字符（括号/引号/反引号/$ 等会让
+ * 未加引号的 mkdir/cd 直接语法报错——v0.4.19 的英文名带 (...) 就曾全盘炸掉预检）：
+ * - 纯 ASCII 名：非法字符替换为 _；
  * - 含中文等非 ASCII 字符：剔除后用原名短哈希做后缀防碰撞
  *   （如 "RNA-seq 差异表达全流程" → "RNA-seq-a1b2c3"，避免与 "RNA-seq 质控与定量流程" 撞目录）；
  * - 剔除后为空（纯中文名）：flow-<hash>。
@@ -107,6 +108,7 @@ export function workflowSlug(name: string): string {
   const legacy = workflowSlugLegacy(name);
   const ascii = legacy
     .replace(/[^\x21-\x7e]/g, '')
+    .replace(/[()[\]{}$&;'"`!]/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
   if (!ascii) return `flow-${shortHash(legacy)}`;
@@ -116,4 +118,15 @@ export function workflowSlug(name: string): string {
 /** 旧版 slug（保留中文）：仅用于识别 slug ASCII 化之前生成的运行目录归属 */
 export function workflowSlugLegacy(name: string): string {
   return (name || 'workflow').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
+}
+
+/** v0.4.19–v0.4.20 期间的 slug（ASCII 保留括号）：仅用于识别该窗口期生成的运行目录归属 */
+export function workflowSlugParenLegacy(name: string): string {
+  const legacy = workflowSlugLegacy(name);
+  const ascii = legacy
+    .replace(/[^\x21-\x7e]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!ascii) return `flow-${shortHash(legacy)}`;
+  return ascii === legacy ? ascii : `${ascii}-${shortHash(legacy)}`.slice(0, 48);
 }

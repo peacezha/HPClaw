@@ -5,9 +5,11 @@ import {
   X, Package, Database, FolderOpen, FileSearch, Plus, Trash2, Play, Loader2,
   CheckCircle2, XCircle, AlertTriangle, FileText, Terminal, RefreshCw,
   Wrench, ChevronDown, ChevronRight, Circle, Download, Upload, Code2, Save,
-  GitBranch,
+  GitBranch, Bot,
 } from 'lucide-react';
 import WorkflowFlowGraph from './WorkflowFlowGraph';
+import { buildDataPrepGuide } from '../features/workflows/dataPrepGuide';
+import { encodeExampleFor } from '../features/workflows/encodeExample';
 import type { Workflow } from '@/shared/workflow';
 import type { PickPathKind } from '@/shared/fileTransfer';
 import type { PreflightResult } from '@/shared/flowManifest';
@@ -96,6 +98,8 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const [preflight, setPreflight] = useState<PreflightResult | null | undefined>(undefined);
   const [checkingAll, setCheckingAll] = useState(false);
   const [itemBusy, setItemBusy] = useState<Record<string, boolean>>({});
+  // 环境检查失败不再静默：保留旧状态的同时把错误显示出来
+  const [checkError, setCheckError] = useState('');
   const [inputs, setInputs] = useState<string[]>([]);
   const [manualInput, setManualInput] = useState('');
   const [paramValues, setParamValues] = useState<Record<string, string>>(() => ({
@@ -114,6 +118,18 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const [refOverrides, setRefOverrides] = useState<Record<string, string>>({});
   const [skippedSteps, setSkippedSteps] = useState<number[]>(() => initialHabit?.skippedSteps || []);
   const [stepCommandOverrides, setStepCommandOverrides] = useState<Record<number, string>>({});
+  // 步骤代码/指令可见性：外层“步骤与代码”折叠块 + 逐步代码块展开状态；
+  // 流程图节点可点击：跳到对应步骤卡片并展开它的代码块
+  const [stepsPanelOpen, setStepsPanelOpen] = useState(false);
+  const [openCodeSteps, setOpenCodeSteps] = useState<number[]>([]);
+  const stepCardRefs = useRef(new Map<number, HTMLDivElement>());
+  const jumpToStepCode = useCallback((n: number) => {
+    setStepsPanelOpen(true);
+    setOpenCodeSteps(list => (list.includes(n) ? list : [...list, n]));
+    requestAnimationFrame(() => {
+      stepCardRefs.current.get(n)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, []);
   const [formError, setFormError] = useState('');
   const [deployBusy, setDeployBusy] = useState(false);
   const [deployResults, setDeployResults] = useState<Array<{ remotePath: string; ok: boolean; error?: string }> | null>(null);
@@ -226,9 +242,12 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const doCheckAll = useCallback(async () => {
     if (!sessionId) return;
     setCheckingAll(true);
+    setCheckError('');
     try {
       setPreflight(await runPreflight(workflow.id, sessionId));
-    } catch { /* 保持旧状态 */ } finally {
+    } catch (e: any) {
+      setCheckError(`环境检查失败：${e?.message || String(e)}`);
+    } finally {
       setCheckingAll(false);
     }
   }, [workflow.id, sessionId]);
@@ -236,10 +255,13 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const doCheckItem = useCallback(async (kind: 'software' | 'references', name: string) => {
     if (!sessionId) return;
     setItemBusy(b => ({ ...b, [`${kind}:${name}`]: true }));
+    setCheckError('');
     try {
       const only = kind === 'software' ? { software: [name] } : { references: [name] };
       setPreflight(await runPreflight(workflow.id, sessionId, only));
-    } catch { /* 保持旧状态 */ } finally {
+    } catch (e: any) {
+      setCheckError(`校验「${name}」失败：${e?.message || String(e)}`);
+    } finally {
       setItemBusy(b => ({ ...b, [`${kind}:${name}`]: false }));
     }
   }, [workflow.id, sessionId]);
@@ -260,13 +282,13 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
     }
   }, [sessionId, workflow.id, doCheckAll]);
 
-  // 缺失项一键补齐：组装消息发给 AI（provision 技能，登录节点操作，需用户确认）
+  // 缺失项一键补齐：组装消息发给 AI（直接修复，登录节点操作；只有真正需要抉择才询问）
   const handleProvision = useCallback((kind: 'software' | 'references', name: string, detail?: string) => {
     const kindLabel = kind === 'software' ? '软件' : '参考数据';
     onRun([
       `流程「${workflow.name}」（ID: ${workflow.id}）的${kindLabel}「${name}」未就绪${detail ? `（${detail}）` : ''}。`,
-      '请使用 provision / 数据管理相关技能帮我补齐：先告诉我方案（装哪个 module/包、参考数据放哪、放流程家目录 02_reference/ 还是公共库），征得我同意后再操作；',
-      '注意：下载和安装只能在登录节点进行（计算节点无网络）。完成后请重新核查。',
+      '请直接修复，不用先报方案等我确认：优先 module load 或安装到流程家目录 02_reference/（或你判断的合适位置），下载和安装只能在登录节点进行（计算节点无网络）。',
+      '修复后用一条精确命令验证该项，然后重新核查并继续流程；只有确实需要我抉择时才 ask_user。',
     ].join('\n'));
   }, [onRun, workflow.id, workflow.name]);
 
@@ -380,6 +402,53 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
     .some(i => !i.ok && i.required && i.detail && i.detail !== '未检查');
   const inputHintText = inputHint || '选择计算资源上要处理的数据目录';
   const dedicatedFlowDir = `~/hpclaw_flows/${workflowSlug(workflow.name)}/`;
+  // 数据准备引导：从流程定义生成（格式要点 + 可复制模板）
+  const dataPrep = useMemo(() => buildDataPrepGuide(workflow), [workflow]);
+
+  /** 让 AI 协助准备数据：留在当前对话，AI 先看目录再帮忙生成/检查输入文件 */
+  const handleAskAiDataPrep = useCallback(() => {
+    const paramLines = workflow.params
+      .filter(p => p.type === 'path' || /INPUT|DATA|FASTQ|SAMPLE|SHEET|JSON|YAML|CONFIG/i.test(p.name))
+      .map(p => `- ${p.name}（${p.label}）${p.help ? `：${p.help}` : ''}`);
+    const message = [
+      `我准备运行流程「${workflow.name}」（ID: ${workflow.id}），请帮我准备数据：`,
+      ...(dataPrep.summary ? [`数据形态：${dataPrep.summary}`] : []),
+      ...(paramLines.length ? ['需要我准备/确认的输入：', ...paramLines] : []),
+      '',
+      '请先看一下我当前目录里有什么（我会告诉你数据目录，或你直接列当前目录），',
+      '然后帮我生成或检查样本表/输入文件；格式确认无误后再开始流程。',
+    ].join('\n');
+    onRun(message);
+  }, [workflow, dataPrep.summary, onRun]);
+
+  /** 「参考示例」一键填参：只填空着的参数（不覆盖用户已填），数据目录有示例就一并带上 */
+  const handleFillEncodeExample = useCallback(() => {
+    const spec = encodeExampleFor(workflow.id);
+    if (!spec) return;
+    const filled: string[] = [];
+    const kept: string[] = [];
+    for (const [name, value] of Object.entries(spec.params)) {
+      if (workflow.params.some(p => p.name === name)) {
+        if ((paramValues[name] ?? '') === '') {
+          filled.push(name);
+        } else {
+          kept.push(name);
+        }
+      }
+    }
+    setParamValues(current => {
+      const next = { ...current };
+      for (const name of filled) next[name] = spec.params[name];
+      return next;
+    });
+    if (spec.inputDir && inputs.length === 0) {
+      setInputs([spec.inputDir]);
+    }
+    setConfigNotice(
+      `已按参考示例填好 ${filled.length} 个参数${kept.length ? `（${kept.length} 个您已填写的保持不变）` : ''}，`
+      + '点「开始运行」即可。示例是 GRCh38 chr19 小数据集，只用于验证流程跑通。',
+    );
+  }, [workflow, paramValues, inputs.length]);
 
   const handleImportHistory = useCallback(async () => {
     if (!sessionId) return;
@@ -466,6 +535,11 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             </button>
           </summary>
           <div className="p-2 space-y-1 border-t border-scholar-700/40">
+            {checkError && (
+              <p className="text-[11px] text-[var(--color-danger)] px-1 py-1 flex items-start gap-1">
+                <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />{checkError}
+              </p>
+            )}
             {preflight?.moduleSystem === 'unavailable' && (
               <p className="text-[11px] text-orange-400 px-1 py-1">
                 Module 系统未在非交互 SSH 中初始化：{preflight.moduleSystemDetail || '请检查站点 modules.sh/lmod.sh'}
@@ -541,6 +615,60 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             <span className="text-xs font-medium text-scholar-100 flex-1">数据选择</span>
             <span className="text-[10px] text-scholar-500">{inputHintText}</span>
           </header>
+          {/* 数据准备指南：很多人不知道数据该怎么填——给出格式要点、可复制模板和 AI 协助入口 */}
+          <div className="px-2 pt-2">
+            <details open={inputs.length === 0} className="rounded-md border border-accent/25 bg-accent/5">
+              <summary className="px-2 py-1.5 flex items-center gap-1.5 cursor-pointer list-none text-[11px] text-accent font-medium">
+                <FileText className="w-3 h-3" /> 数据怎么准备？（格式说明 + 模板 + AI 协助）
+              </summary>
+              <div className="px-2.5 pb-2 pt-1 space-y-1.5">
+                <p className="text-[11px] text-scholar-200 font-medium">{dataPrep.summary}</p>
+                <ul className="list-disc pl-4 space-y-0.5 text-[10px] text-scholar-300 leading-relaxed">
+                  {dataPrep.points.map((point, i) => <li key={i}>{point}</li>)}
+                </ul>
+                {dataPrep.templates.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {dataPrep.templates.map(tpl => (
+                      <div key={tpl.param} className="rounded border border-scholar-700/60 bg-scholar-950/70">
+                        <div className="flex items-center gap-2 px-2 py-1 border-b border-scholar-700/40">
+                          <span className="text-[10px] font-medium text-scholar-200 flex-1">{tpl.label}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(tpl.content).catch(() => {});
+                              setConfigNotice('模板「' + tpl.label + '」已复制，粘贴到文本编辑器保存为 ' + tpl.filename);
+                            }}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-scholar-800 text-scholar-200 hover:text-scholar-50 border border-scholar-700/60"
+                          >复制模板</button>
+                        </div>
+                        <pre className="text-[10px] leading-relaxed text-scholar-300 px-2 py-1.5 whitespace-pre-wrap break-all max-h-36 overflow-y-auto font-mono">{tpl.content}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleAskAiDataPrep}
+                  disabled={!sessionId}
+                  className="btn-ghost !text-[11px] !px-2.5 !text-accent border-accent/30"
+                  title="让 AI 看你的数据目录并协助生成/检查输入文件"
+                >
+                  <Bot className="w-3 h-3" /> 让 AI 帮我准备数据
+                </button>
+                {encodeExampleFor(workflow.id) && (
+                  <button
+                    type="button"
+                    onClick={handleFillEncodeExample}
+                    disabled={!sessionId}
+                    className="btn-ghost !text-[11px] !px-2.5 !text-emerald-500 border-emerald-500/30"
+                    title="把参数自动填成集群示例参考库（~/hpclaw_refs/encode_example）里的文件，填完即可运行"
+                  >
+                    <Package className="w-3 h-3" /> 参考示例（一键填好，直接运行）
+                  </button>
+                )}
+              </div>
+            </details>
+          </div>
           <div className="p-2 space-y-1.5">
             {inputs.map(p => (
               <div key={p} className="flex items-center gap-1.5 bg-scholar-950/60 rounded px-2 py-1">
@@ -598,22 +726,39 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
               <span className="text-[10px] text-scholar-500">{workflow.steps.length} 步</span>
             </div>
             <WorkflowFlowGraph
-              steps={workflow.steps.map((s, i) => ({ n: i + 1, title: s.title, status: 'pending' as const }))}
+              steps={workflow.steps.map((s, i) => ({
+                n: i + 1,
+                stepId: s.id || `step-${String(i + 1).padStart(2, '0')}`,
+                title: s.title,
+                status: 'pending' as const,
+                dependsOn: s.dependsOn,
+                phase: s.phase,
+              }))}
+              onSelectStep={jumpToStepCode}
             />
+            <p className="mt-1 text-[10px] text-scholar-500">点击任意步骤节点，可跳到该步骤的代码 / 指令。</p>
           </section>
         )}
 
-        {/* ── 步骤级高级配置：默认折叠，避免运行入口被大量细节淹没 ── */}
+        {/* ── 步骤级高级配置：每步的代码/指令直接可见，覆盖命令默认折叠 ── */}
         {workflow.steps.length > 0 && (
-          <details className="rounded-lg border border-scholar-700/60 bg-scholar-800/40">
+          <details
+            className="rounded-lg border border-scholar-700/60 bg-scholar-800/40"
+            open={stepsPanelOpen || undefined}
+            onToggle={e => setStepsPanelOpen((e.target as HTMLDetailsElement).open)}
+          >
             <summary className="px-3 py-2 flex items-center gap-2 cursor-pointer list-none">
               <Wrench className="w-3.5 h-3.5 text-accent" />
-              <span className="text-xs font-medium text-scholar-100 flex-1">步骤与高级设置</span>
+              <span className="text-xs font-medium text-scholar-100 flex-1">步骤、代码与高级设置</span>
               <span className="text-[10px] text-scholar-500">{workflow.steps.length} 步 · 默认按流程执行</span>
             </summary>
             <div className="p-2 space-y-2.5 border-t border-scholar-700/40">
               {workflow.steps.map((s, i) => (
-                <div key={i} className="rounded-md border border-scholar-700/40 bg-scholar-950/40 p-2">
+                <div
+                  key={i}
+                  ref={el => { if (el) stepCardRefs.current.set(i + 1, el); else stepCardRefs.current.delete(i + 1); }}
+                  className={`rounded-md border p-2 transition-colors ${openCodeSteps.includes(i + 1) ? 'border-accent/50 bg-scholar-950/60' : 'border-scholar-700/40 bg-scholar-950/40'}`}
+                >
                   <div className="flex items-center gap-2 mb-1.5">
                     <p className="text-[10px] font-medium text-scholar-300 flex-1">{i + 1}. {s.title}</p>
                     {s.agent?.confidence && (
@@ -640,6 +785,30 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                       {!!s.agent.outputs?.length && <p>预期输出：{s.agent.outputs.join('、')}</p>}
                     </div>
                   )}
+                  {/* 每步的代码/指令：默认展开可读，不需要先开“高级” */}
+                  <details
+                    className="mb-1.5"
+                    open={openCodeSteps.includes(i + 1) || undefined}
+                    onToggle={e => {
+                      const open = (e.target as HTMLDetailsElement).open;
+                      setOpenCodeSteps(list => (open ? [...new Set([...list, i + 1])] : list.filter(n => n !== i + 1)));
+                    }}
+                  >
+                    <summary className="text-[10px] text-accent cursor-pointer select-none list-none flex items-center gap-1">
+                      <Code2 className="w-3 h-3" /> 代码 / 指令
+                    </summary>
+                    <div className="relative mt-1">
+                      <pre className="text-[10px] leading-relaxed text-scholar-200 bg-scholar-950 border border-scholar-700/60 rounded px-2 py-1.5 whitespace-pre-wrap break-all max-h-56 overflow-y-auto font-mono">{s.command}</pre>
+                      <button
+                        type="button"
+                        onClick={() => void navigator.clipboard?.writeText(s.command).catch(() => {})}
+                        className="absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded bg-scholar-800/90 text-scholar-300 hover:text-scholar-100 border border-scholar-700/60"
+                        title="复制本步命令"
+                      >
+                        复制
+                      </button>
+                    </div>
+                  </details>
                   {!!s.params?.length && <div className="grid grid-cols-2 gap-2">
                     {s.params.map(p => (
                       <ParamField key={p.name} param={p}

@@ -23,7 +23,7 @@ beforeEach(() => {
   clusterHandler = () => jsonResponse({ success: true, connected: true, conversations: [clusterDup, clusterRemote] });
   fetchMock = vi.fn((input: unknown) => {
     const url = String(input);
-    if (url === '/api/conversations') return jsonResponse({ success: true, conversations: [localConv] });
+    if (String(url).startsWith('/api/conversations?') || url === '/api/conversations') return jsonResponse({ success: true, conversations: [localConv] });
     if (url === '/api/conversations/cluster') return clusterHandler();
     if (url.endsWith('/import')) return jsonResponse({ success: true, conversation: { id: 'conv-remote' } });
     return jsonResponse({ success: false, error: 'not found' }, 404);

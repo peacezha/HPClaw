@@ -8,11 +8,14 @@ import { sanitizeManifest } from './flowManifest';
 import {
   checkToolsInBioconda, extractJsonObject, fetchPaperTextByDoi, fetchRepoCodeExcerpt,
   findRepoUrls, learnWorkflowFromText, normalizeDoi, parseWorkflowJson, preparePaperContext,
-  repairWorkflowJsonWithModel,
+  repairWorkflowJsonWithModel, reviseWorkflowDraftWithFeedback,
 } from './learnFromPaper';
 import {
   evaluatePaperWorkflow, PAPER_IMPORTER_VERSION, sanitizePaperExtractionMeta,
 } from './paperWorkflowQuality';
+import {
+  deleteLearnDraft, getLearnDraft, listLearnDrafts, saveLearnDraft, updateLearnDraft,
+} from './learnDraftStore';
 import type { Workflow, WorkflowPaperImport, WorkflowParam, WorkflowStep } from './workflowTypes';
 
 function sendError(res: Response, status: number, message: string): void {
@@ -30,6 +33,17 @@ export function sanitizeSteps(value: unknown): WorkflowStep[] {
         notes: s.notes ? String(s.notes) : undefined,
         optional: Boolean(s.optional),
       };
+      const stepId = String(s.id || '').trim();
+      if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stepId)) step.id = stepId.slice(0, 100);
+      if (Array.isArray(s.dependsOn)) {
+        const dependencies: string[] = (s.dependsOn as unknown[])
+          .map((value: unknown) => String(value).trim())
+          .filter((value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value))
+          .slice(0, 100);
+        step.dependsOn = [...new Set<string>(dependencies)];
+      }
+      const phase = String(s.phase || '').trim();
+      if (phase) step.phase = phase.slice(0, 100);
       if (Array.isArray(s.params)) {
         const params = sanitizeParams(s.params);
         if (params.length > 0) step.params = params;
@@ -379,6 +393,8 @@ export function registerWorkflowRoutes(app: Express): void {
       const locale: 'zh-CN' | 'en-US' = req.body?.locale === 'en-US' ? 'en-US' : 'zh-CN';
       let paperText = String(req.body?.paperText || '').trim();
       let source = '用户上传的 PDF 文本';
+      const directText = Boolean(paperText);
+      if (req.body?.pasteSource === 'paste') source = '用户粘贴的方法学文本';
       let doi: string | undefined;
       if (!paperText) {
         const doiInput = String(req.body?.doi || '').trim();
@@ -388,8 +404,9 @@ export function registerWorkflowRoutes(app: Express): void {
         paperText = fetched.text;
         source = fetched.source;
       }
-      if (paperText.length < 800) {
-        return sendError(res, 502, '获取到的论文内容太少（可能非开放获取），请改用上传 PDF');
+      // 直接提供的文本（PDF 提取/用户粘贴的方法片段）允许较短；DOI 抓取的全文太短说明没抓到
+      if (paperText.length < (directText ? 300 : 800)) {
+        return sendError(res, 502, '获取到的论文内容太少（可能非开放获取），请改用上传 PDF 或直接粘贴方法学文本');
       }
 
       // 论文附带代码仓库时，抓取仓库流程代码作为步骤的事实来源（CoPaLink 代码侧）
@@ -437,7 +454,7 @@ export function registerWorkflowRoutes(app: Express): void {
       };
       const manifest = sanitizeManifest(workflowRaw.manifest);
       if (manifest) draft.manifest = manifest;
-      if (draft.steps.length === 0) return sendError(res, 502, '未能从论文中提取出有效步骤，请重试或换更详细的全文');
+      if (draft.steps.length === 0) return sendError(res, 502, '未能从文本中提取出有效的生信分析步骤（若片段只含湿实验操作，请改贴数据分析/Methods 的计算部分）');
 
       // KB 只用于验证工具实体，不把“包存在”误当成论文—代码已经匹配。
       const softwareCheck = manifest
@@ -468,9 +485,25 @@ export function registerWorkflowRoutes(app: Express): void {
       };
       draft.paperImport = paperImport;
 
+      // 学习成果自动进草稿箱：用户切走页面/关闭面板后可找回，也可继续与 AI 交流修订。
+      let draftId: string | null = null;
+      try {
+        draftId = saveLearnDraft({
+          name: draft.name,
+          sourceLabel: source,
+          doi,
+          repoUrl: codeExcerpt?.repoUrl,
+          draft,
+          paperContext: context.text,
+        }).id;
+      } catch (err) {
+        console.warn('[paper-workflow] learn draft persist failed (non-blocking):', err instanceof Error ? err.message : err);
+      }
+
       res.json({
         success: true,
         draft,
+        draftId,
         source,
         paperChars: paperText.length,
         repoUsed: codeExcerpt?.repoUrl || null,
@@ -483,6 +516,127 @@ export function registerWorkflowRoutes(app: Express): void {
           selectionMode: context.selectionMode,
           truncated: context.truncated,
         },
+      });
+    } catch (err: any) {
+      sendError(res, 502, err.message || String(err));
+    }
+  });
+
+  // ── 文献学习草稿箱：学习成果持久化，可找回、可继续与 AI 交流修订 ──────────
+
+  app.get('/api/workflows/learn-drafts', async (_req, res) => {
+    try {
+      res.json({ success: true, drafts: listLearnDrafts() });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
+  app.get('/api/workflows/learn-drafts/:id', async (req, res) => {
+    try {
+      const entry = getLearnDraft(String(req.params.id));
+      if (!entry) return sendError(res, 404, '学习草稿不存在（可能已被清理）');
+      const { paperContext: _paperContext, ...rest } = entry;
+      res.json({ success: true, draft: rest });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
+  app.delete('/api/workflows/learn-drafts/:id', async (req, res) => {
+    try {
+      if (!deleteLearnDraft(String(req.params.id))) return sendError(res, 404, '学习草稿不存在');
+      res.json({ success: true });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
+  // 按用户反馈修订草稿：模型只改被指出的问题，其余字段原样保留；修订后重新审计并写回草稿箱。
+  app.post('/api/workflows/learn-drafts/:id/revise', async (req, res) => {
+    try {
+      const profile = profileFromBody(req.body);
+      if (!profile.apiKey) return sendError(res, 400, 'Missing API Key');
+      const feedback = String(req.body?.feedback || '').trim();
+      if (!feedback) return sendError(res, 400, 'feedback is required');
+      const locale: 'zh-CN' | 'en-US' = req.body?.locale === 'en-US' ? 'en-US' : 'zh-CN';
+      const entry = getLearnDraft(String(req.params.id));
+      if (!entry) return sendError(res, 404, '学习草稿不存在（可能已被清理）');
+
+      const currentJson = JSON.stringify({ workflow: entry.draft }, null, 1);
+      const raw = await reviseWorkflowDraftWithFeedback(currentJson, feedback, entry.paperContext, profile, locale);
+      let parseResult = await parseWorkflowJson(raw);
+      let parsed = parseResult.value as any;
+      const workflowOf = (value: any) => (value?.workflow && typeof value.workflow === 'object' ? value.workflow : value);
+      if (!parsed || !Array.isArray(workflowOf(parsed)?.steps) || workflowOf(parsed).steps.length === 0) {
+        const repairedRaw = await repairWorkflowJsonWithModel(raw, profile);
+        parseResult = await parseWorkflowJson(repairedRaw);
+        parsed = parseResult.value as any;
+      }
+      if (!parsed || !Array.isArray(workflowOf(parsed)?.steps) || workflowOf(parsed).steps.length === 0) {
+        return sendError(res, 502, 'AI 修订结果不完整，自动修复后仍无法解析；草稿保持原样，请换个表述重试');
+      }
+
+      const workflowRaw = workflowOf(parsed);
+      const revisionNote = typeof parsed?.extraction?.revisionNote === 'string'
+        ? parsed.extraction.revisionNote.trim().slice(0, 500)
+        : '';
+      const extraction = sanitizePaperExtractionMeta(parsed.extraction ?? {
+        // 模型没回传 extraction 时沿用旧审计信息，只补修订痕迹
+        primaryPath: entry.draft.paperImport?.primaryPath,
+        methodSections: entry.draft.paperImport?.methodSections,
+        excludedBranches: entry.draft.paperImport?.excludedBranches,
+        unresolvedQuestions: entry.draft.paperImport?.unresolvedQuestions,
+        toolLinks: entry.draft.paperImport?.toolLinks,
+      });
+      if (parseResult.truncated || parseResult.mode === 'partial-repair') {
+        extraction.warnings.push('AI 修订返回的 JSON 曾被截断，系统已自动闭合；请重点复核末尾步骤');
+      }
+
+      const revised: Omit<Workflow, 'id' | 'createdAt' | 'updatedAt'> = {
+        name: String(workflowRaw.name || entry.draft.name).slice(0, 60),
+        description: String(workflowRaw.description || '').slice(0, 500),
+        keywords: sanitizeKeywords(workflowRaw.keywords),
+        params: sanitizeParams(workflowRaw.params),
+        steps: sanitizeSteps(workflowRaw.steps),
+        source: 'ai',
+      };
+      const manifest = sanitizeManifest(workflowRaw.manifest);
+      if (manifest) revised.manifest = manifest;
+      else if (entry.draft.manifest) revised.manifest = entry.draft.manifest;
+
+      const paperContextSummary = {
+        originalChars: entry.paperContext?.length || 0,
+        selectedChars: entry.paperContext?.length || 0,
+        truncated: false,
+        selectionMode: 'methods' as const,
+        methodSections: extraction.methodSections,
+      };
+      const quality = evaluatePaperWorkflow(revised, extraction, paperContextSummary, entry.sourceLabel);
+      revised.paperImport = {
+        importerVersion: PAPER_IMPORTER_VERSION,
+        sourceLabel: entry.sourceLabel,
+        ...(entry.doi ? { doi: entry.doi } : {}),
+        ...(entry.repoUrl ? { repoUrl: entry.repoUrl } : {}),
+        ...(extraction.primaryPath ? { primaryPath: extraction.primaryPath } : {}),
+        methodSections: extraction.methodSections,
+        excludedBranches: extraction.excludedBranches,
+        unresolvedQuestions: extraction.unresolvedQuestions,
+        toolLinks: extraction.toolLinks,
+        quality,
+      };
+
+      const updated = updateLearnDraft(entry.id, {
+        name: revised.name,
+        draft: revised,
+        revisionNote: revisionNote || feedback.slice(0, 120),
+      });
+      res.json({
+        success: true,
+        draft: revised,
+        revisionNote,
+        paperImport: revised.paperImport,
+        updatedAt: updated?.updatedAt,
       });
     } catch (err: any) {
       sendError(res, 502, err.message || String(err));

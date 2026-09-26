@@ -1,5 +1,5 @@
 // 危险命令检测：命中时需要用户确认后才允许在集群上执行。
-// rm 在 agentRunner 中单独拦截（直接禁止），这里覆盖其余高风险操作。
+// 高风险操作统一进入确认流程；默认模式不再把普通写入、作业提交或联网操作都交给用户手工执行。
 
 const DANGEROUS_PATTERNS: RegExp[] = [
   /\bbkill\b/, // 杀集群作业
@@ -14,6 +14,14 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\b(shutdown|reboot|halt|poweroff)\b/,
   /\|\s*(sudo\s+)?(sh|bash|zsh)\b/, // curl/wget 管道进 shell
   /\bgit\s+clone\b[^|]*\|\s*(sh|bash)\b/,
+];
+
+const CATASTROPHIC_PATTERNS: RegExp[] = [
+  /\bmkfs(?:\.|\s)/i,
+  /\bfdisk\b/i,
+  /\bdd\s+[^|]*\bof=\s*\/dev\//i,
+  /:\(\)\s*\{/,
+  /\b(shutdown|reboot|halt|poweroff)\b/i,
 ];
 
 export type CommandRisk = 'read' | 'write' | 'job' | 'network' | 'destructive' | 'unknown';
@@ -48,6 +56,12 @@ export function isDangerousCommand(command: string): boolean {
   if (!normalized) return false;
   if (/\brm\b/.test(normalized)) return true;
   return DANGEROUS_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+/** 即使完全自动模式也不允许的机器/磁盘级破坏操作。rm、bkill 等任务级操作不在此列。 */
+export function isCatastrophicCommand(command: string): boolean {
+  const normalized = command.trim();
+  return Boolean(normalized) && CATASTROPHIC_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
 /**

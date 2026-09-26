@@ -241,9 +241,13 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
   const doCheckAll = useCallback(async () => {
     if (!sessionId || !workflow) return;
     setCheckingAll(true);
+    setError('');
     try {
       setPreflight(await runPreflight(workflow.id, sessionId));
-    } catch { /* 保持旧状态 */ } finally {
+    } catch (e: any) {
+      // 校验失败必须可见，否则用户会以为没点成功
+      setError(`环境检查失败：${e?.message || String(e)}`);
+    } finally {
       setCheckingAll(false);
     }
   }, [sessionId, workflow]);
@@ -251,10 +255,13 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
   const doCheckItem = useCallback(async (kind: 'software' | 'references', name: string) => {
     if (!sessionId || !workflow) return;
     setItemBusy(b => ({ ...b, [`${kind}:${name}`]: true }));
+    setError('');
     try {
       const only = kind === 'software' ? { software: [name] } : { references: [name] };
       setPreflight(await runPreflight(workflow.id, sessionId, only));
-    } catch { /* 保持旧状态 */ } finally {
+    } catch (e: any) {
+      setError(`校验「${name}」失败：${e?.message || String(e)}`);
+    } finally {
       setItemBusy(b => ({ ...b, [`${kind}:${name}`]: false }));
     }
   }, [sessionId, workflow]);
@@ -278,14 +285,14 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
     }
   }, [sessionId, workflow, doCheckAll]);
 
-  // 缺失项一键补齐：组装消息发给 AI（provision 技能，登录节点操作，需用户确认）
+  // 缺失项一键补齐：组装消息发给 AI（直接修复，登录节点操作；只有真正需要抉择才询问）
   const handleProvision = useCallback((kind: 'software' | 'references', name: string, detail?: string) => {
     if (!workflow) return;
     const kindLabel = kind === 'software' ? '软件' : '参考数据';
     onSendMessage([
       `流程「${workflow.name}」（ID: ${workflow.id}）的${kindLabel}「${name}」未就绪${detail ? `（${detail}）` : ''}。`,
-      '请使用 provision / 数据管理相关技能帮我补齐：先告诉我方案（装哪个 module/包、参考数据放哪、放流程家目录 02_reference/ 还是公共库），征得我同意后再操作；',
-      '注意：下载和安装只能在登录节点进行（计算节点无网络）。完成后请重新核查。',
+      '请直接修复，不用先报方案等我确认：优先 module load 或安装到流程家目录 02_reference/（或你判断的合适位置），下载和安装只能在登录节点进行（计算节点无网络）。',
+      '修复后用一条精确命令验证该项，然后重新核查并继续流程；只有确实需要我抉择时才 ask_user。',
     ].join('\n'));
   }, [onSendMessage, workflow]);
 

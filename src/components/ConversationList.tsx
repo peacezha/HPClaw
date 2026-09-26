@@ -89,7 +89,7 @@ export default function ConversationList({
     setError(null);
     const requestInit: RequestInit = { credentials: 'include' as RequestCredentials, headers: sessionHeaders() };
     const [localResult, clusterResult] = await Promise.allSettled([
-      fetch('/api/conversations', requestInit).then(res => res.json()),
+      fetch(`/api/conversations?scope=${encodeURIComponent(sessionId || 'local-workbench')}`, requestInit).then(res => res.json()),
       fetch('/api/conversations/cluster', requestInit).then(res => res.json()),
     ]);
     try {

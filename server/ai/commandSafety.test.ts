@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCommandRisk, isDangerousCommand } from './commandSafety';
+import { classifyCommandRisk, isCatastrophicCommand, isDangerousCommand } from './commandSafety';
 
 describe('isDangerousCommand', () => {
   it('flags job killing and process killing', () => {
@@ -38,5 +38,13 @@ describe('isDangerousCommand', () => {
     expect(classifyCommandRisk('curl -O https://example.org/a.txt')).toBe('network');
     expect(classifyCommandRisk('rm -rf results')).toBe('destructive');
     expect(classifyCommandRisk('fastqc reads.fq')).toBe('unknown');
+  });
+
+  it('keeps only machine-level destructive commands behind the non-bypassable floor', () => {
+    expect(isCatastrophicCommand('mkfs.ext4 /dev/sda')).toBe(true);
+    expect(isCatastrophicCommand('dd if=/dev/zero of=/dev/sda')).toBe(true);
+    expect(isCatastrophicCommand('shutdown -h now')).toBe(true);
+    expect(isCatastrophicCommand('rm -rf old_results')).toBe(false);
+    expect(isCatastrophicCommand('bkill 12345')).toBe(false);
   });
 });

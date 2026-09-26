@@ -18,7 +18,6 @@ import {
   Search,
   Server,
   Settings2,
-  Sparkles,
   Sun,
 } from 'lucide-react';
 import type { FileEntry, PickPathKind } from '@/shared/fileTransfer';
@@ -170,9 +169,6 @@ export default function WorkbenchSidebar({
     <aside className="w-[288px] max-w-[34vw] min-w-[232px] h-full shrink-0 border-r border-scholar-700 bg-scholar-950 flex flex-col overflow-hidden">
       {/* 品牌块 */}
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3.5 pb-1.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-white shadow-sm">
-          <Sparkles className="h-3.5 w-3.5" />
-        </span>
         <span className="text-sm font-semibold tracking-wide text-scholar-50">HPClaw</span>
       </div>
 

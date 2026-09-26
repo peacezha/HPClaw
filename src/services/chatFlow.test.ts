@@ -60,6 +60,19 @@ describe('chat flow helpers', () => {
     expect(prepared.some(message => message.content.includes('truncated for transport'))).toBe(true);
   });
 
+  it('keeps a wider continuous context window for the native agent', () => {
+    const messages = Array.from({ length: 28 }, (_, index) => ({
+      role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `turn-${index}`,
+    }));
+
+    const prepared = prepareMessagesForAiTransport(messages);
+
+    expect(prepared).toHaveLength(28);
+    expect(prepared[0].content).toBe('turn-0');
+    expect(prepared.at(-1)?.content).toBe('turn-27');
+  });
+
   it('persists one hidden Agent plan and restores it after reopening a conversation', () => {
     const first = { goal: '完成分析', steps: [{ id: '1', title: '质控', verification: '检查报告', status: 'running' }] };
     const updated = { ...first, steps: [{ ...first.steps[0], status: 'waiting', summary: '等待作业' }] };

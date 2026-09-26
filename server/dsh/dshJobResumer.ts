@@ -38,7 +38,7 @@ export interface ResumeAgentDeps {
   getBinding: (jobId: string, sshSessionId: string) => JobAgentBinding | undefined;
   markResumed: (jobId: string, sshSessionId: string) => void;
   exec: (sshSessionId: string, command: string, timeoutMs?: number) => Promise<string>;
-  appendConversation?: (conversationId: string, messages: ResumeConversationMessage[]) => Promise<boolean>;
+  appendConversation?: (conversationId: string, messages: ResumeConversationMessage[], sshSessionId?: string) => Promise<boolean>;
   emitToUi?: (sshSessionId: string, payload: unknown) => void;
   notify?: (title: string, content: string) => Promise<void>;
   now?: () => number;
@@ -210,7 +210,7 @@ async function runResume(evt: ResumeJobEvent, binding: JobAgentBinding, deps: Re
       await deps.appendConversation(binding.conversationId, [
         { role: 'user', content: buildSysMessage(binding, evt.jobId, evt.status) },
         { role: 'assistant', content: finalText || (binding.locale === 'en-US' ? '(resume produced no text)' : '(续跑未产生文本)') },
-      ]);
+      ], binding.sshSessionId);
     } catch (err) {
       console.warn('[dsh-resume] 会话回写失败: %s', err instanceof Error ? err.message : String(err));
     }
