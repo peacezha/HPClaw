@@ -228,8 +228,8 @@
       }
     ],
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "builtin-hidog-amplicon",
@@ -723,8 +723,8 @@
       }
     ],
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "builtin-rnaseq-qc-align",
@@ -818,7 +818,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -889,8 +890,15 @@
       ]
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-chipseq-tf",
@@ -1012,7 +1020,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -1129,8 +1138,15 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-chipseq-histone",
@@ -1251,7 +1267,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -1373,8 +1390,15 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-rnaseq-bulk",
@@ -1492,7 +1516,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -1583,8 +1608,15 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-atacseq",
@@ -1702,7 +1734,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -1810,8 +1843,15 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-dnaseseq",
@@ -2125,8 +2165,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-wgbs",
@@ -2445,8 +2485,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-hic",
@@ -2765,8 +2805,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-chiapet",
@@ -3030,8 +3070,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-mirnaseq",
@@ -3329,8 +3369,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-eclip",
@@ -3610,8 +3650,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-longread-rnaseq",
@@ -3927,8 +3967,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "encode-rampage",
@@ -4172,8 +4212,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "builtin-job-troubleshoot",
@@ -4232,8 +4272,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "builtin-blast",
@@ -4294,8 +4334,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "builtin-disk-cleanup",
@@ -4339,8 +4379,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1789868061191,
-    "updatedAt": 1790391723739
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318
   },
   {
     "id": "bioskills-biomarker-pipeline",
@@ -14881,7 +14921,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径"
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
       }
     ],
     "manifest": {
@@ -14996,8 +15037,15 @@
       "importerVersion": "native-dapseq-v1"
     },
     "source": "builtin",
-    "createdAt": 1790412383535,
-    "updatedAt": 1790412383535
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   },
   {
     "id": "encode-chipseq-tf-dag",
@@ -15173,7 +15221,8 @@
       },
       {
         "title": "Generate analysis report",
-        "command": "按 analysis-report 技能模板，基于本流程实际产出生成图文并茂的分析报告（reports/ 下 HTML+MD），回复给出报告与关键图绝对路径",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件",
         "id": "report",
         "dependsOn": [
           "xcor",
@@ -15297,7 +15346,14 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1790432904464,
-    "updatedAt": 1790432904464
+    "createdAt": 1790436106318,
+    "updatedAt": 1790436106318,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "确定性分析报告生成器"
+      }
+    ]
   }
 ]

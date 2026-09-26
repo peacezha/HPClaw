@@ -1,7 +1,7 @@
 {
   "name": "hpclaw",
   "private": true,
-  "version": "0.4.26",
+  "version": "0.4.27",
   "productName": "HPClaw",
   "type": "module",
   "main": "electron/main.cjs",

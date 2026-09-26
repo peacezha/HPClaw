@@ -1614,7 +1614,7 @@ export async function runAgent(
         system: fullSystemPrompt,
         messages: workingConversationMsgs,
         ...(/reasoner|v4-pro/i.test(ctx.profile.model || '') ? {} : { temperature: ctx.profile.temperature ?? 0.1 }),
-        maxOutputTokens: workflowExecutor ? 1280 : workflowInspection ? 2048 : 4096,
+        maxOutputTokens: workflowExecutor ? 4096 : workflowInspection ? 2048 : 4096,
         abortSignal: askAbort.signal,
         stopWhen: stepCountIs(remainingModelSteps),
         onStepFinish: () => {
