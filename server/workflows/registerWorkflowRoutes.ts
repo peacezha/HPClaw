@@ -387,7 +387,11 @@ export function registerWorkflowRoutes(app: Express): void {
 
   // 从文献学习流程：DOI 或论文全文文本（PDF 由前端提取）→ LLM 提取为流程草稿
   app.post('/api/workflows/learn', async (req, res) => {
+    const learnStartedAt = Date.now();
+    const learnLog = (stage: string) =>
+      console.log(`[paper-workflow] learn ${stage} elapsed=${Date.now() - learnStartedAt}ms`);
     try {
+      learnLog('start');
       const profile = profileFromBody(req.body);
       if (!profile.apiKey) return sendError(res, 400, 'Missing API Key');
       const locale: 'zh-CN' | 'en-US' = req.body?.locale === 'en-US' ? 'en-US' : 'zh-CN';
@@ -403,6 +407,7 @@ export function registerWorkflowRoutes(app: Express): void {
         const fetched = await fetchPaperTextByDoi(doiInput);
         paperText = fetched.text;
         source = fetched.source;
+        learnLog(`fetched doi source=${source} chars=${paperText.length}`);
       }
       // 直接提供的文本（PDF 提取/用户粘贴的方法片段）允许较短；DOI 抓取的全文太短说明没抓到
       if (paperText.length < (directText ? 300 : 800)) {
@@ -417,8 +422,16 @@ export function registerWorkflowRoutes(app: Express): void {
         codeExcerpt = await fetchRepoCodeExcerpt(repoUrl);
         if (codeExcerpt) break;
       }
+      if (repoUrls.length > 0) learnLog(`repo ${codeExcerpt ? 'fetched ' + codeExcerpt.repoUrl : 'unavailable'}`);
 
-      const raw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale);
+      // LLM 提取加总超时：论文学习曾被反馈"第一次没反应"——多半是模型/网络卡住后
+      // 前端无限期空等。超时返回明确错误，让用户知道可以重试而不是干等。
+      const raw = await Promise.race([
+        learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('AI 提取超时（超过 4 分钟）。这通常是模型服务繁忙或网络不稳；请直接重试，或改用粘贴方法学文本（更短更快）。')), 240_000)),
+      ]);
+      learnLog('llm done');
       let parseResult = await parseWorkflowJson(raw);
       let parsed = parseResult.value as any;
       const hasWorkflowSteps = (value: any) => {
@@ -484,6 +497,7 @@ export function registerWorkflowRoutes(app: Express): void {
         quality,
       };
       draft.paperImport = paperImport;
+      learnLog(`assemble done steps=${draft.steps.length}`);
 
       // 学习成果自动进草稿箱：用户切走页面/关闭面板后可找回，也可继续与 AI 交流修订。
       let draftId: string | null = null;
@@ -564,7 +578,17 @@ export function registerWorkflowRoutes(app: Express): void {
       if (!entry) return sendError(res, 404, '学习草稿不存在（可能已被清理）');
 
       const currentJson = JSON.stringify({ workflow: entry.draft }, null, 1);
-      const raw = await reviseWorkflowDraftWithFeedback(currentJson, feedback, entry.paperContext, profile, locale);
+      const reviseStartedAt = Date.now();
+      let raw: string;
+      try {
+        raw = await Promise.race([
+          reviseWorkflowDraftWithFeedback(currentJson, feedback, entry.paperContext, profile, locale),
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(() => reject(new Error('AI 修订超时（超过 4 分钟）。草稿保持原样，请直接重试。')), 240_000)),
+        ]);
+      } finally {
+        console.log(`[paper-workflow] revise llm elapsed=${Date.now() - reviseStartedAt}ms draft=${entry.id}`);
+      }
       let parseResult = await parseWorkflowJson(raw);
       let parsed = parseResult.value as any;
       const workflowOf = (value: any) => (value?.workflow && typeof value.workflow === 'object' ? value.workflow : value);

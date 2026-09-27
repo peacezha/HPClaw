@@ -132,6 +132,13 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   const [reviseText, setReviseText] = useState('');
   const [revising, setRevising] = useState(false);
   const [reviseNote, setReviseNote] = useState('');
+  // 学习耗时秒表：整篇论文提取通常 1–3 分钟，显示已用时间避免误以为卡死
+  const [learnElapsed, setLearnElapsed] = useState(0);
+  useEffect(() => {
+    if (!learning) { setLearnElapsed(0); return; }
+    const timer = setInterval(() => setLearnElapsed(s => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [learning]);
   const [saving, setSaving] = useState(false);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(() => !!socket?.connected);
@@ -979,7 +986,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                   e.target.value = '';
                 }} />
             </label>
-            {learnStatus && <span className="text-[10px] text-scholar-400">{learnStatus}</span>}
+            {learnStatus && <span className="text-[10px] text-scholar-400">{learnStatus}{learning && learnElapsed > 5 ? `（已用 ${learnElapsed} 秒，整篇论文通常需 1–3 分钟；超时 4 分钟会明确报错，可放心重试）` : ''}</span>}
           </div>
           {/* 直接粘贴方法学文本：只贴生信分析部分，避免整篇投喂带入湿实验步骤 */}
           <details className="rounded-md bg-scholar-950/60 px-2 py-1.5">
