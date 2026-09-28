@@ -168,13 +168,13 @@ JSON 格式：
     "name": "流程名称（中文，含研究对象和关键方法）",
     "description": "说明主流程做什么，以及哪些内容仍需确认",
     "keywords": ["中英文触发词，5-10个"],
-    "params": [{"name":"INPUT_DIR","label":"输入目录","type":"path|text|number|select|boolean","defaultValue":"仅论文明确给出时填写","required":true,"options":[],"help":"参数依据或待确认原因"}],
+    "params": [{"name":"INPUT_DIR","label":"输入目录","type":"path|text|number|select|boolean","defaultValue":"仅论文明确给出时填写","required":true,"options":[],"help":"参数依据：证据编号或原文短句"}],
     "steps": [{
       "title": "一个可监控的原子步骤",
       "command": "HPC 命令模板；缺完整 CLI 时必须以 # REVIEW_REQUIRED: 开头说明缺口",
       "notes": "参数依据、分支选择与运行注意事项",
       "optional": false,
-      "params": [{"name":"THREADS","label":"线程数","type":"number","defaultValue":"仅有依据时填写","required":false,"help":"来源"}],
+      "params": [{"name":"THREADS","label":"线程数","type":"number","defaultValue":"仅有依据时填写","required":false,"help":"来源（证据编号或原文短句）"}],
       "agent": {
         "kind":"decision|compute|qc|report",
         "sourceType":"paper|repository",
@@ -211,6 +211,7 @@ JSON 格式：
 1.1 只提取生信/计算分析步骤。湿实验操作（材料种植与处理、DNA/RNA 提取、文库构建、PCR/电泳/转化/测序上机等 bench 操作）一律不得成为流程步骤，只能在 excludedBranches 中一句话说明；用户粘贴的片段若不含任何计算分析内容，输出 steps 为空并在 warnings 中明确说明，不要硬凑步骤。
 2. 步骤按数据依赖排列，不限制为 5-10 步；每步必须有可监控的 inputs、outputs 和来源。不要把整篇 Methods 压成一个步骤，也不要为凑数量拆空步骤。
 3. 论文/仓库明确给出的软件版本、参数、阈值和参考数据库版本才可写默认值。没有依据时留空、required=true 或 requiresReview=true，并加入 unresolvedQuestions；严禁写“推测版本”或虚构 QC 阈值。
+3.1 若输入附有「证据清单」（两段式提取的第一段产物）：参数的 defaultValue、QC 阈值、软件版本只能取自清单条目，并在 help/notes 里写明对应证据编号（如 E3）；清单中有值而你没纳入流程的条目，必须逐条出现在 excludedBranches 或 unresolvedQuestions 里说明去向，禁止静默丢弃。
 4. 仓库代码存在时，命令和文件依赖以仓库为事实来源，论文用于解释方法；若二者冲突，加入 warnings，不要自行选一个后隐瞒冲突。
    先分别列出论文工具名和代码中的命令/进程名，再填写 toolLinks；没有对应关系时必须保留 paper_only/code_only，不得为了看起来完整而强行配对。
 5. 只有论文或仓库足以恢复 CLI 时才写可运行命令。只有软件名但无命令时写“# REVIEW_REQUIRED: 论文只说明使用 X，未给出完整 CLI”，confidence=low、requiresReview=true，禁止按常识补造参数。
@@ -220,16 +221,166 @@ JSON 格式：
 9. 不得根据摘要恢复完整流程；找不到 Methods 时仍可输出草稿，但所有推断步骤必须 low + requiresReview，并明确警告。
 10. 只输出 JSON。`;
 
-/** 调 LLM 把论文文本提取为流程草稿 JSON 文本 */
+// ── 两段式提取（学 CoPaLink 的 pipeline 思路）：先证据清单、后流程构建 ────────
+// 单段式「论文→完整流程 JSON」容易漏掉文中明确写出的参数与版本；先把证据逐条
+// 列出（带原文句子），第二段只允许从清单取值，显著降低漏参数/造参数的概率。
+
+export interface EvidenceInventory {
+  tools: Array<{ id: string; name: string; version?: string; sentence: string }>;
+  parameters: Array<{ id: string; name: string; value: string; appliesTo?: string; sentence: string }>;
+  thresholds: Array<{ id: string; metric: string; value: string; sentence: string }>;
+  inputs: Array<{ id: string; what: string; sentence: string }>;
+  references: Array<{ id: string; name: string; version?: string; sentence: string }>;
+  stepsMentioned: Array<{ id: string; what: string; sentence: string }>;
+}
+
+const EVIDENCE_SYSTEM_PROMPT = `你是论文方法证据提取器。任务：把论文方法学文本中所有可执行的计算分析证据逐条列出，供下游构建分析流程时取值。只输出一个 JSON 对象，不要解释。
+
+JSON 格式：
+{
+  "tools": [{"id":"T1","name":"工具名（原文写法）","version":"只有原文明确写出才填","sentence":"原文中包含该工具（和版本）的那句话，逐字摘录"}],
+  "parameters": [{"id":"P1","name":"参数名或选项（如 --min-length、MAPQ、threads）","value":"原文给出的具体值","appliesTo":"作用于哪个工具/步骤","sentence":"原文出处句，逐字摘录"}],
+  "thresholds": [{"id":"Q1","metric":"指标名（如 q-value、FDR、覆盖率）","value":"阈值","sentence":"原文出处句"}],
+  "inputs": [{"id":"I1","what":"输入数据形态（如双端 FASTQ、BAM、样本表）","sentence":"原文出处句"}],
+  "references": [{"id":"R1","name":"参考基因组/数据库名","version":"版本或 release（只有原文明确写出才填）","sentence":"原文出处句"}],
+  "stepsMentioned": [{"id":"S1","what":"原文提到的分析步骤（一句话）","sentence":"原文出处句"}]
+}
+
+硬性规则：
+1. 宁多勿漏：原文明确给出数值/版本/选项的参数、阈值必须全部列出；这是下游的唯一取值来源。
+2. sentence 字段必须逐字摘自原文（英文照抄英文），禁止改写、禁止拼凑。
+3. 原文没给值的参数不要列（没有默认值可列）；湿实验操作不列。
+4. 只输出 JSON。`;
+
+/** 第一段：把论文方法上下文提取为证据清单（带逐字出处句） */
+export async function extractEvidenceInventory(
+  paperText: string,
+  profile: AIProfile,
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+): Promise<{ inventory: EvidenceInventory | null; raw: string }> {
+  const languageNote = locale === 'en-US'
+    ? '\n\nLANGUAGE: keep ids/sentences verbatim from the paper; JSON keys stay as specified.'
+    : '';
+  const { text } = await generateText({
+    model: buildModel(profile),
+    system: EVIDENCE_SYSTEM_PROMPT + languageNote,
+    prompt: `请从以下论文方法上下文中提取全部可执行证据：\n\n${paperText.slice(0, MAX_MODEL_TEXT)}`,
+    temperature: 0.1,
+    maxOutputTokens: /reasoner|v4-pro|reasoning/i.test(profile.model || '') ? 16000 : 8000,
+  });
+  const value = extractJsonObject(text) as EvidenceInventory | null;
+  if (!value || !Array.isArray(value.tools)) return { inventory: null, raw: text };
+  const list = (v: unknown) => (Array.isArray(v) ? v : []);
+  return {
+    inventory: {
+      tools: list(value.tools), parameters: list(value.parameters), thresholds: list(value.thresholds),
+      inputs: list(value.inputs), references: list(value.references), stepsMentioned: list(value.stepsMentioned),
+    } as EvidenceInventory,
+    raw: text,
+  };
+}
+
+// ── 确定性参数覆盖审计：文中明确出现的参数/版本/阈值，草稿里是否真的纳入 ──────
+// 学 CoPaLink 的结论：工具/参数对齐上，确定性字符串匹配比花式模型更稳。
+// 这里不用 AI：正则扫原文找参数形态，再到草稿 JSON 里查字符串覆盖，漏掉的进 warnings。
+
+export interface ParameterCoverageReport {
+  found: string[];
+  missing: Array<{ token: string; kind: string; sentence: string }>;
+}
+
+const COVERAGE_PATTERNS: Array<{ kind: string; re: RegExp; token: (m: RegExpMatchArray) => string }> = [
+  // --flag=value / --flag value 形式的 CLI 选项
+  { kind: 'cli-flag', re: /--[a-zA-Z][a-zA-Z0-9_-]{2,}(?:[= ][0-9][\w.%-]*)/g, token: m => m[0].split(/[= ]/)[0] },
+  // 软件版本号：X.Y(.Z) 且前面 40 字符内有字母（避免纯数字误判）
+  { kind: 'version', re: /[A-Za-z][\w+-]{1,30}(?:\s+v?|\s+version\s+)(\d+\.\d+(?:\.\d+)?)/gi, token: m => m[1] },
+  // 常见统计/质量阈值：q-value/FDR/p-value/MAPQ/覆盖率/identity 等 + 数值/百分比
+  { kind: 'threshold', re: /(?:q-?value|FDR|p-?value|e-?value|MAPQ|q30|Q30|coverage|identity|mismatch(?:es)?|threads?|p value)\s*(?:of|≤|<|≥|>|=|cut-?off(?:\s+of)?|threshold(?:\s+of)?)?\s*(\d+(?:\.\d+)?\s*%?)/gi, token: m => m[1].trim() },
+];
+
+function sentenceOf(text: string, index: number): string {
+  // 以「. + 空格/换行」为句界，避免版本号小数点（v0.23.4）把句子切碎
+  let start = text.lastIndexOf('\n', index - 1) + 1;
+  const dotSpace = text.lastIndexOf('. ', index - 1);
+  if (dotSpace >= start) start = dotSpace + 2;
+  const nextNl = text.indexOf('\n', index);
+  const nextDot = text.indexOf('. ', index);
+  const ends = [nextNl, nextDot >= 0 ? nextDot + 1 : -1].filter(i => i > 0);
+  const end = ends.length ? Math.min(...ends) : Math.min(text.length, index + 160);
+  return text.slice(start, end).trim().replace(/\s+/g, ' ').slice(0, 300);
+}
+
+/**
+ * 扫原文中的参数形态（CLI 选项、版本号、阈值），逐项检查草稿是否覆盖。
+ * 覆盖判定：token 的规范化形式出现在草稿 JSON 字符串里（忽略大小写/连字符差异）。
+ */
+export function auditParameterCoverage(paperText: string, draftValue: unknown): ParameterCoverageReport {
+  const draftText = JSON.stringify(draftValue || {}).toLowerCase().replace(/[-_]/g, '');
+  const found: string[] = [];
+  const missing: ParameterCoverageReport['missing'] = [];
+  const seen = new Set<string>();
+  const body = paperText.slice(0, MAX_FETCH_TEXT);
+  for (const { kind, re, token } of COVERAGE_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpMatchArray | null;
+    while ((m = re.exec(body)) !== null) {
+      const raw = token(m).trim();
+      const norm = raw.toLowerCase().replace(/[-_]/g, '');
+      if (norm.length < 2 || seen.has(norm)) continue;
+      seen.add(norm);
+      // 版本号/阈值数字太短或过于通用（如 "1"、"2"）不参与审计，避免噪音
+      if (/^\d+$/.test(raw) && Number(raw) < 3) continue;
+      if (draftText.includes(norm)) found.push(raw);
+      else missing.push({ token: raw, kind, sentence: sentenceOf(body, m.index) });
+    }
+  }
+  return { found, missing: missing.slice(0, 30) };
+}
+
+// ── 仓库代码按 process/rule 块抽取（学 BioFlow-Insight：工具调用集中在 process 里）──
+
+/** 把 Nextflow/Snakemake 文件切成 process/rule 块；非流程文件原样返回 */
+export function extractCodeUnits(filename: string, text: string): Array<{ name: string; body: string }> {
+  const units: Array<{ name: string; body: string }> = [];
+  if (/\.nf$|nextflow/i.test(filename)) {
+    const re = /\bprocess\s+([A-Za-z0-9_]+)\s*\{/g;
+    let m: RegExpExecArray | null;
+    const marks: Array<{ name: string; start: number }> = [];
+    while ((m = re.exec(text)) !== null) marks.push({ name: m[1], start: m.index });
+    marks.forEach((mark, i) => {
+      const end = i + 1 < marks.length ? marks[i + 1].start : text.length;
+      units.push({ name: `process ${mark.name}`, body: text.slice(mark.start, end) });
+    });
+  } else if (/snakefile|\.smk$|\.snakefile$/i.test(filename)) {
+    const re = /^rule\s+([A-Za-z0-9_]+)\s*:/gm;
+    let m: RegExpExecArray | null;
+    const marks: Array<{ name: string; start: number }> = [];
+    while ((m = re.exec(text)) !== null) marks.push({ name: m[1], start: m.index });
+    marks.forEach((mark, i) => {
+      const end = i + 1 < marks.length ? marks[i + 1].start : text.length;
+      units.push({ name: `rule ${mark.name}`, body: text.slice(mark.start, end) });
+    });
+  }
+  if (units.length === 0) units.push({ name: filename, body: text });
+  return units;
+}
+
+
+
+/** 调 LLM 把论文文本提取为流程草稿 JSON 文本；evidence 为第一段证据清单（两段式提取） */
 export async function learnWorkflowFromText(
   paperText: string,
   profile: AIProfile,
   codeExcerpt?: { repoUrl: string; files: string[]; excerpt: string } | null,
   context?: PaperContextSummary,
   locale: 'zh-CN' | 'en-US' = 'zh-CN',
+  evidence?: EvidenceInventory | null,
 ): Promise<string> {
   const codeSection = codeExcerpt
-    ? `\n\n【配套代码仓库】${codeExcerpt.repoUrl}\n以下是该仓库中的流程代码文件（${codeExcerpt.files.join('、')}），**步骤与命令以代码为准**，论文文本用于补充说明与参数依据：\n\n${codeExcerpt.excerpt}`
+    ? `\n\n【配套代码仓库】${codeExcerpt.repoUrl}\n以下是该仓库中的流程代码（${codeExcerpt.files.join('、')}），**步骤与命令以代码为准**，论文文本用于补充说明与参数依据：\n\n${codeExcerpt.excerpt}`
+    : '';
+  const evidenceSection = evidence
+    ? `\n\n【证据清单（第一段提取产物，逐字摘自原文）】\n参数默认值、QC 阈值、软件版本只能取自下列条目，并在 help/notes 中标注证据编号；清单中有值而未纳入流程的条目必须逐个说明去向（excludedBranches 或 unresolvedQuestions）：\n${JSON.stringify(evidence)}`
     : '';
   const languageRule = locale === 'en-US'
     ? '\n\nLANGUAGE OVERRIDE: Write every human-readable JSON value (workflow name, descriptions, labels, step titles, notes, evidence, questions and warnings) in English. Keep commands, paths, filenames, software names, database names and scientific identifiers unchanged.'
@@ -237,7 +388,7 @@ export async function learnWorkflowFromText(
   const { text, finishReason } = await generateText({
     model: buildModel(profile),
     system: LEARN_SYSTEM_PROMPT + languageRule,
-    prompt: `请从以下论文方法上下文中提取流程。正文选择信息：${JSON.stringify(context ?? {})}\n\n${paperText.slice(0, MAX_MODEL_TEXT)}${codeSection}`,
+    prompt: `请从以下论文方法上下文中提取流程。正文选择信息：${JSON.stringify(context ?? {})}\n\n${paperText.slice(0, MAX_MODEL_TEXT)}${codeSection}${evidenceSection}`,
     temperature: 0.2,
     maxOutputTokens: /reasoner|v4-pro|reasoning/i.test(profile.model || '') ? 32000 : 16000,
   });
@@ -476,10 +627,24 @@ export async function fetchRepoCodeExcerpt(repoUrl: string): Promise<{ repoUrl: 
           headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0' },
         });
         if (!raw.ok) continue;
-        const text = (await raw.text()).slice(0, 8_000);
-        parts.push(`### FILE: ${file}\n${text}`);
-        usedFiles.push(file);
-        total += text.length;
+        const fullText = await raw.text();
+        // Nextflow/Snakemake 按 process/rule 切块：工具调用集中在块内，同预算装更多有效代码；
+        // 优先装含 shell/script 命令的块，配置块只留开头。
+        const units = extractCodeUnits(file, fullText);
+        // 优先装含真实命令调用的块（script:/shell:/三引号脚本段/常见工具命令行）
+        const hasCmd = /script:|shell:|'''|"""|^\s*(?:[a-z0-9_.-]+\s+--|bwa|samtools|macs2|fastqc|star|hisat2)\b/im;
+        const scored = [...units].sort((a, b) => Number(hasCmd.test(b.body)) - Number(hasCmd.test(a.body)));
+        const fileParts: string[] = [];
+        for (const u of scored) {
+          if (total > 30_000) break;
+          const body = u.body.slice(0, 4_000);
+          fileParts.push(`#### ${u.name}\n${body}`);
+          total += body.length;
+        }
+        if (fileParts.length > 0) {
+          parts.push(`### FILE: ${file}\n${fileParts.join('\n\n')}`);
+          usedFiles.push(file);
+        }
       } catch { /* 单文件失败跳过 */ }
     }
     if (usedFiles.length === 0) return null;

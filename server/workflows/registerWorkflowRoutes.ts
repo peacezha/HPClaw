@@ -6,9 +6,9 @@ import { deleteWorkflow, loadWorkflows, upsertWorkflow } from './workflowStore';
 import { matchWorkflows } from './workflowMatch';
 import { sanitizeManifest } from './flowManifest';
 import {
-  checkToolsInBioconda, extractJsonObject, fetchPaperTextByDoi, fetchRepoCodeExcerpt,
-  findRepoUrls, learnWorkflowFromText, normalizeDoi, parseWorkflowJson, preparePaperContext,
-  repairWorkflowJsonWithModel, reviseWorkflowDraftWithFeedback,
+  auditParameterCoverage, checkToolsInBioconda, extractEvidenceInventory, extractJsonObject,
+  fetchPaperTextByDoi, fetchRepoCodeExcerpt, findRepoUrls, learnWorkflowFromText, normalizeDoi,
+  parseWorkflowJson, preparePaperContext, repairWorkflowJsonWithModel, reviseWorkflowDraftWithFeedback,
 } from './learnFromPaper';
 import {
   evaluatePaperWorkflow, PAPER_IMPORTER_VERSION, sanitizePaperExtractionMeta,
@@ -424,10 +424,20 @@ export function registerWorkflowRoutes(app: Express): void {
       }
       if (repoUrls.length > 0) learnLog(`repo ${codeExcerpt ? 'fetched ' + codeExcerpt.repoUrl : 'unavailable'}`);
 
+      // 第一段：证据清单（工具/参数/阈值带逐字出处句）。失败不阻断，退化为单段提取。
+      let evidence: Awaited<ReturnType<typeof extractEvidenceInventory>>['inventory'] = null;
+      try {
+        const inv = await extractEvidenceInventory(context.text, profile, locale);
+        evidence = inv.inventory;
+        learnLog(`evidence tools=${evidence?.tools.length ?? 'n/a'} params=${evidence?.parameters.length ?? 'n/a'}`);
+      } catch (err) {
+        learnLog(`evidence failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // LLM 提取加总超时：论文学习曾被反馈"第一次没反应"——多半是模型/网络卡住后
       // 前端无限期空等。超时返回明确错误，让用户知道可以重试而不是干等。
       const raw = await Promise.race([
-        learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale),
+        learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence),
         new Promise<never>((_resolve, reject) =>
           setTimeout(() => reject(new Error('AI 提取超时（超过 4 分钟）。这通常是模型服务繁忙或网络不稳；请直接重试，或改用粘贴方法学文本（更短更快）。')), 240_000)),
       ]);
@@ -468,6 +478,23 @@ export function registerWorkflowRoutes(app: Express): void {
       const manifest = sanitizeManifest(workflowRaw.manifest);
       if (manifest) draft.manifest = manifest;
       if (draft.steps.length === 0) return sendError(res, 502, '未能从文本中提取出有效的生信分析步骤（若片段只含湿实验操作，请改贴数据分析/Methods 的计算部分）');
+
+      // 确定性参数覆盖审计：原文明确出现的 CLI 选项/版本/阈值，草稿是否真的纳入。
+      // 漏项进 warnings + unresolvedQuestions（不阻断），编辑器审计卡如实展示。
+      const coverage = auditParameterCoverage(context.text, workflowRaw);
+      if (coverage.missing.length > 0) {
+        extraction.warnings.push(
+          `参数覆盖审计：原文明确出现但草稿未纳入的参数/版本/阈值共 ${coverage.missing.length} 项：`
+          + coverage.missing.slice(0, 10).map(m => m.token).join('、')
+          + (coverage.missing.length > 10 ? ' 等' : ''),
+        );
+        for (const item of coverage.missing.slice(0, 5)) {
+          extraction.unresolvedQuestions.push({
+            question: `原文给出了「${item.token}」（${item.kind}）但草稿未使用：${item.sentence.slice(0, 120)}`,
+            blocking: false,
+          });
+        }
+      }
 
       // KB 只用于验证工具实体，不把“包存在”误当成论文—代码已经匹配。
       const softwareCheck = manifest
@@ -524,6 +551,17 @@ export function registerWorkflowRoutes(app: Express): void {
         repoFiles: codeExcerpt?.files || [],
         softwareCheck,
         paperImport,
+        parameterCoverage: {
+          covered: coverage.found.length,
+          missingCount: coverage.missing.length,
+          missing: coverage.missing.slice(0, 10),
+        },
+        evidenceStats: evidence ? {
+          tools: evidence.tools.length,
+          parameters: evidence.parameters.length,
+          thresholds: evidence.thresholds.length,
+          references: evidence.references.length,
+        } : null,
         context: {
           selectedChars: context.selectedChars,
           methodSections: context.methodSections,
