@@ -925,6 +925,98 @@ describe('formal workflow environment repair turn (blocked_env at turn start)', 
   });
 });
 
+describe('waiting_jobs reconcile on turn start (v0.4.30)', () => {
+  // 监控器错过作业终态时 run 永远卡在 waiting_jobs（用户问什么都只收到罐头回复）。
+  // 每轮对话开始必须先向调度器核实真实状态，全部终态就翻回 running 继续执行。
+  const runDir = '/public/home/u/hpclaw_flows/dap/03_workspace/runs/run-stuck';
+
+  function setup(
+    bjobsAnswer: string,
+    rounds: (round: number, options: any) => AsyncGenerator<unknown, void, unknown>,
+  ) {
+    let authoritativeRun: any = {
+      runId: 'run-stuck', workflowId: 'wf-dap', workflowName: 'DAP', workflowVersion: 1,
+      runDir, workspacePolicy: 'isolated-run-v1', status: 'waiting_jobs', startedAt: 1,
+      updatedAt: 1, heartbeatAt: 1, currentStep: 2, totalSteps: 2,
+      jobStates: { '12345': 'RUN' },
+      config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [
+        { n: 1, stepId: 'step-01', title: '比对', status: 'done', summary: '已完成' },
+        { n: 2, stepId: 'step-02', title: '峰调用', status: 'running', jobIds: ['12345'] },
+      ],
+    };
+    let round = 0;
+    mockStreamText.mockImplementation((options: any) => {
+      const currentRound = round++;
+      return { fullStream: (async function* () { yield* rounds(currentRound, options); })() };
+    });
+    const clusterRun = vi.fn(async (_sid: string, command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(authoritativeRun);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded) {
+        authoritativeRun = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+        return '';
+      }
+      if (command.includes('bjobs -a') && command.includes('12345')) return bjobsAnswer;
+      return 'ok';
+    });
+    const dones: string[] = [];
+    const errors: string[] = [];
+    const start = () => runAgent(
+      {
+        sid: 'session-1', home: '/public/home/u', run: clusterRun, scheduler: 'lsf',
+        workflowRun: { workflowId: 'wf-dap', runId: 'run-stuck', runDir, policy: 'isolated-run-v1' },
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(),
+        onDone: text => dones.push(text),
+        onErr: err => errors.push(err),
+        sig: () => undefined,
+      },
+      [{ role: 'user', content: '现在进展怎么样了？继续吧' }],
+    );
+    return { dones, errors, start, clusterRun, getRun: () => authoritativeRun };
+  }
+
+  it('queries the scheduler for ground truth and resumes instead of replying with the canned waiting message', async () => {
+    const env = setup('DONE', async function* (_round, options) {
+      // 对账后 run 已翻回 running：执行器验证产物并完成当前步骤
+      await options.tools.run_command.execute({ command: 'ls -la peaks/' });
+      await options.tools.update_workflow_run.execute({
+        runDir, step: { n: 2, status: 'done', summary: '峰文件齐全', evidence: ['ls peaks: 2 个峰文件'] },
+      });
+      yield { type: 'text-delta', text: '作业其实已完成，流程已收尾。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    const commands = env.clusterRun.mock.calls.map(call => call[1]);
+    expect(commands.some(c => c.includes('bjobs -a') && c.includes('12345'))).toBe(true);
+    expect(env.getRun().status).toBe('done');
+    expect(env.dones).toEqual(['作业其实已完成，流程已收尾。']);
+    expect(env.dones[0]).not.toContain('后台监控已经接管');
+  });
+
+  it('keeps waiting_jobs when the scheduler says the job is still running', async () => {
+    const env = setup('RUN', async function* (_round, _options) {
+      yield { type: 'text-delta', text: '还在运行。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    // 核实过真实状态：作业仍在跑，run 维持 waiting_jobs，不重提不改写
+    const commands = env.clusterRun.mock.calls.map(call => call[1]);
+    expect(commands.some(c => c.includes('bjobs -a') && c.includes('12345'))).toBe(true);
+    expect(env.getRun().status).toBe('waiting_jobs');
+    expect(env.getRun().steps[1].status).toBe('running');
+    expect(env.dones).toEqual(['还在运行。']);
+  });
+});
+
 describe('web API tools (search_web_apis / call_web_api)', () => {
   const ctx = {
     sid: 'session-1',

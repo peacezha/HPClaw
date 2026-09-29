@@ -18,6 +18,7 @@ import { appPath, dataPath } from '../paths';
 import { AgentStreamTimeoutError, consumeAgentStream } from './agentStreamLifecycle';
 import { scopeWorkflowCommand } from './workflowCommandScope';
 import { buildSchedulerPromptSection } from '../cluster/schedulerProfile';
+import { finalStateCommand } from '../notifications/scheduler';
 import { stripDsmlMarkup } from '../../shared/dsml';
 import type { WorkflowExecutionContext } from '../../shared/workflowExecution';
 import type { WorkflowRunPatch } from '../../shared/workflowRun';
@@ -420,6 +421,70 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * waiting_jobs 对账（v0.4.30 根因修复）：监控器可能错过作业终态（应用关闭、
+ * 提交回执丢失、重启后绑定未恢复），一旦错过，run 永远停在 waiting_jobs——
+ * 用户无论问什么都只收到「已提交队列，监控接管」的罐头回复，流程像卡死。
+ * 每轮流程对话开始时用调度器命令核实 run.json 里作业的真实状态：
+ * 全部到终态就把 run 翻回 running（执行器随后按证据验证产物并继续）；
+ * 仍有作业在跑则返回 null，维持等待。返回 null 也表示未发生变化。
+ */
+async function reconcileWorkflowWaitingJobs(ctx: AgentCtx, run: any): Promise<any | null> {
+  if (!ctx.home || String(run?.status) !== 'waiting_jobs') return null;
+  const scheduler = ctx.scheduler || 'lsf';
+  if (scheduler === 'none') return null; // 无调度器无法核实，维持原状
+  const jobIds = [...new Set<string>([
+    ...Object.keys(run.jobStates || {}),
+    ...(Array.isArray(run.steps) ? run.steps.flatMap((s: any) => s.jobIds || []) : []),
+  ])].filter(id => /^[\d._]+$/.test(id)).slice(0, 20);
+  if (jobIds.length === 0) {
+    // waiting_jobs 却没有登记任何作业号：状态不可信，翻回 running 让执行器核实当前步骤。
+    try {
+      return await updateWorkflowRun((cmd, to) => ctx.run(ctx.sid, cmd, to), ctx.home, run.runDir, {
+        status: 'running',
+        error: '',
+      });
+    } catch { return null; }
+  }
+
+  const TERMINAL = new Set(['DONE', 'EXIT', 'GONE']);
+  const updates: Record<string, string> = {};
+  let allTerminal = true;
+  for (const jobId of jobIds) {
+    const known = String(run.jobStates?.[jobId] || '');
+    if (TERMINAL.has(known)) { updates[jobId] = known; continue; }
+    let state = '';
+    try {
+      state = (await ctx.run(ctx.sid, finalStateCommand(scheduler, jobId), 15_000)).trim();
+    } catch { /* 网络抖动按未知处理 */ }
+    let mapped = '';
+    if (scheduler === 'pbs') {
+      const m = state.match(/Exit_status\s*=\s*(\d+)/i) || state.match(/job_state\s*=\s*([A-Z])/i);
+      if (m && /Exit_status/i.test(m[0])) mapped = m[1] === '0' ? 'DONE' : 'EXIT';
+    } else {
+      const token = (state.split(/\s+/)[0] || '').toUpperCase();
+      if (!token) mapped = 'GONE';        // 滚出历史列表：极可能早已结束，产物由执行器核实
+      else if (/^(DONE|COMPLETED)$/.test(token)) mapped = 'DONE';
+      else if (/^(EXIT|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|BOOT_FAIL)$/.test(token)) mapped = 'EXIT';
+    }
+    if (mapped) updates[jobId] = mapped;
+    else { allTerminal = false; updates[jobId] = known || 'UNKNOWN'; }
+  }
+  if (!allTerminal) return null;
+
+  const anyExit = Object.values(updates).some(s => s === 'EXIT');
+  try {
+    // 全部到终态：写回真实 jobStates 并翻回 running。有 EXIT 不直接判 failed——
+    // 执行器会先验证产物，产物齐全时 EXIT（如超额后仍写出结果）也能继续。
+    return await updateWorkflowRun((cmd, to) => ctx.run(ctx.sid, cmd, to), ctx.home, run.runDir, {
+      status: 'running',
+      error: anyExit ? '对账：有作业以 EXIT 结束，请先验证当前步骤产物再决定继续或重跑。' : '',
+    // updateWorkflowRun 不接受整表 jobStates 补丁；翻状态后由 runAnnotate 的
+    // 周期性标注把真实终态刷进 run.json，保持记录一致。
+    });
+  } catch { return null; }
+}
+
 async function loadCurrentWorkflowStepPacket(
   ctx: AgentCtx,
   workflow: WorkflowExecutionContext,
@@ -644,6 +709,22 @@ export async function runAgent(
         return;
       }
       turnStartRunStatus = String(activeWorkflowRun.status || '');
+      // waiting_jobs 对账（仅 execute 轮；inspect 轮必须保持只读）：监控器错过终态时
+      // run 会永远卡在「已提交队列」，每轮执行对话开始先向调度器核实真实状态，
+      // 全部结束就翻回 running 继续；仍有作业在跑则维持等待。
+      if (!workflowInspection && turnStartRunStatus === 'waiting_jobs') {
+        try {
+          const reconciled = await reconcileWorkflowWaitingJobs(ctx, activeWorkflowRun);
+          if (reconciled) {
+            console.warn('[Agent] waiting_jobs reconciled from scheduler truth: run=%s jobs now all terminal, resuming execution', formalWorkflow.runId);
+            activeWorkflowRun = reconciled;
+            turnStartRunStatus = String(reconciled.status || '');
+            cb.onWorkflowRunChanged?.(reconciled);
+          }
+        } catch (err: any) {
+          console.warn('[Agent] waiting_jobs reconcile failed (non-blocking):', err?.message || String(err));
+        }
+      }
       cb.onWorkflowRunChanged?.(activeWorkflowRun);
       initialWorkflowStepPacket = await loadCurrentWorkflowStepPacket(ctx, formalWorkflow, activeWorkflowRun);
     } catch (err: any) {

@@ -315,6 +315,37 @@ function createWindow(url) {
     return { action: 'deny' };
   });
 
+  // 全局右键菜单（v0.4.30）：Electron 默认没有右键菜单，非技术用户找不到
+  // 「复制」入口（Ctrl+C 可用但不可发现）。按上下文给 剪切/复制/粘贴/全选。
+  const attachCopyMenu = (contents) => {
+    contents.on('context-menu', (_event, params) => {
+      const hasSelection = (params.selectionText || '').trim().length > 0;
+      const items = [];
+      if (params.isEditable) {
+        items.push(
+          { label: '剪切', role: 'cut', enabled: params.editFlags.canCut },
+          { label: '复制', role: 'copy', enabled: params.editFlags.canCopy },
+          { label: '粘贴', role: 'paste', enabled: params.editFlags.canPaste },
+          { type: 'separator' },
+          { label: '全选', role: 'selectAll' },
+        );
+      } else if (hasSelection) {
+        items.push(
+          { label: '复制', click: () => contents.copy() },
+          { label: '全选', click: () => contents.selectAll() },
+        );
+      } else {
+        items.push({ label: '全选', click: () => contents.selectAll() });
+      }
+      Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(contents) || win });
+    });
+  };
+  attachCopyMenu(win.webContents);
+  // 侧边网页栏等 <webview> 有独立 webContents，同样挂右键菜单
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() === 'webview') attachCopyMenu(contents);
+  });
+
   win.once('ready-to-show', () => {
     updateSplash(100, '完成');
     closeSplash();
