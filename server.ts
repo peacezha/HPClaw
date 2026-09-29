@@ -1423,7 +1423,7 @@ app.post('/api/ai/stream', async (req, res) => {
         role: 'system',
         content: requestLocale === 'en-US'
           ? 'Use English for all user-facing text. Keep commands, paths, filenames, raw tool output, and scientific identifiers unchanged.'
-          : '面向用户的内容使用中文。命令、路径、文件名、工具原始输出和科学标识符保持原样。',
+          : '面向用户的内容使用中文。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用，禁止翻译或改写。',
       };
       const query = [...rawMessages].reverse().find((m) => m.role === 'user')?.content || '';
       // 0.2.9 的 dsh 映射按 SSH 会话复用，表面上“记得更多”，但会让不同

@@ -156,8 +156,8 @@ export async function runDshAgent(opts: DshAgentOptions): Promise<DshAgentOutcom
     await client.selectModel({ sessionId, provider: 'deepseek-official', model: opts.profile.model });
 
     const languageInstruction = zh
-      ? '面向用户的内容使用中文。命令、路径、文件名、工具原始输出和科学标识符保持原样。'
-      : 'Use English for all user-facing text. Keep commands, paths, filenames, raw tool output, and scientific identifiers unchanged.';
+      ? '面向用户的内容使用中文。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用，禁止翻译或改写。'
+      : 'Use English for all user-facing text. Keep commands, paths, directory names, filenames, raw tool output, and scientific identifiers unchanged — never translate or paraphrase them.';
     const displayInstruction = zh
       ? '在对话中展示图片或图表时，直接用标准 Markdown 图片语法写文件路径（![描述](路径)）：集群绝对路径、本地绝对路径（C:\\...）和工作区相对路径都会被客户端自动内联渲染；不要为此启动临时 HTTP 服务，也不要 base64 内联。表格用标准 Markdown 表格语法。'
       : 'To show images or charts in chat, write standard Markdown image syntax with plain file paths (![desc](path)): cluster absolute paths, local absolute paths (C:\\...) and workspace-relative paths are all rendered inline by the client. Never start a temporary HTTP server or inline base64 for this. Use standard Markdown tables for tabular data.';

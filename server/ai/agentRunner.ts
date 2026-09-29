@@ -249,8 +249,8 @@ export function buildAgentSystemPrompt(
   locale: 'zh-CN' | 'en-US' = 'zh-CN',
 ): string {
   const userLanguageRule = locale === 'en-US'
-    ? 'Use English for all user-facing questions, progress updates, explanations, and final answers. Keep commands, paths, filenames, tool output, and scientific identifiers unchanged.'
-    : '全程用中文、简洁、说人话；先给结论再给依据。命令、路径、文件名、工具原始输出和科学标识符保持原样。';
+    ? 'Use English for all user-facing questions, progress updates, explanations, and final answers. Keep commands, paths, directory names, filenames, tool output, and scientific identifiers unchanged — never translate or paraphrase them.'
+    : '全程用中文、简洁、说人话；先给结论再给依据。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用，禁止翻译或改写（目录名如 04_results、results 不得写成中文）。';
   const finalLanguageRule = locale === 'en-US'
     ? 'Reply in English. Be concise. Show real command output; do not merely describe it.'
     : '用中文回答，保持简洁。展示真实命令输出，不要只描述你看到的内容。';
@@ -545,8 +545,8 @@ export function buildWorkflowExecutorPrompt(
   currentStepPacket?: Record<string, unknown> | null,
 ): string {
   const language = locale === 'en-US'
-    ? 'Use concise English for user-facing text.'
-    : '面向用户只用简洁中文；不要展示冗长思考。';
+    ? 'Use concise English for user-facing text. Keep commands, paths, directory names, filenames, tool output, and scientific identifiers unchanged — never translate or paraphrase them.'
+    : '面向用户只用简洁中文；不要展示冗长思考。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用（如 results/、04_results/03_align），禁止翻译或改写。';
   const pathAccess = config.pathPolicy === 'full_access'
     ? 'FULL PATH ACCESS is enabled by the user. You may read, write, copy, move, and work across multiple cluster paths that the SSH account can access, including using cd. Do not refuse merely because a path is outside RUN. Keep workflow state in run.json and still verify the exact targets before destructive operations.'
     : `Scoped path mode is enabled. Writes normally stay inside ${workflow.runDir}, but you may also operate on configured input directories and any other absolute path the user explicitly names in the conversation. Configured references stay read-only unless the user explicitly names the exact target and asks to modify it.`;
@@ -601,8 +601,8 @@ export function buildWorkflowInspectorPrompt(
   currentStepPacket?: Record<string, unknown> | null,
 ): string {
   const language = locale === 'en-US'
-    ? 'Answer the user in concise English.'
-    : '用简洁中文直接回答用户。';
+    ? 'Answer the user in concise English. Keep commands, paths, directory names, filenames, and tool output unchanged — never translate or paraphrase them.'
+    : '用简洁中文直接回答用户。命令、路径、目录名、文件名和工具原始输出必须逐字原样引用，禁止翻译或改写（如 results/ 不能写成「结果目录」）。';
   return `You are HPClaw, the user's conversational HPC assistant. This turn has read-only access to the active workflow and scheduler.
 
 Understand the user's actual question in the context of the recent conversation, then answer naturally and directly. Use your own judgment about whether one or two read-only checks are useful; do not force the answer into a workflow checklist or a choice dialog. This turn is NOT authorization to advance, restart, resubmit, cancel, kill, move, or modify any workflow step or job.

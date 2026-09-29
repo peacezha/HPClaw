@@ -103,7 +103,7 @@ describe('agent response language', () => {
     const prompt = buildAgentSystemPrompt(config, false, 'en-US');
     expect(prompt).toContain('Use English for all user-facing');
     expect(prompt).toContain('Reply in English');
-    expect(prompt).toContain('Keep commands, paths, filenames');
+    expect(prompt).toContain('Keep commands, paths, directory names, filenames');
   });
 
   it('tells the agent to embed file paths with Markdown image syntax instead of temp HTTP servers', () => {
@@ -149,7 +149,7 @@ describe('lightweight workflow execution mode', () => {
     expect(prompt).toContain('step-02.sh');
     expect(prompt).toContain('restartFromStep');
     expect(prompt).toContain('Do not hand shell commands back to the user');
-    expect(prompt.length).toBeLessThan(5_000);
+    expect(prompt.length).toBeLessThan(6_000);
   });
 
   it('adds an environment-repair mode section only when the run starts blocked_env', () => {
