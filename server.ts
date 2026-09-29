@@ -75,6 +75,7 @@ import {
   removeFormalWorkflowContinuation,
 } from './server/workflows/formalWorkflowContinuations';
 import {
+  extractRunDirFromText,
   findLatestWorkflowExecutionContext,
   normalizeWorkflowExecutionContext,
   parseWorkflowExecutionContext,
@@ -1447,8 +1448,33 @@ app.post('/api/ai/stream', async (req, res) => {
         || (typeof req.body?.summary === 'string' ? req.body.summary : undefined);
       // 正式流程上下文有独立的结构化请求字段，不再依赖最近聊天窗口里是否还留着
       // 最初那条 marker。旧客户端仍可从消息 marker 向后兼容恢复。
-      const workflowRunContext = normalizeWorkflowExecutionContext(req.body?.workflowRunContext)
+      let workflowRunContext = normalizeWorkflowExecutionContext(req.body?.workflowRunContext)
         || findLatestWorkflowExecutionContext(rawMessages);
+      // 用户直接把 RUN 目录路径贴进普通对话询问（无 marker、无绑定字段）时，从路径恢复绑定：
+      // 读 run.json 拿 workflowId/runId，本轮按流程会话处理（只读问答或执行器），
+      // 避免落入通用 Agent 的 set_plan 门槛、重复造计划、把旧提交回执当新作业。
+      if (!workflowRunContext && s) {
+        const pathHit = extractRunDirFromText(
+          `${query}\n${rawMessages.slice(-3).map(m => m.content).join('\n')}`,
+        );
+        if (pathHit) {
+          try {
+            const raw = await s.cluster.exec(`cat '${pathHit.replace(/'/g, `'\\''`)}'/run.json`, 15_000);
+            const parsed = JSON.parse(raw);
+            if (parsed?.workflowId && parsed?.runId) {
+              workflowRunContext = normalizeWorkflowExecutionContext({
+                workflowId: String(parsed.workflowId),
+                runId: String(parsed.runId),
+                runDir: pathHit,
+                policy: 'isolated-run-v1',
+              });
+              if (workflowRunContext) {
+                console.log('[AI:%s] recovered workflow run binding from pasted path: %s', aiRequestId, pathHit);
+              }
+            }
+          } catch { /* 读不到 run.json 就不绑定，走通用 Agent */ }
+        }
+      }
       let workflowStartIndex = -1;
       if (workflowRunContext) {
         for (let index = rawMessages.length - 1; index >= 0; index -= 1) {

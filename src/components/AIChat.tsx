@@ -219,6 +219,13 @@ function buildFollowUpSuggestions(content: string, isEnglish: boolean, contextTe
   const text = content.toLowerCase();
   const context = `${contextText}\n${text}`.toLowerCase();
 
+  // AI 答复本身是半成品（很短、或明显是「我先…/接下来…」的开头句）时，唯一有意义的
+  // 下一步是让它把话说完；此时给固定套话就是用户抱怨的「建议不按上下文」。
+  const trimmed = content.trim();
+  if (trimmed.length < 60 || /(?:我先|让我先|我接下来|接下来|准备|正在|先读取|先查看|先检查)[^。！？]*[。！]?$/.test(trimmed)) {
+    return isEnglish ? ['Continue', 'Give me the conclusion directly'] : ['继续说下去', '直接给出结论'];
+  }
+
   // 上下文感知：根据流程/对话当前状态给方向，而不是固定三条
   if (/blocked_env|环境缺失|环境未就绪|缺少环境/.test(context)) {
     return isEnglish
@@ -233,12 +240,12 @@ function buildFollowUpSuggestions(content: string, isEnglish: boolean, contextTe
   if (/waiting_jobs|已提交.*作业|job .* submitted|作业完成后/.test(context)) {
     return isEnglish
       ? ['Check the job status', 'Continue when the job finishes']
-      : ['查看作业运行状态', '作业完成后继续流程'];
+      : ['查看作业真实状态', '作业完成后继续流程'];
   }
-  if (/失败|错误|异常|error|failed|exception/.test(text)) {
+  if (/失败|错误|异常|error|failed|exception|exit/.test(text)) {
     return isEnglish
-      ? ['Recommended: diagnose the root cause', 'Show a safe fix', 'Tell me what information is missing']
-      : ['推荐：继续定位根因', '给出安全修复方案', '告诉我还需补充什么信息'];
+      ? ['Recommended: diagnose the root cause', 'Show a safe fix', 'Resume the workflow after fixing']
+      : ['推荐：定位失败根因', '给出安全修复方案', '修复后继续流程'];
   }
   if (/完成|成功|已生成|done|completed|success/.test(text)) {
     return isEnglish
@@ -255,9 +262,9 @@ function buildFollowUpSuggestions(content: string, isEnglish: boolean, contextTe
       ? ['Continue the workflow', 'Show current progress']
       : ['继续执行流程', '查看当前进度'];
   }
-  return isEnglish
-    ? ['Recommended: give executable next steps', 'Explain the key reasoning', 'Suggest the best option']
-    : ['推荐：给出可执行的下一步', '解释关键依据', '推荐最合适的方案'];
+  // 没有可识别的上下文时不显示建议，而不是给三条固定套话（用户实测反馈：
+  // 固定建议不贴上下文，点了反而误导）。
+  return [];
 }
 
 //  Message Bubble 

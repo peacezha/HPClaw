@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractRunDirFromText,
   findLatestWorkflowExecutionContext,
   formatWorkflowConfigureDirective,
   formatWorkflowExecutionContext,
@@ -107,5 +108,27 @@ describe('workflow run detached marker', () => {
       { content: live },
     ];
     expect(findLatestWorkflowExecutionContext(messages)?.runId).toBe('run-2');
+  });
+});
+
+describe('extractRunDirFromText（贴路径询问场景的绑定恢复，v0.4.31）', () => {
+  it('从「路径+任务情况」的消息里提取 RUN 目录', () => {
+    const text = '/public/home/yxli26/hpclaw_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4任务情况';
+    expect(extractRunDirFromText(text))
+      .toBe('/public/home/yxli26/hpclaw_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4');
+  });
+
+  it('路径带引号或换行前缀也能提取，普通目录不误判', () => {
+    expect(extractRunDirFromText('看下"/home/u/hpclaw_flows/f/03_workspace/runs/r1" 的状态'))
+      .toBe('/home/u/hpclaw_flows/f/03_workspace/runs/r1');
+    expect(extractRunDirFromText('/public/home/u/data 里有什么')).toBeNull();
+    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/02_reference 是什么')).toBeNull();
+    expect(extractRunDirFromText('')).toBeNull();
+  });
+
+  it('拒绝穿越与尾斜杠归一', () => {
+    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/03_workspace/runs/../runs/x')).toBeNull();
+    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/03_workspace/runs/r1/'))
+      .toBe('/home/u/hpclaw_flows/f/03_workspace/runs/r1');
   });
 });

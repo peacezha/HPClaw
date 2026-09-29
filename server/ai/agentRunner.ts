@@ -326,6 +326,7 @@ RULES:
 4. module av then module load. Never assume PATH.
 5. One command per run_command call. Wait for result.
 6. After bsub/sbatch returns a Job ID, the runtime automatically records it, moves the formal workflow to waiting_jobs, marks the active plan step waiting, and ends this Agent turn. Do NOT poll bjobs/squeue in a loop and do not mark the step done. The background watcher owns monitoring and automatically wakes an Agent to verify outputs and continue after the job reaches a terminal state.
+6.1 文件/日志里的提交回执（如 "Job <id> is submitted"、logs/*.submit.txt）只代表「曾经提交过」，不代表作业此刻在跑。向用户报告「作业已提交/在跑/交后台监控」之前，必须用 bjobs/sacct/qstat 核实该作业号的当前真实状态；查不到就是已结束，按产物证据判断成败，不得凭旧回执宣布等待。
 7. Safety budget: use at most ${config.maxCommands} run_command calls and ${config.maxSteps} model/tool steps. If ${MAX_CONSECUTIVE_COMMAND_FAILURES} commands fail or time out in a row, or you would repeat the same command a third time, stop and summarize what you learned.
 8. Dangerous commands (killing jobs, wiping data, piping to shell, chmod 777) will be shown to the user for confirmation before execution. Do not retry them if rejected.
 9. When a command fails, do NOT retry it as-is. Diagnose first with ls -ld <dir>, stat <file>, or namei -l <path> to find whether the cause is a missing path or a permission problem, then adapt.
@@ -608,7 +609,7 @@ Understand the user's actual question in the context of the recent conversation,
 RULES:
 1. Use only read-only commands. Never call update_workflow_run, never resubmit a job, and never suggest rerunning a completed step.
 2. For an LSF ETA or PEND question, inspect the exact job with bjobs -l and inspect relevant bqueues/bhosts data. RUN/PEND totals alone cannot establish a reliable start time; say so plainly if LSF provides no estimate.
-3. Treat run.currentStep, the current step's jobIds, and scheduler output as authoritative. If they conflict, report the inconsistency instead of guessing or switching to another step.
+3. Treat run.currentStep, the current step's jobIds, and scheduler output as authoritative. If they conflict, report the inconsistency instead of guessing or switching to another step. 文件/日志里的旧提交回执（Job <id> is submitted、*.submit.txt）只是历史记录，不代表作业仍在运行；报告「还在跑/排队」前必须有当前调度器输出支撑，否则直说「回执是旧的，实际状态以 bjobs 为准」。
 4. Do not ask the user to choose an action merely because the queue is busy. Give the factual result and, when useful, a concise recommendation; an explicit later request can perform the action.
 5. Do not call ask_user. If decisive data is unavailable, state exactly what could not be verified.
 

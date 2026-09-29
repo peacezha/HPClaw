@@ -21,6 +21,20 @@ export function normalizeWorkflowExecutionContext(value: unknown): WorkflowExecu
   };
 }
 
+/**
+ * 从用户消息里提取 RUN 目录路径（用户直接贴路径询问「这个任务什么情况」的场景）。
+ * 只匹配 hpclaw_flows/<flow>/03_workspace/runs/<runId> 形态的绝对路径，避免误绑普通目录。
+ */
+export function extractRunDirFromText(text: string): string | null {
+  // runId 段只允许 ASCII slug 字符（<slug>-<时间戳>-<哈希>），避免把紧随路径的
+  // 中文问句（如「…4fe4任务情况」）吞进路径。
+  const match = String(text || '')
+    .match(/(\/[^\s"'()]*\/hpclaw_flows\/[^\s/"']+\/03_workspace\/runs\/[A-Za-z0-9._-]+)/);
+  const runDir = match?.[1]?.replace(/\/+$/, '') || '';
+  if (!runDir || runDir.includes('..')) return null;
+  return runDir;
+}
+
 export function formatWorkflowExecutionContext(context: Omit<WorkflowExecutionContext, 'policy'>): string {
   return `${WORKFLOW_RUN_MARKER} ${JSON.stringify({ ...context, policy: 'isolated-run-v1' })}`;
 }
