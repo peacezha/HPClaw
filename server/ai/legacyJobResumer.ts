@@ -7,6 +7,7 @@
 import { runAgent as defaultRunAgent, type AgentCtx, type AgentCB } from './agentRunner';
 import type { AIMessage, AIProfile } from './types';
 import type { JobAgentBinding } from '../dsh/jobAgentBindings';
+import type { JobSubmissionGuard } from './jobSubmissionGuard';
 
 export interface LegacyResumeJobEvent {
   sessionId: string;
@@ -29,6 +30,8 @@ export interface LegacyResumeDeps {
   notify?: (title: string, content: string) => Promise<void>;
   /** 唤醒轮里 Agent 新提交的作业：交给服务端 trackJobs + 续登绑定，保持监控闭环。 */
   onJobsSubmitted?: (binding: JobAgentBinding, jobIds: string[]) => void;
+  /** 与前台 Agent、正式流程和 dsh 桥共享的持久提交幂等层。 */
+  jobSubmissionGuard?: JobSubmissionGuard;
   /** 测试覆盖用；缺省走 agentRunner 的真实 runAgent */
   runAgent?: typeof defaultRunAgent;
 }
@@ -129,6 +132,7 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
         maxSteps: 200,
       },
       onJobsSubmitted: jobIds => deps.onJobsSubmitted?.(binding, jobIds),
+      jobSubmissionGuard: deps.jobSubmissionGuard,
       conversationId: binding.conversationId,
       conversationKey: binding.conversationKey,
       locale: binding.locale ?? 'zh-CN',

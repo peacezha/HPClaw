@@ -20,6 +20,7 @@ import { AgentStreamTimeoutError, consumeAgentStream } from './agentStreamLifecy
 import { scopeWorkflowCommand } from './workflowCommandScope';
 import { buildSchedulerPromptSection } from '../cluster/schedulerProfile';
 import { finalStateCommand } from '../notifications/scheduler';
+import { preflightJobSubmission, type JobSubmissionClaim, type JobSubmissionGuard } from './jobSubmissionGuard';
 import { stripDsmlMarkup } from '../../shared/dsml';
 import type { WorkflowExecutionContext } from '../../shared/workflowExecution';
 import type { WorkflowRunPatch } from '../../shared/workflowRun';
@@ -203,6 +204,11 @@ export interface AgentCtx {
   workflowTurnMode?: 'execute' | 'inspect';
   /** 提交回执出现时立即交给后台监控，覆盖短作业跨轮询窗口的情况。 */
   onJobsSubmitted?: (jobIds: string[]) => void;
+  /**
+   * 跨 Agent/自动续跑共享的持久提交幂等层。相同会话或 RUN 中的同一脚本在
+   * 调度器仍存活时只返回已有 jobId，不再次执行 bsub/sbatch/qsub。
+   */
+  jobSubmissionGuard?: JobSubmissionGuard;
   /** 当前 HPClaw 对话 id：服务端登记 job-agent 绑定时用于作业完成后回写对话。 */
   conversationId?: string;
   /** 对话作用域键（与 dsh 路径 buildDshConversationKey 同款），job-agent 绑定记录用。 */
@@ -324,7 +330,7 @@ RULES:
 1. Use run_command only for facts required by the current step. Never run generic home-directory inventory, file counts, disk summaries or checksum sampling unless that exact check is a saved workflow step or the user explicitly requested it.
 2. ${workflowScoped ? '正式流程优先使用当前 step 的 command/sourceSection/skillRefs；已有明确命令时禁止再做通用技能搜索。' : '生物信息学任务缺少明确命令模板时再 search_skills。'}
 3. Prefer reversible cleanup (move obsolete files into a clearly named backup/trash directory). If the user explicitly asks to delete known files, an exact narrowly scoped rm command is allowed after the runtime confirmation; never broaden a glob or delete a parent directory. Operations >2min go through the cluster's scheduler (bsub/sbatch/qsub per the SCHEDULER note; nohup when there is none).
-4. module av then module load. Never assume PATH.
+4. module av then module load. Never assume PATH. Before bsub/sbatch/qsub, make the script pass \`bash -n\` and validate every exact \`module load Name/Version\`; the runtime also enforces this preflight and will return a repairable error without submitting.
 5. One command per run_command call. Wait for result.
 6. After bsub/sbatch returns a Job ID, the runtime automatically records it, moves the formal workflow to waiting_jobs, marks the active plan step waiting, and ends this Agent turn. Do NOT poll bjobs/squeue in a loop and do not mark the step done. The background watcher owns monitoring and automatically wakes an Agent to verify outputs and continue after the job reaches a terminal state.
 6.1 文件/日志里的提交回执（如 "Job <id> is submitted"、logs/*.submit.txt）只代表「曾经提交过」，不代表作业此刻在跑。向用户报告「作业已提交/在跑/交后台监控」之前，必须用 bjobs/sacct/qstat 核实该作业号的当前真实状态；查不到就是已结束，按产物证据判断成败，不得凭旧回执宣布等待。
@@ -838,6 +844,58 @@ export async function runAgent(
     askAbort.abort();
   };
 
+  const handoffSubmittedJobs = async (
+    submittedJobIds: string[],
+    output: string,
+    workflowRegistrationNote = '',
+    reused = false,
+  ): Promise<string> => {
+    const uniqueJobIds = [...new Set(submittedJobIds)];
+    if (activeWorkflowRun?.runDir && activeWorkflowRun.currentStep > 0) {
+      try {
+        const current = activeWorkflowRun.steps?.find((step: any) => step.n === activeWorkflowRun.currentStep);
+        activeWorkflowRun = await updateWorkflowRun(
+          (cmd, to) => ctx.run(ctx.sid, cmd, to),
+          ctx.home || '',
+          activeWorkflowRun.runDir,
+          {
+            status: 'waiting_jobs',
+            step: {
+              n: activeWorkflowRun.currentStep,
+              jobIds: [...new Set([...(current?.jobIds || []), ...uniqueJobIds])],
+              summary: current?.summary,
+            },
+          },
+        );
+        cb.onWorkflowRunChanged?.(activeWorkflowRun);
+      } catch (err: any) {
+        workflowRegistrationNote += `\n[自动登记 Job ID 失败: ${err?.message || String(err)}]`;
+      }
+    }
+    ctx.onJobsSubmitted?.(uniqueJobIds);
+    const waitingStep = planState.activeStep();
+    if (waitingStep) {
+      try {
+        const plan = planState.update(waitingStep.id, 'waiting', {
+          summary: reused
+            ? `检测到相同提交已有存活作业 ${uniqueJobIds.join(', ')}，已复用并交由后台监控。`
+            : `作业 ${uniqueJobIds.join(', ')} 已提交，交由后台监控。`,
+          evidence: [reused
+            ? `幂等提交复用 Job ID: ${uniqueJobIds.join(', ')}`
+            : `调度器返回 Job ID: ${uniqueJobIds.join(', ')}`],
+        });
+        cb.onPlanUpdate?.(plan, waitingStep.id);
+      } catch { /* 运行记录仍已进入 waiting_jobs，交接不能因计划摘要失败而卡住 */ }
+    }
+    const handoff = reused
+      ? `检测到相同步骤已经有存活作业 ${uniqueJobIds.join(', ')}，本次没有重复提交；已继续交给后台监控。`
+      : `作业 ${uniqueJobIds.join(', ')} 已成功提交，当前步骤已交给后台监控。本轮 Agent 已结束，不会占用聊天或循环查询；作业完成后可继续后续步骤。`;
+    const commandResult = `${output}${workflowRegistrationNote}\n\n[JOB_SUBMITTED] ${handoff}`;
+    cb.onToolResult('run_command', commandResult);
+    stopForGuard(handoff);
+    return commandResult;
+  };
+
   try {
     // Ensure messages is never empty (AI SDK requirement)
   if (conversationMsgs.length === 0) {
@@ -1032,6 +1090,43 @@ export async function runAgent(
               }
             }
 
+            let submissionClaim: JobSubmissionClaim | undefined;
+            if (isSubmissionCommand(command) && ctx.jobSubmissionGuard) {
+              const preflight = await preflightJobSubmission(
+                executionCommand,
+                { conversationKey: ctx.conversationKey, workflowRunDir: formalWorkflow?.runDir },
+                (probe, timeout) => ctx.run(ctx.sid, probe, timeout),
+              );
+              if (!preflight.ok) {
+                const msg = `[提交前检查未通过，尚未提交作业]\n${preflight.output}`;
+                cb.onToolResult('run_command', msg);
+                return msg;
+              }
+              const decision = await ctx.jobSubmissionGuard.prepare({
+                sessionId: ctx.sid,
+                conversationKey: ctx.conversationKey,
+                workflowRunDir: formalWorkflow?.runDir,
+                command: executionCommand,
+                scheduler: ctx.scheduler,
+                exec: (probe, timeout) => ctx.run(ctx.sid, probe, timeout),
+              });
+              if (decision.kind === 'busy') {
+                const msg = '相同作业提交正在由另一个 Agent 执行，本轮已停止以避免并发重复提交。请等待提交回执或查看作业列表。';
+                cb.onToolResult('run_command', msg);
+                stopForGuard(msg);
+                return msg;
+              }
+              if (decision.kind === 'reuse') {
+                return handoffSubmittedJobs(
+                  decision.record.jobIds,
+                  `[IDEMPOTENT_REUSE] 相同提交已存在：${decision.record.jobIds.join(', ')}。`,
+                  '',
+                  true,
+                );
+              }
+              submissionClaim = decision.claim;
+            }
+
             try {
               const timeout = command.includes('bsub') ? 60000 : 30000;
               const output = await ctx.run(ctx.sid, executionCommand, timeout);
@@ -1052,46 +1147,20 @@ export async function runAgent(
                 ...[...output.matchAll(/Job\s+<(\d+(?:[._]\d+)?)>\s+is\s+submitted\b/gi)].map(match => match[1]),
                 ...[...output.matchAll(/Submitted\s+batch\s+job\s+(\d+(?:[._]\d+)?)/gi)].map(match => match[1]),
               ];
-              let workflowRegistrationNote = '';
-              if (submittedJobIds.length > 0 && activeWorkflowRun?.runDir && activeWorkflowRun.currentStep > 0) {
-                try {
-                  const current = activeWorkflowRun.steps?.find((step: any) => step.n === activeWorkflowRun.currentStep);
-                  activeWorkflowRun = await updateWorkflowRun(
-                    (cmd, to) => ctx.run(ctx.sid, cmd, to),
-                    ctx.home || '',
-                    activeWorkflowRun.runDir,
-                    {
-                      status: 'waiting_jobs',
-                      step: {
-                        n: activeWorkflowRun.currentStep,
-                        jobIds: [...new Set([...(current?.jobIds || []), ...submittedJobIds])],
-                        summary: current?.summary,
-                      },
-                    },
-                  );
-                  cb.onWorkflowRunChanged?.(activeWorkflowRun);
-                } catch (err: any) {
-                  workflowRegistrationNote = `\n[自动登记 Job ID 失败: ${err?.message || String(err)}]`;
-                }
-              }
               if (submittedJobIds.length > 0) {
-                const uniqueJobIds = [...new Set(submittedJobIds)];
-                ctx.onJobsSubmitted?.(uniqueJobIds);
-                const waitingStep = planState.activeStep();
-                if (waitingStep) {
+                if (submissionClaim) {
                   try {
-                    const plan = planState.update(waitingStep.id, 'waiting', {
-                      summary: `作业 ${uniqueJobIds.join(', ')} 已提交，交由后台监控。`,
-                      evidence: [`调度器返回 Job ID: ${uniqueJobIds.join(', ')}`],
-                    });
-                    cb.onPlanUpdate?.(plan, waitingStep.id);
-                  } catch { /* 运行记录仍已进入 waiting_jobs，交接不能因计划摘要失败而卡住 */ }
+                    ctx.jobSubmissionGuard?.complete(submissionClaim, submittedJobIds);
+                  } catch (ledgerError) {
+                    // 调度器已经接受作业后，绝不能因本地账本落盘失败把成功伪装成失败，
+                    // 否则模型会重试 bsub，反而制造重复作业。
+                    console.error('[submit-guard] 作业已提交但账本落盘失败:', ledgerError);
+                  }
                 }
-                const handoff = `作业 ${uniqueJobIds.join(', ')} 已成功提交，当前步骤已交给后台监控。本轮 Agent 已结束，不会占用聊天或循环查询；作业完成后可继续后续步骤。`;
-                const commandResult = `${truncated}${workflowRegistrationNote}\n\n[JOB_SUBMITTED] ${handoff}`;
-                cb.onToolResult('run_command', commandResult);
-                stopForGuard(handoff);
-                return commandResult;
+                return handoffSubmittedJobs(submittedJobIds, truncated);
+              }
+              if (submissionClaim) {
+                try { ctx.jobSubmissionGuard?.fail(submissionClaim); } catch { /* 保留原始工具结果 */ }
               }
               const commandResult = truncated;
               if (formalWorkflow) {
@@ -1100,6 +1169,9 @@ export async function runAgent(
               cb.onToolResult('run_command', commandResult);
               return commandResult;
             } catch (err: any) {
+              if (submissionClaim) {
+                try { ctx.jobSubmissionGuard?.fail(submissionClaim); } catch { /* 保留原始命令错误 */ }
+              }
               consecutiveCommandFailures += 1;
               const errText = err?.message || String(err);
               // 区分错误类型并给出策略提示，避免 AI 盲目重试

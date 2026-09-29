@@ -33,6 +33,7 @@ const READ_ONLY_COMMANDS = new Set([
   'hostname', 'date', 'env', 'printenv', 'uname', 'id', 'groups', 'grep', 'egrep',
   'fgrep', 'awk', 'cut', 'sort', 'uniq', 'tr', 'paste', 'column', 'realpath',
   'readlink', 'md5sum', 'sha1sum', 'sha256sum', 'diff', 'cmp', 'comm', 'test', '[',
+  'echo', 'printf', 'true', 'false',
 ]);
 
 const WRITE_COMMANDS = new Set([

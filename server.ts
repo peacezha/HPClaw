@@ -111,6 +111,7 @@ import { BoundedSessionStore } from './server/boundedSessionStore';
 import { buildDshConversationKey, normalizeConversationContextKey } from './server/dsh/conversationScope';
 import { isCompetitionRestrictedApiPath, normalizeHpclawEdition } from './shared/edition';
 import { buildReconnectCredentials } from './server/cluster/reconnectCredentials';
+import { JobSubmissionGuard } from './server/ai/jobSubmissionGuard';
 
 // ── Environment & constants ─────────────────────────────────────────
 
@@ -122,6 +123,8 @@ const APP_EDITION = normalizeHpclawEdition(process.env.HPCLAW_EDITION);
 const IS_COMPETITION_EDITION = APP_EDITION === 'competition';
 
 const USER_SKILLS_DIR = ensureDir(dataPath('skills'));
+// 单例是刻意的：前台 Agent、正式流程续跑、legacy 续跑与 dsh 桥必须共享同一提交账本。
+const jobSubmissionGuard = new JobSubmissionGuard(DATA_ROOT);
 // asarUnpack 后，Electron 的 asar 补丁对 unpacked 条目的 readdirSync 会失效
 //（本机实测：packed 的 lsf_skills 能扫、unpacked 的 skills 扫不出导致技能库空），
 // 有 app.asar.unpacked 实路径时优先走实路径。
@@ -265,6 +268,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
         runId: resumed.runId,
         runDir: resumed.runDir,
       }, jobIds),
+      jobSubmissionGuard,
       locale: 'zh-CN',
     }, {
       onText: () => {},
@@ -459,6 +463,7 @@ jobWatcher.configure({
             console.warn('[job-bind] legacy 续跑作业绑定登记失败: %s', err instanceof Error ? err.message : String(err));
           }
         },
+        jobSubmissionGuard,
       });
     },
   }),
@@ -913,6 +918,7 @@ if (!IS_COMPETITION_EDITION) {
     getSession,
     getDshSessionBinding,
     getBridgeToken,
+    jobSubmissionGuard,
   });
 }
 
@@ -1364,6 +1370,20 @@ app.post('/api/ai/stream', async (req, res) => {
   // 服务端转入后台继续跑（detached），终态回写对话存档并通知；
   // 无 conversationId 的运行（QQ 机器人等）保持断连即中止的旧语义。
   const runConversationId = typeof req.body?.conversationId === 'string' && req.body.conversationId ? req.body.conversationId : undefined;
+  const existingConversationRun = runConversationId
+    ? findActiveRunByConversation(runConversationId)
+    : undefined;
+  if (existingConversationRun) {
+    clearInterval(heartbeat);
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      code: 'already_running',
+      requestId: existingConversationRun.requestId,
+      error: '这个对话已有 Agent 正在执行。已阻止第二个执行器启动；原任务仍在后台继续，请稍后查看实时进度。',
+    })}\n\n`);
+    res.end();
+    return;
+  }
   const activeRun = registerActiveRun({
     requestId: aiRequestId,
     conversationId: runConversationId,
@@ -1811,6 +1831,7 @@ app.post('/api/ai/stream', async (req, res) => {
         workflowTurnMode,
         conversationId: agentConversationId,
         conversationKey: agentConversationKey,
+        jobSubmissionGuard,
         onJobsSubmitted: jobIds => {
           trackFormalWorkflowJobs(
             sessionId,

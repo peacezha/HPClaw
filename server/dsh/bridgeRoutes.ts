@@ -14,6 +14,8 @@ import { assertRemotePathWithinRoot } from '../files/pathSafety';
 import { extractSubmittedJobIds, isSubmissionCommand } from './jobAgentBindings';
 import type { DshBridgeBinding } from './bridgeState';
 import { resolveWorkspaceFilePath } from './workspace';
+import { preflightJobSubmission, type JobSubmissionClaim, type JobSubmissionGuard } from '../ai/jobSubmissionGuard';
+import type { SchedulerKind } from '../cluster/schedulerProfile';
 
 export interface BridgeClusterSession {
   cluster: {
@@ -21,6 +23,7 @@ export interface BridgeClusterSession {
     state: string;
     /** SFTP 未就绪时会 throw（见 ClusterSession.getSftp） */
     getSftp?: () => SFTPWrapper;
+    scheduler?: SchedulerKind;
   };
   home?: string;
   info?: { host?: string };
@@ -44,6 +47,8 @@ export interface BridgeRouteDeps {
     home: string,
     exec: (command: string, timeoutMs?: number) => Promise<string>,
   ) => BridgeFsService;
+  /** 所有 Agent 执行入口共享，防止前台、自动续跑与 dsh 重复提交同一脚本。 */
+  jobSubmissionGuard?: JobSubmissionGuard;
 }
 
 const FS_LIST_MAX_ENTRIES = 500;
@@ -246,11 +251,62 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
       res.status(428).json({ error: 'confirmation_required', risk });
       return;
     }
-    const { session } = cluster;
+    const { session, binding } = cluster;
     const rawTimeout = Number(body.timeoutMs);
     const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 30_000;
+    let submissionClaim: JobSubmissionClaim | undefined;
     try {
+      if (isSubmissionCommand(command) && deps.jobSubmissionGuard) {
+        const preflight = await preflightJobSubmission(
+          command,
+          { conversationKey: binding.conversationKey },
+          session.cluster.exec.bind(session.cluster),
+        );
+        if (!preflight.ok) {
+          res.json({
+            ok: false,
+            output: '',
+            error: `[提交前检查未通过，尚未提交作业]\n${preflight.output}`,
+            code: 'submission_preflight_failed',
+          });
+          return;
+        }
+        const decision = await deps.jobSubmissionGuard.prepare({
+          sessionId: binding.sshSessionId,
+          conversationKey: binding.conversationKey,
+          command,
+          scheduler: session.cluster.scheduler,
+          exec: session.cluster.exec.bind(session.cluster),
+        });
+        if (decision.kind === 'busy') {
+          res.json({
+            ok: false,
+            output: '',
+            error: '相同作业提交正在由另一个 Agent 执行；本次已拦截，避免重复提交。',
+            code: 'duplicate_submission_in_progress',
+          });
+          return;
+        }
+        if (decision.kind === 'reuse') {
+          const reusedOutput = decision.record.jobIds
+            .map(jobId => `Job <${jobId}> is submitted. [IDEMPOTENT_REUSE: no new submission]`)
+            .join('\n');
+          res.json({ ok: true, exitCode: 0, output: reusedOutput, reused: true });
+          return;
+        }
+        submissionClaim = decision.claim;
+      }
       const output = await session.cluster.exec(command, timeoutMs);
+      if (submissionClaim) {
+        const jobIds = extractSubmittedJobIds(output);
+        try {
+          if (jobIds.length > 0) deps.jobSubmissionGuard?.complete(submissionClaim, jobIds);
+          else deps.jobSubmissionGuard?.fail(submissionClaim);
+        } catch (ledgerError) {
+          // 已有调度器回执时保持成功语义，避免 dsh 因本地落盘错误重试提交。
+          console.error('[submit-guard] dsh 提交账本落盘失败:', ledgerError);
+        }
+      }
       // waitForJobs（分钟，钳 1..30）：命令输出捕获到作业号时，轮询等第一个作业到终态。
       // 只有命令本身是提交命令（bsub/sbatch/qsub）才提取作业号——读历史 submit
       // 日志的输出含同样字样，不能触发等待（v0.4.31）。
@@ -270,6 +326,9 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
       }
       res.json({ ok: true, exitCode: 0, output: trunc(output) });
     } catch (err) {
+      if (submissionClaim) {
+        try { deps.jobSubmissionGuard?.fail(submissionClaim); } catch { /* 保留原始命令错误 */ }
+      }
       // 执行失败也回 200：让 dsh 侧把错误信息当工具结果读出来，由模型自行调整。
       res.json({
         ok: false,

@@ -749,6 +749,54 @@ describe('runAgent ask_user handling', () => {
     expect(toolResults.join('\n')).toContain('[JOB_SUBMITTED]');
     expect(dones[0]).toContain('88888');
   });
+
+  it('reuses a live job from the shared ledger without issuing a second bsub', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        await options.tools.set_plan.execute({
+          goal: '恢复提交',
+          steps: [{ title: '提交', verification: '拿到作业号' }],
+        });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.run_command.execute({ command: 'bsub < /home/u/run/code/step-04.sh' });
+        yield { type: 'text-delta', text: '不应继续' };
+      })(),
+    }));
+    const run = vi.fn().mockResolvedValue('[HPCLAW_PREFLIGHT] OK');
+    const submitted: string[][] = [];
+    const dones: string[] = [];
+    const guard = {
+      prepare: vi.fn(async () => ({
+        kind: 'reuse',
+        record: { jobIds: ['75598506'] },
+        states: { '75598506': 'RUN' },
+        reason: 'active',
+      })),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    } as any;
+
+    await runAgent(
+      {
+        sid: 'session-1',
+        run,
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+        jobSubmissionGuard: guard,
+        onJobsSubmitted: ids => submitted.push(ids),
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onErr: vi.fn(),
+        onDone: text => dones.push(text), sig: () => undefined,
+      },
+      [{ role: 'user', content: '继续 step-04' }],
+    );
+
+    expect(run).toHaveBeenCalledTimes(1); // only deterministic preflight, never bsub
+    expect(run.mock.calls[0][1]).toContain('[HPCLAW_PREFLIGHT]');
+    expect(run.mock.calls[0][2]).toBe(20_000);
+    expect(submitted).toEqual([['75598506']]);
+    expect(dones[0]).toContain('没有重复提交');
+  });
 });
 
 describe('formal workflow command budget', () => {

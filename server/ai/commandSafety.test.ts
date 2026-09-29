@@ -40,6 +40,12 @@ describe('isDangerousCommand', () => {
     expect(classifyCommandRisk('fastqc reads.fq')).toBe('unknown');
   });
 
+  it('keeps diagnostic command chains read-only when echo or printf only label output', () => {
+    expect(classifyCommandRisk('bjobs 75598506; echo "---"; bjobs -l 75598506 | head -80')).toBe('read');
+    expect(classifyCommandRisk("pwd && printf '%s\\n' status && ls -la")).toBe('read');
+    expect(classifyCommandRisk('echo ok > result.txt')).toBe('write');
+  });
+
   it('keeps only machine-level destructive commands behind the non-bypassable floor', () => {
     expect(isCatastrophicCommand('mkfs.ext4 /dev/sda')).toBe(true);
     expect(isCatastrophicCommand('dd if=/dev/zero of=/dev/sda')).toBe(true);
