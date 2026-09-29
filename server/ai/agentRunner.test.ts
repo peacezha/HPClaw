@@ -1089,6 +1089,125 @@ describe('waiting_jobs reconcile on turn start (v0.4.30)', () => {
   });
 });
 
+describe('failed run recovery turn (v0.4.34)', () => {
+  // run 判 failed 后停止门把它当永久终态：用户说「继续」也只收到罐头句。
+  // 修复：failed + 存活作业 → 翻回 waiting_jobs；failed + 全终态 → 恢复轮可多轮续跑。
+  const runDir = '/public/home/u/hpclaw_flows/dap/03_workspace/runs/run-failed';
+
+  function setup(
+    bjobsAnswer: string,
+    rounds: (round: number, options: any) => AsyncGenerator<unknown, void, unknown>,
+  ) {
+    let authoritativeRun: any = {
+      runId: 'run-failed', workflowId: 'wf-dap', workflowName: 'DAP', workflowVersion: 1,
+      runDir, workspacePolicy: 'isolated-run-v1', status: 'failed', startedAt: 1,
+      updatedAt: 1, heartbeatAt: 1, currentStep: 3, totalSteps: 3, endedAt: 2,
+      error: '步骤 3 失败：内存超限',
+      jobStates: { '75593097': 'UNKNOWN' },
+      config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
+      steps: [
+        { n: 1, stepId: 'step-01', title: '预检', status: 'done', summary: 'ok' },
+        { n: 2, stepId: 'step-02', title: 'FastQC', status: 'done', summary: 'ok' },
+        { n: 3, stepId: 'step-03', title: '比对', status: 'failed', jobIds: ['75593097'], error: 'OOM' },
+      ],
+    };
+    let round = 0;
+    mockStreamText.mockImplementation((options: any) => {
+      const currentRound = round++;
+      return { fullStream: (async function* () { yield* rounds(currentRound, options); })() };
+    });
+    const clusterRun = vi.fn(async (_sid: string, command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(authoritativeRun);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded) {
+        authoritativeRun = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+        return '';
+      }
+      if (command.includes('bjobs -a') && command.includes('75593097')) return bjobsAnswer;
+      return 'ok';
+    });
+    const dones: string[] = [];
+    const errors: string[] = [];
+    const start = () => runAgent(
+      {
+        sid: 'session-1', home: '/public/home/u', run: clusterRun, scheduler: 'lsf',
+        workflowRun: { workflowId: 'wf-dap', runId: 'run-failed', runDir, policy: 'isolated-run-v1' },
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(),
+        onDone: text => dones.push(text),
+        onErr: err => errors.push(err),
+        sig: () => undefined,
+      },
+      [{ role: 'user', content: '继续说下去，把失败的步骤跑完' }],
+    );
+    return { dones, errors, start, clusterRun, getRun: () => authoritativeRun };
+  }
+
+  it('flips failed back to waiting_jobs when a resubmitted job is still alive', async () => {
+    const env = setup('PEND', async function* (_round, _options) {
+      yield { type: 'text-delta', text: '作业在排队。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    const commands = env.clusterRun.mock.calls.map(call => call[1]);
+    expect(commands.some(c => c.includes('bjobs -a') && c.includes('75593097'))).toBe(true);
+    expect(env.getRun().status).toBe('waiting_jobs');
+    expect(env.getRun().error).toContain('交还后台监控');
+  });
+
+  it('lets a recovery turn run multiple rounds and flip back to running instead of cutting off after one', async () => {
+    const env = setup('EXIT', async function* (round, options) {
+      if (round === 0) {
+        // 第一轮只诊断：读日志、确认原因，run 仍是 failed——旧逻辑会在这里直接掐断
+        await options.tools.run_command.execute({ command: 'tail -50 logs/step-03.lsf.out' });
+        yield { type: 'text-delta', text: '原因是内存超限，改队列重跑。' };
+        return;
+      }
+      // 第二轮：翻回 running、重跑失败步并以真实产物证据完成
+      //（状态机要求 pending→running→done 逐级转换，restartFromStep 后先置 running 再置 done）
+      await options.tools.run_command.execute({ command: 'bsub < code/step-03.sh' });
+      await options.tools.update_workflow_run.execute({ runDir, status: 'running', restartFromStep: 3 });
+      await options.tools.update_workflow_run.execute({ runDir, step: { n: 3, status: 'running' } });
+      await options.tools.update_workflow_run.execute({
+        runDir, step: { n: 3, status: 'done', summary: '换 smp 队列重跑完成，5 个 BAM 齐全', evidence: ['ls results/bam: 5 个 .sorted.bam 非空'] },
+      });
+      yield { type: 'text-delta', text: '已换队列重跑并完成第 3 步。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    expect(mockStreamText).toHaveBeenCalledTimes(2);
+    expect(mockStreamText.mock.calls[1][0].messages.at(-1).content).toContain('失败恢复仍在进行');
+    expect(env.getRun().status).toBe('done');
+    expect(env.dones[0]).toContain('已换队列重跑并完成');
+    expect(env.dones[0]).not.toContain('流程已进入 failed');
+  });
+
+  it('ends the turn when the agent re-asserts failed with a precise reason', async () => {
+    const env = setup('EXIT', async function* (_round, options) {
+      await options.tools.run_command.execute({ command: 'tail -50 logs/step-03.lsf.out' });
+      await options.tools.update_workflow_run.execute({
+        runDir, status: 'failed', error: '参考基因组索引损坏，需要管理员重建',
+      });
+      yield { type: 'text-delta', text: '无法自动恢复：索引损坏。' };
+    });
+
+    await env.start();
+
+    expect(env.errors).toEqual([]);
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+    expect(env.getRun().status).toBe('failed');
+    expect(env.getRun().error).toContain('索引损坏');
+    expect(env.dones).toEqual(['无法自动恢复：索引损坏。']);
+  });
+});
+
 describe('web API tools (search_web_apis / call_web_api)', () => {
   const ctx = {
     sid: 'session-1',

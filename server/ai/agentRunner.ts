@@ -487,6 +487,48 @@ async function reconcileWorkflowWaitingJobs(ctx: AgentCtx, run: any): Promise<an
   } catch { return null; }
 }
 
+/**
+ * failed 对账（v0.4.34）：run 已判 failed 但步骤里还挂着存活作业（PEND/RUN）时，
+ * 说明是重投后状态没跟上——直接翻回 waiting_jobs 交还监控器，而不是让 failed
+ * 把流程永久钉死。全部终态或无作业号则返回 null，维持 failed 由恢复轮处理。
+ */
+async function reviveFailedRunWithLiveJobs(ctx: AgentCtx, run: any): Promise<any | null> {
+  if (!ctx.home || String(run?.status) !== 'failed') return null;
+  const scheduler = ctx.scheduler || 'lsf';
+  if (scheduler === 'none') return null;
+  const jobIds = [...new Set<string>([
+    ...Object.keys(run.jobStates || {}),
+    ...(Array.isArray(run.steps) ? run.steps.flatMap((s: any) => s.jobIds || []) : []),
+  ])].filter(id => /^[\d._]+$/.test(id)).slice(0, 20);
+  if (jobIds.length === 0) return null;
+
+  const TERMINAL = new Set(['DONE', 'EXIT', 'GONE']);
+  const ACTIVE = /^(PEND|RUN|PSUSP|SSUSP|USUSP|WAIT|PENDING|RUNNING|SUSPENDED|CONFIGURING|COMPLETING|Q|R|H|W|E)$/;
+  let hasLive = false;
+  for (const jobId of jobIds) {
+    const known = String(run.jobStates?.[jobId] || '');
+    if (TERMINAL.has(known)) continue;
+    if (ACTIVE.test(known)) { hasLive = true; continue; }
+    let state = '';
+    try {
+      state = (await ctx.run(ctx.sid, finalStateCommand(scheduler, jobId), 15_000)).trim();
+    } catch { /* 查询失败按非存活处理 */ }
+    if (scheduler === 'pbs') {
+      if (/job_state\s*=\s*[QRHWE]/i.test(state)) hasLive = true;
+    } else {
+      const token = (state.split(/\s+/)[0] || '').toUpperCase();
+      if (ACTIVE.test(token)) hasLive = true;
+    }
+  }
+  if (!hasLive) return null;
+  try {
+    return await updateWorkflowRun((cmd, to) => ctx.run(ctx.sid, cmd, to), ctx.home, run.runDir, {
+      status: 'waiting_jobs',
+      error: '对账：failed 状态下仍有存活作业（重投后状态未跟上），已交还后台监控；作业结束后会自动继续。',
+    });
+  } catch { return null; }
+}
+
 async function loadCurrentWorkflowStepPacket(
   ctx: AgentCtx,
   workflow: WorkflowExecutionContext,
@@ -566,8 +608,21 @@ ENVIRONMENT REPAIR MODE - 本轮的首要任务是修复环境，不是继续分
 6. 确认无法修复时：update_workflow_run(status=blocked_env, error=精确缺项与失败原因)，本轮随之结束，面板会把你的具体原因展示给用户。
 `
     : '';
+  // run 以 failed 进入本轮 = 用户正要求诊断/恢复。failed 不是永久终态：
+  // 用户说「继续/修复」时，本轮的任务就是定位原因并把流程翻回 running。
+  const failedRecoverySection = String(run?.status || '') === 'failed'
+    ? `
+FAILED RECOVERY MODE - 本轮的首要任务是诊断失败并恢复流程:
+1. run 处于 failed（见 SNAPSHOT 的 error 与失败步骤）。failed 不是终态：用户说「继续/修复/看看」就是恢复授权，直接动手，不要只复述失败状态。
+2. 先读失败步骤的日志（logs/step-NN*）与脚本（code/step-NN.sh），用真实输出定位原因；内存超限就换队列/加内存，参数缺失就补齐，脚本错误就改脚本。
+3. 重投前先核实没有存活的同名作业（bjobs/sacct 查 jobIds），避免重复提交；存活作业由对账机制在轮开始前已处理（存活时 run 会已是 waiting_jobs）。
+4. 原因修复后：update_workflow_run(status=running)（要重跑失败步就带 restartFromStep=N），然后继续执行。
+5. 需要用户拍板（换队列、砍样本、改科学参数）时 ask_user，2-4 个具体选项，第一个推荐。
+6. 确认无法恢复时：update_workflow_run(status=failed, error=精确原因与已排除的可能性)，本轮随之结束。
+`
+    : '';
   return `You are HPClaw's workflow executor. Be practical and follow the user's latest explicit instruction while keeping the saved RUN state consistent.
-${envRepairSection}
+${envRepairSection}${failedRecoverySection}
 
 The saved RUN state and step scripts are authoritative. Normally continue the current unfinished step. If the user explicitly asks to clean outputs, cancel/replace a job, or rerun an earlier step, carry out that request instead of refusing just because the step was previously completed.
 
@@ -671,6 +726,10 @@ export async function runAgent(
   // 修复失败后重新断言）才结束本轮，把精确缺项带给用户。
   let turnStartRunStatus = '';
   let blockedEnvReassertedThisTurn = false;
+  // failed 恢复轮判定（v0.4.34）：run 以 failed 进入本轮且用户要求继续/修复时，
+  // 停止门不能把「仍是 failed」当结束信号——诊断、改脚本、翻回 running 需要多轮。
+  // 只有本轮中新判失败（步骤或 run 被重新置 failed）才结束本轮。
+  let failedReassertedThisTurn = false;
   const executionProfile = formalWorkflow ? workflowExecutionProfile(ctx.profile) : ctx.profile;
   const model = buildModel(executionProfile);
   const workflowCommandEvidence: string[] = [];
@@ -725,6 +784,21 @@ export async function runAgent(
           }
         } catch (err: any) {
           console.warn('[Agent] waiting_jobs reconcile failed (non-blocking):', err?.message || String(err));
+        }
+      }
+      // failed 对账（仅 execute 轮）：failed 但仍有存活作业（重投后状态没跟上）时
+      // 翻回 waiting_jobs 交还监控器；全终态则维持 failed，走恢复轮逻辑。
+      if (!workflowInspection && turnStartRunStatus === 'failed') {
+        try {
+          const revived = await reviveFailedRunWithLiveJobs(ctx, activeWorkflowRun);
+          if (revived) {
+            console.warn('[Agent] failed run has live jobs, back to waiting_jobs: run=%s', formalWorkflow.runId);
+            activeWorkflowRun = revived;
+            turnStartRunStatus = String(revived.status || '');
+            cb.onWorkflowRunChanged?.(revived);
+          }
+        } catch (err: any) {
+          console.warn('[Agent] failed-run revive check failed (non-blocking):', err?.message || String(err));
         }
       }
       cb.onWorkflowRunChanged?.(activeWorkflowRun);
@@ -1481,6 +1555,9 @@ export async function runAgent(
               // 本轮中 Agent 主动断言 blocked_env（新发现缺项，或修复失败后给出精确原因）：
               // 这是一次“新鲜”阻断，停止门应当结束本轮，把 error 带给用户。
               if (input.status === 'blocked_env') blockedEnvReassertedThisTurn = true;
+              // 同理：本轮中明确判失败（run 或步骤级）是一次新鲜失败，结束本轮；
+              // 轮开始时就 failed 且没被重新断言时，属于恢复轮，停止门放行。
+              if (input.status === 'failed' || input.step?.status === 'failed') failedReassertedThisTurn = true;
               cb.onWorkflowRunChanged?.(run);
               const msg = `运行状态已更新: ${run.status}, step ${run.currentStep}/${run.totalSteps}`;
               cb.onToolResult('update_workflow_run', msg);
@@ -1816,10 +1893,15 @@ export async function runAgent(
         const envRepairTurn = String(activeWorkflowRun.status) === 'blocked_env'
           && turnStartRunStatus === 'blocked_env'
           && !blockedEnvReassertedThisTurn;
-        if (stagnantRounds >= 2 && (!FORMAL_WORKFLOW_STOP_STATUSES.has(String(activeWorkflowRun.status)) || envRepairTurn)) {
+        const failedRecoveryTurn = String(activeWorkflowRun.status) === 'failed'
+          && turnStartRunStatus === 'failed'
+          && !failedReassertedThisTurn;
+        if (stagnantRounds >= 2 && (!FORMAL_WORKFLOW_STOP_STATUSES.has(String(activeWorkflowRun.status)) || envRepairTurn || failedRecoveryTurn)) {
           const pauseText = envRepairTurn
             ? `环境修复连续 ${stagnantRounds} 轮没有实质动作（未执行新命令且运行状态未推进），已按死循环保护暂停。请点击“安装部署”重新发起修复，或补充说明后点击继续。`
-            : `流程连续 ${stagnantRounds} 轮没有新进展（未执行新命令且运行状态未推进），已按死循环保护暂停，未伪装成完成。可查看当前步骤或补充信息后点击继续。`;
+            : failedRecoveryTurn
+              ? `失败恢复连续 ${stagnantRounds} 轮没有实质动作（未执行新命令且运行状态未推进），已按死循环保护暂停。可查看失败步骤日志后点击「从断点继续」，或补充说明后继续。`
+              : `流程连续 ${stagnantRounds} 轮没有新进展（未执行新命令且运行状态未推进），已按死循环保护暂停，未伪装成完成。可查看当前步骤或补充信息后点击继续。`;
           console.warn('[Agent] formal workflow stalled (no progress for %d rounds), pausing run=%s', stagnantRounds, formalWorkflow.runId);
           if (ctx.home) {
             try {
@@ -1841,11 +1923,17 @@ export async function runAgent(
       // 停止门：blocked_env 只在“本轮新阻断”（本轮开始时不处于 blocked_env，或 Agent
       // 本轮重新断言）时才结束本轮。本轮开始就已 blocked_env 说明用户正要求修复环境，
       // 安装/构建/下载需要多轮模型调用，必须走下方自动续跑而不是一轮就掐断。
+      // failed 同理（v0.4.34）：本轮开始时就 failed 且未被重新断言 = 失败恢复轮，
+      // 诊断、改脚本、翻回 running 需要多轮，不能一轮就掐断（用户实测：failed 后
+      // 问什么都只收到罐头句，流程假死）。
       const currentRunStatus = String(activeWorkflowRun?.status || '');
       const envRepairOngoing = currentRunStatus === 'blocked_env'
         && turnStartRunStatus === 'blocked_env'
         && !blockedEnvReassertedThisTurn;
-      if (activeWorkflowRun && FORMAL_WORKFLOW_STOP_STATUSES.has(currentRunStatus) && !envRepairOngoing) {
+      const failedRecoveryOngoing = currentRunStatus === 'failed'
+        && turnStartRunStatus === 'failed'
+        && !failedReassertedThisTurn;
+      if (activeWorkflowRun && FORMAL_WORKFLOW_STOP_STATUSES.has(currentRunStatus) && !envRepairOngoing && !failedRecoveryOngoing) {
         const explicitTerminalText = stripDsmlMarkup(roundText.trim()) || (() => {
           const status = currentRunStatus;
           if (status === 'done') return `流程已完成，全部 ${activeWorkflowRun.totalSteps} 个步骤均已写入运行记录。`;
@@ -1902,7 +1990,9 @@ export async function runAgent(
           role: 'user',
           content: envRepairOngoing
             ? `【服务端自动续跑校验 ${formalContinuationCount}】环境修复仍在进行（run 仍为 blocked_env），刚才的停顿不是结束。不要重复已经探明的事实（模块列表、目录内容、网络可达性各查一次即可），直接继续执行修复动作：module load / 安装包 / bwa index 构建索引 / 下载参考数据，每条命令后以真实输出验证。\n\n权威运行状态：\n${runSnapshot}\n\n本轮真实命令证据：\n${newEvidence || '(本轮没有执行命令；请立即执行修复命令)'}\n\n本轮只有三种合法结局：① 缺失项全部修复并逐项验证通过后 update_workflow_run(status=running) 继续当前步骤；② 确实需要用户决策时调用 ask_user（给出 2-4 个具体选项，第一个为推荐项）；③ 确认无法修复时 update_workflow_run(status=blocked_env, error=精确缺项与原因)。`
-            : `【服务端自动续跑校验 ${formalContinuationCount}】你刚才在正式流程仍未进入停止状态时提前结束了回答。不要向用户重复中间汇报，也不要重复已有证据的命令。\n\n权威运行状态：\n${runSnapshot}\n\n本轮真实命令证据：\n${newEvidence || '(本轮没有执行命令；请立即读取当前步骤并继续)'}\n\n现在继续同一个流程：若证据足够，先 update_workflow_run 把当前步骤标记 done（必须填写真实 summary），然后读取下一步骤；若证据不足则只做当前步骤必要的定点验证。只有 run 状态成为 done / failed / cancelled / blocked_env / waiting_user / waiting_jobs，或调用 ask_user 后才能结束。`,
+            : failedRecoveryOngoing
+              ? `【服务端自动续跑校验 ${formalContinuationCount}】失败恢复仍在进行（run 仍为 failed），刚才的停顿不是结束。继续诊断与恢复：读失败步骤的日志/脚本定位原因（每条命令以真实输出为准），必要时修改 step 脚本或参数。不要重复已经探明的事实。\n\n权威运行状态：\n${runSnapshot}\n\n本轮真实命令证据：\n${newEvidence || '(本轮没有执行命令；请立即读取失败步骤日志)'}\n\n本轮只有三种合法结局：① 原因已修复后 update_workflow_run(status=running)（必要时带 restartFromStep 重跑失败步）继续流程；② 需要用户决策时调用 ask_user（2-4 个具体选项，第一个推荐）；③ 确认无法恢复时 update_workflow_run(status=failed, error=精确原因与已排除的可能性)。`
+              : `【服务端自动续跑校验 ${formalContinuationCount}】你刚才在正式流程仍未进入停止状态时提前结束了回答。不要向用户重复中间汇报，也不要重复已有证据的命令。\n\n权威运行状态：\n${runSnapshot}\n\n本轮真实命令证据：\n${newEvidence || '(本轮没有执行命令；请立即读取当前步骤并继续)'}\n\n现在继续同一个流程：若证据足够，先 update_workflow_run 把当前步骤标记 done（必须填写真实 summary），然后读取下一步骤；若证据不足则只做当前步骤必要的定点验证。只有 run 状态成为 done / failed / cancelled / blocked_env / waiting_user / waiting_jobs，或调用 ask_user 后才能结束。`,
         },
       ];
     }
