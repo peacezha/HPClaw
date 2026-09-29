@@ -208,7 +208,7 @@ JSON 格式：
 
 硬性规则：
 1. 先识别论文真正的主分析路径。基准比较、对照算法、替代分支和补充实验不得混入主步骤，放入 excludedBranches；只有生物学设计确实要求二选一时才建立 decision 步骤。
-1.1 只提取生信/计算分析步骤。湿实验操作（材料种植与处理、DNA/RNA 提取、文库构建、PCR/电泳/转化/测序上机等 bench 操作）一律不得成为流程步骤，只能在 excludedBranches 中一句话说明；用户粘贴的片段若不含任何计算分析内容，输出 steps 为空并在 warnings 中明确说明，不要硬凑步骤。
+1.1 只提取生信/计算分析步骤。湿实验操作（材料种植与处理、DNA/RNA 提取、文库构建、PCR/电泳/转化/测序上机等 bench 操作）一律不得成为流程步骤，只能在 excludedBranches 中一句话说明。注意区分：论文只要包含任何计算/分析内容（比对、质控、定量、统计检验、绘图、数据库查询、软件调用等），就必须把这些内容建成步骤——大多数生物学论文是「湿实验+计算」混合，不要因为湿实验占比高就交空步骤。steps 只有在文本完全是湿实验操作时才允许为空，且必须在 warnings 中明确说明理由；证据清单 stepsMentioned 非空时，steps 禁止为空。
 2. 步骤按数据依赖排列，不限制为 5-10 步；每步必须有可监控的 inputs、outputs 和来源。不要把整篇 Methods 压成一个步骤，也不要为凑数量拆空步骤。
 3. 论文/仓库明确给出的软件版本、参数、阈值和参考数据库版本才可写默认值。没有依据时留空、required=true 或 requiresReview=true，并加入 unresolvedQuestions；严禁写“推测版本”或虚构 QC 阈值。
 3.1 若输入附有「证据清单」（两段式提取的第一段产物）：参数的 defaultValue、QC 阈值、软件版本只能取自清单条目，并在 help/notes 里写明对应证据编号（如 E3）；清单中有值而你没纳入流程的条目，必须逐条出现在 excludedBranches 或 unresolvedQuestions 里说明去向，禁止静默丢弃。
@@ -375,6 +375,7 @@ export async function learnWorkflowFromText(
   context?: PaperContextSummary,
   locale: 'zh-CN' | 'en-US' = 'zh-CN',
   evidence?: EvidenceInventory | null,
+  extraInstruction?: string,
 ): Promise<string> {
   const codeSection = codeExcerpt
     ? `\n\n【配套代码仓库】${codeExcerpt.repoUrl}\n以下是该仓库中的流程代码（${codeExcerpt.files.join('、')}），**步骤与命令以代码为准**，论文文本用于补充说明与参数依据：\n\n${codeExcerpt.excerpt}`
@@ -382,13 +383,14 @@ export async function learnWorkflowFromText(
   const evidenceSection = evidence
     ? `\n\n【证据清单（第一段提取产物，逐字摘自原文）】\n参数默认值、QC 阈值、软件版本只能取自下列条目，并在 help/notes 中标注证据编号；清单中有值而未纳入流程的条目必须逐个说明去向（excludedBranches 或 unresolvedQuestions）：\n${JSON.stringify(evidence)}`
     : '';
+  const extraSection = extraInstruction ? `\n\n【系统纠正】${extraInstruction}` : '';
   const languageRule = locale === 'en-US'
     ? '\n\nLANGUAGE OVERRIDE: Write every human-readable JSON value (workflow name, descriptions, labels, step titles, notes, evidence, questions and warnings) in English. Keep commands, paths, filenames, software names, database names and scientific identifiers unchanged.'
     : '\n\n语言要求：所有面向用户的 JSON 文本使用中文；命令、路径、文件名、软件名、数据库名和科学标识符保持原样。';
   const { text, finishReason } = await generateText({
     model: buildModel(profile),
     system: LEARN_SYSTEM_PROMPT + languageRule,
-    prompt: `请从以下论文方法上下文中提取流程。正文选择信息：${JSON.stringify(context ?? {})}\n\n${paperText.slice(0, MAX_MODEL_TEXT)}${codeSection}${evidenceSection}`,
+    prompt: `请从以下论文方法上下文中提取流程。正文选择信息：${JSON.stringify(context ?? {})}\n\n${paperText.slice(0, MAX_MODEL_TEXT)}${codeSection}${evidenceSection}${extraSection}`,
     temperature: 0.2,
     maxOutputTokens: /reasoner|v4-pro|reasoning/i.test(profile.model || '') ? 32000 : 16000,
   });

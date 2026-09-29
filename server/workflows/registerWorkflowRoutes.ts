@@ -436,10 +436,11 @@ export function registerWorkflowRoutes(app: Express): void {
 
       // LLM 提取加总超时：论文学习曾被反馈"第一次没反应"——多半是模型/网络卡住后
       // 前端无限期空等。超时返回明确错误，让用户知道可以重试而不是干等。
+      const llmTimeout = () => new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('AI 提取超时（超过 4 分钟）。这通常是模型服务繁忙或网络不稳；请直接重试，或改用粘贴方法学文本（更短更快）。')), 240_000));
       const raw = await Promise.race([
         learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence),
-        new Promise<never>((_resolve, reject) =>
-          setTimeout(() => reject(new Error('AI 提取超时（超过 4 分钟）。这通常是模型服务繁忙或网络不稳；请直接重试，或改用粘贴方法学文本（更短更快）。')), 240_000)),
+        llmTimeout(),
       ]);
       learnLog('llm done');
       let parseResult = await parseWorkflowJson(raw);
@@ -453,6 +454,21 @@ export function registerWorkflowRoutes(app: Express): void {
         const repairedRaw = await repairWorkflowJsonWithModel(raw, profile);
         parseResult = await parseWorkflowJson(repairedRaw);
         parsed = parseResult.value as any;
+      }
+      // 证据清单明明找到了分析步骤、模型却交了空 steps（湿实验排除规则被过度执行）：
+      // 拿清单拍回去重试一次（v0.4.35 根因修复：学习整体报「未能提取有效步骤」）。
+      if (parsed && !hasWorkflowSteps(parsed) && evidence && evidence.stepsMentioned.length > 0) {
+        learnLog(`empty steps despite ${evidence.stepsMentioned.length} evidence steps; retrying with enforcement`);
+        const retryRaw = await Promise.race([
+          learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence,
+            `证据清单第一段已明确列出 ${evidence.stepsMentioned.length} 个计算分析步骤：${evidence.stepsMentioned.slice(0, 8).map(s => s.what).join('；')}。上次回答 steps 为空是错误的——湿实验操作不进流程，但清单里的计算分析内容必须建成步骤。请重新输出完整 JSON。`),
+          llmTimeout(),
+        ]);
+        const retryParsed = await parseWorkflowJson(retryRaw);
+        if (retryParsed.value && hasWorkflowSteps(retryParsed.value)) {
+          parsed = retryParsed.value;
+          parseResult = retryParsed;
+        }
       }
       if (!parsed) return sendError(res, 502, 'AI 返回内容不完整，系统自动修复后仍无法解析；请缩短论文文本或重试');
       const workflowRaw = parsed.workflow && typeof parsed.workflow === 'object' ? parsed.workflow : parsed;
@@ -477,7 +493,11 @@ export function registerWorkflowRoutes(app: Express): void {
       };
       const manifest = sanitizeManifest(workflowRaw.manifest);
       if (manifest) draft.manifest = manifest;
-      if (draft.steps.length === 0) return sendError(res, 502, '未能从文本中提取出有效的生信分析步骤（若片段只含湿实验操作，请改贴数据分析/Methods 的计算部分）');
+      if (draft.steps.length === 0) {
+        // 把模型自己给出的判断告诉用户（如果有），别再只甩一句泛泛的「改贴计算部分」
+        const reason = extraction.warnings[0] || extraction.primaryPath || '';
+        return sendError(res, 502, `未能从文本中提取出有效的生信分析步骤${reason ? `（模型说明：${reason.slice(0, 200)}）` : ''}。若片段只含湿实验操作，请改贴数据分析/Methods 的计算部分`);
+      }
 
       // 确定性参数覆盖审计：原文明确出现的 CLI 选项/版本/阈值，草稿是否真的纳入。
       // 漏项进 warnings + unresolvedQuestions（不阻断），编辑器审计卡如实展示。
