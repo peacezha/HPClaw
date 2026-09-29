@@ -7,6 +7,7 @@ import {
   extractSubmittedJobIds,
   getBinding,
   initJobAgentBindings,
+  isSubmissionCommand,
   listBindings,
   markResumed,
   removeBinding,
@@ -59,6 +60,22 @@ describe('extractSubmittedJobIds', () => {
       'Submitted batch job 222',
     ].join('\n');
     expect(extractSubmittedJobIds(text)).toEqual(['555', '111', '222']);
+  });
+});
+
+describe('isSubmissionCommand（v0.4.31：只有提交命令的输出才可信）', () => {
+  it('bsub/sbatch/qsub 判定为提交命令', () => {
+    expect(isSubmissionCommand('bsub < code/step-03.sh')).toBe(true);
+    expect(isSubmissionCommand('sbatch run.slurm')).toBe(true);
+    expect(isSubmissionCommand('cd /x && qsub job.pbs')).toBe(true);
+  });
+
+  it('读日志/查状态/普通命令不判定为提交', () => {
+    expect(isSubmissionCommand('cat logs/step-03.submit.txt')).toBe(false);
+    expect(isSubmissionCommand('bjobs -l 75572737')).toBe(false);
+    expect(isSubmissionCommand('bhist -l 75572737')).toBe(false);
+    expect(isSubmissionCommand('echo "bsub 是提交命令"')).toBe(true); // 边界：含 bsub 字样的 echo 也放行——其输出不含真实回执格式
+    expect(isSubmissionCommand('')).toBe(false);
   });
 });
 

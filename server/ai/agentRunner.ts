@@ -8,6 +8,7 @@ import { loadOrRefreshSkillIndex, searchSkillIndex } from './skillIndex';
 import { getCachedClusterSkills } from './clusterSkills';
 import { NCPGR_RULES_EN } from '../../shared/ncpgrRules';
 import { installSkillFromSource } from './skillInstaller';
+import { isSubmissionCommand } from '../dsh/jobAgentBindings';
 import { loadWorkflows } from '../workflows/workflowStore';
 import { readWorkflowRun, updateWorkflowRun } from '../workflows/workflowRunService';
 import { classifyCommandRisk, isCatastrophicCommand, type CommandRisk } from './commandSafety';
@@ -970,9 +971,10 @@ export async function runAgent(
               const activeStep = planState.activeStep();
               if (plan && activeStep) cb.onPlanUpdate?.(plan, activeStep.id);
 
-              const submittedJobIds = [
-                // LSF 查询/报错同样会出现 `Job <12345>`（例如 is not found）。
-                // 只有调度器明确确认 `is submitted` 才能交给后台监控。
+              // 只有命令本身是提交命令（bsub/sbatch/qsub）时，输出里的回执才算新提交；
+              // cat 历史 submit 日志/bjobs 查询输出同样含 "Job <id>"，不能触发监控交接
+              //（v0.4.31 根因：旧回执误判导致假死与假信息）。
+              const submittedJobIds = !isSubmissionCommand(command) ? [] : [
                 ...[...output.matchAll(/Job\s+<(\d+(?:[._]\d+)?)>\s+is\s+submitted\b/gi)].map(match => match[1]),
                 ...[...output.matchAll(/Submitted\s+batch\s+job\s+(\d+(?:[._]\d+)?)/gi)].map(match => match[1]),
               ];

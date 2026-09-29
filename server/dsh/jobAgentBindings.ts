@@ -90,6 +90,16 @@ const SUBMIT_PATTERNS = [
   /Submitted\s+batch\s+job\s+(\d+(?:[._]\d+)?)/gi,
 ];
 
+/**
+ * 只有命令本身是提交命令（bsub/sbatch/qsub）时，输出里的提交回执才可信。
+ * v0.4.31 根因：AI 只是 cat 了历史 submit 日志，输出里的 "Job <id> is submitted"
+ * 就被当成一次新提交——运行时宣布「交后台监控、本轮结束」，而那个作业早已被
+  * bkill，流程随之假死。读日志/查状态（bjobs/bhist/cat）绝不产生新提交。
+ */
+export function isSubmissionCommand(command: string): boolean {
+  return /\b(?:bsub|sbatch|qsub)\b/.test(String(command || ''));
+}
+
 /** 从 bsub 输出提取作业号：按文本中首次出现位置排序、去重。"is not found" 等不会误报。 */
 export function extractSubmittedJobIds(text: string): string[] {
   if (!text) return [];

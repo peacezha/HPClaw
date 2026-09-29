@@ -11,7 +11,7 @@ import { ensureSidecar } from './dshSidecar';
 import { createTranslateState, createTranslator } from './dshTranslate';
 import { normalizeDeepSeekBaseUrl, redactDshSensitiveText } from './dshConfigSafety';
 import { writeFileAtomic0600 } from './fileUtils';
-import { addBindings, extractSubmittedJobIds, initJobAgentBindings } from './jobAgentBindings';
+import { addBindings, extractSubmittedJobIds, initJobAgentBindings, isSubmissionCommand } from './jobAgentBindings';
 
 export interface DshAgentProfile {
   provider: string;
@@ -292,6 +292,9 @@ function runMuxLoop(opts: DshAgentOptions, client: DshClient, sessionId: string,
       }
     };
 
+    // 记录最近一次 run_command 的命令文本：tool_result 里的作业号是否可信取决于
+    // 命令本身是不是提交命令（见 v0.4.31 修复说明）。
+    let lastRunCommandText = '';
     const translator = createTranslator({
       send: (event: any) => {
         if (!event || typeof event !== 'object') return;
@@ -303,9 +306,16 @@ function runMuxLoop(opts: DshAgentOptions, client: DshClient, sessionId: string,
         }
         // 作业绑定：run_command 输出捕获 bsub 作业号 → 登记（jobWatcher 终态时
         // dshJobResumer 凭绑定把"作业完成"注入同一条 dsh 会话，闭合 Agent 外圈）。
+        // v0.4.31：只有命令本身是提交命令（bsub/sbatch/qsub）才登记——cat 历史
+        // submit 日志/bjobs 查询输出同样含 "Job <id> is submitted"，不能当新提交。
+        if (event.type === 'tool_call' && event.name === 'run_command') {
+          lastRunCommandText = String((event.args as any)?.command || '');
+        }
         if (event.type === 'tool_result' && event.name === 'run_command' && sessionId) {
           try {
-            const jobIds = extractSubmittedJobIds(String(event.result ?? ''));
+            const jobIds = isSubmissionCommand(lastRunCommandText)
+              ? extractSubmittedJobIds(String(event.result ?? ''))
+              : [];
             if (jobIds.length > 0) {
               initJobAgentBindings(opts.dataRoot);
               const added = addBindings(jobIds, {

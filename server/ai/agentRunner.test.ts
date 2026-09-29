@@ -677,6 +677,78 @@ describe('runAgent ask_user handling', () => {
     expect(toolResults.join('\n')).not.toContain('[JOB_SUBMITTED]');
     expect(dones).toEqual([expect.stringContaining('该作业不存在')]);
   });
+
+  it('does not treat reading an old submit receipt as a fresh submission (v0.4.31 root fix)', async () => {
+    // 真实事故：AI 执行 cat logs/step-03.submit.txt，输出里的 "Job <75572737> is submitted"
+    // 被当成新提交，运行时宣布「交后台监控、本轮结束」——而该作业早已被 bkill，流程假死。
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        await options.tools.set_plan.execute({
+          goal: '排查作业',
+          steps: [{ title: '读取历史提交记录', verification: 'cat 输出可见' }],
+        });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.run_command.execute({ command: 'cat logs/step-03.submit.txt' });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'done', summary: '读完了' });
+        yield { type: 'text-delta', text: '这是 9/28 的旧回执，作业已被属主杀掉。' };
+      })(),
+    }));
+    const toolResults: string[] = [];
+    const dones: string[] = [];
+    const submitted: string[][] = [];
+
+    await runAgent(
+      {
+        sid: 'session-1',
+        run: vi.fn().mockResolvedValue('Job <75572737> is submitted to queue <q2680v2>.'),
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+        onJobsSubmitted: ids => submitted.push(ids),
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onErr: vi.fn(),
+        onToolResult: (_name, result) => toolResults.push(result),
+        onDone: text => dones.push(text), sig: () => undefined,
+      },
+      [{ role: 'user', content: '看看 step-03 的提交记录' }],
+    );
+
+    expect(toolResults.join('\n')).not.toContain('[JOB_SUBMITTED]');
+    expect(submitted).toEqual([]);
+    expect(dones).toEqual([expect.stringContaining('旧回执')]);
+  });
+
+  it('still hands off to the watcher when the command is a real bsub submission', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        await options.tools.set_plan.execute({
+          goal: '提交作业',
+          steps: [{ title: '提交', verification: '拿到作业号' }],
+        });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.run_command.execute({ command: 'bsub < code/step-03.sh' });
+        yield { type: 'text-delta', text: '已提交。' };
+      })(),
+    }));
+    const toolResults: string[] = [];
+    const dones: string[] = [];
+
+    await runAgent(
+      {
+        sid: 'session-1',
+        run: vi.fn().mockResolvedValue('Job <88888> is submitted to queue <normal>.'),
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onErr: vi.fn(),
+        onToolResult: (_name, result) => toolResults.push(result),
+        onDone: text => dones.push(text), sig: () => undefined,
+      },
+      [{ role: 'user', content: '提交 step-03' }],
+    );
+
+    expect(toolResults.join('\n')).toContain('[JOB_SUBMITTED]');
+    expect(dones[0]).toContain('88888');
+  });
 });
 
 describe('formal workflow command budget', () => {

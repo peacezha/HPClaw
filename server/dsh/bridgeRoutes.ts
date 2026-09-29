@@ -11,7 +11,7 @@ import { classifyCommandRisk, isCatastrophicCommand } from '../ai/commandSafety'
 import { invokeWebApi } from '../webapis/invoke';
 import { SftpFileService } from '../files/sftpFileService';
 import { assertRemotePathWithinRoot } from '../files/pathSafety';
-import { extractSubmittedJobIds } from './jobAgentBindings';
+import { extractSubmittedJobIds, isSubmissionCommand } from './jobAgentBindings';
 import type { DshBridgeBinding } from './bridgeState';
 import { resolveWorkspaceFilePath } from './workspace';
 
@@ -252,9 +252,11 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     try {
       const output = await session.cluster.exec(command, timeoutMs);
       // waitForJobs（分钟，钳 1..30）：命令输出捕获到作业号时，轮询等第一个作业到终态。
+      // 只有命令本身是提交命令（bsub/sbatch/qsub）才提取作业号——读历史 submit
+      // 日志的输出含同样字样，不能触发等待（v0.4.31）。
       const rawWait = Number(body.waitForJobs);
       const waitMinutes = Number.isFinite(rawWait) && rawWait > 0 ? Math.min(Math.max(Math.floor(rawWait), 1), 30) : 0;
-      if (waitMinutes > 0) {
+      if (waitMinutes > 0 && isSubmissionCommand(command)) {
         const jobIds = extractSubmittedJobIds(output);
         if (jobIds.length > 0) {
           const waited = await waitForLsfJob(
