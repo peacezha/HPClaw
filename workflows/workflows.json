@@ -228,8 +228,8 @@
       }
     ],
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "builtin-hidog-amplicon",
@@ -723,8 +723,8 @@
       }
     ],
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "builtin-rnaseq-qc-align",
@@ -890,8 +890,8 @@
       ]
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -950,9 +950,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "转录起始位点（TSS）注释 BED",
+        "label": "TSS 曲线基因区间（BED6/GTF/GFF）",
         "type": "path",
-        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。"
       },
       {
         "name": "GENOME_SIZE",
@@ -984,8 +985,8 @@
     "steps": [
       {
         "title": "运行前检查：软件、输入文件与参考数据",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
-        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
+        "notes": "只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。"
       },
       {
         "title": "原始序列质控（FastQC）",
@@ -1013,9 +1014,9 @@
         "notes": "使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。"
       },
       {
-        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
-        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
-        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。"
+        "title": "扩展质控：SPOT、TSS/基因体富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/chip.mat.gz\nplotProfile --dpi 720 -m qc/chip.mat.gz -out qc/chip.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/chip.profile.tsv\nplotHeatmap -m qc/chip.mat.gz -out qc/chip.merge.png\npython3 - qc/chip.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；使用 computeMatrix scale-regions 生成 qc/chip.profile.pdf（720 dpi）和 qc/chip.merge.png。曲线形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。"
       },
       {
         "title": "FRiP 与重复间 IDR 一致性评估",
@@ -1097,10 +1098,10 @@
           "required": false
         },
         {
-          "name": "转录起始位点（TSS）注释 BED",
+          "name": "TSS 曲线基因区间（BED6/GTF/GFF）",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "source": "用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取",
           "required": true
         }
       ],
@@ -1133,11 +1134,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2"
+      "importerVersion": "chromatin-qc-bilingual-v3"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -1196,9 +1197,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "转录起始位点（TSS）注释 BED",
+        "label": "TSS 曲线基因区间（BED6/GTF/GFF）",
         "type": "path",
-        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。"
       },
       {
         "name": "GENOME_SIZE",
@@ -1229,8 +1231,8 @@
     "steps": [
       {
         "title": "运行前检查：软件、输入文件与参考数据",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
-        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
+        "notes": "只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。"
       },
       {
         "title": "原始序列质控（FastQC）",
@@ -1258,9 +1260,9 @@
         "notes": "使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。"
       },
       {
-        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
-        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
-        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。"
+        "title": "扩展质控：SPOT、TSS/基因体富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/chip.mat.gz\nplotProfile --dpi 720 -m qc/chip.mat.gz -out qc/chip.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/chip.profile.tsv\nplotHeatmap -m qc/chip.mat.gz -out qc/chip.merge.png\npython3 - qc/chip.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；使用 computeMatrix scale-regions 生成 qc/chip.profile.pdf（720 dpi）和 qc/chip.merge.png。曲线形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。"
       },
       {
         "title": "FRiP 与重复间 IDR 一致性评估",
@@ -1347,10 +1349,10 @@
           "required": false
         },
         {
-          "name": "转录起始位点（TSS）注释 BED",
+          "name": "TSS 曲线基因区间（BED6/GTF/GFF）",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "source": "用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取",
           "required": true
         }
       ],
@@ -1383,11 +1385,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2"
+      "importerVersion": "chromatin-qc-bilingual-v3"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -1604,8 +1606,8 @@
       "importerVersion": "native-encode-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -1656,9 +1658,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "转录起始位点（TSS）注释 BED",
+        "label": "TSS 曲线基因区间（BED6/GTF/GFF）",
         "type": "path",
-        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。"
       },
       {
         "name": "GENOME_SIZE",
@@ -1697,8 +1700,8 @@
     "steps": [
       {
         "title": "运行前检查：软件、输入文件与参考数据",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
-        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
+        "notes": "只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。"
       },
       {
         "title": "原始序列质控（FastQC）",
@@ -1721,9 +1724,9 @@
         "notes": "Tn5 偏移 +4/-5 bp 由 alignmentSieve --ATACshift 完成；无 deepTools 时在 BED 层平移替代"
       },
       {
-        "title": "质控：TSS 富集曲线、FRiP、SPOT、片段长度分布与信号轨迹",
-        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.2 6 <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
-        "notes": "ATAC-seq 关键信噪指标：TSS 富集分数≥6、FRiP≥0.2；同时必须产出 Hotspot2 SPOT 值和 TSS 富集曲线。未达标时 qc/library_verdict.tsv 直接标记 FAILED 并列出未达标指标。"
+        "title": "质控：TSS/基因体富集曲线、FRiP、SPOT、片段长度分布与信号轨迹",
+        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/atac.mat.gz\nplotProfile --dpi 720 -m qc/atac.mat.gz -out qc/atac.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/atac.profile.tsv\nplotHeatmap -m qc/atac.mat.gz -out qc/atac.merge.png\npython3 - qc/atac.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.2 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；按上游 3 kb、标准化基因体 5 kb、下游 3 kb 生成 720 dpi profile PDF 和 heatmap PNG。FRiP<0.2 或必需产物缺失时直接标记 FAILED。"
       },
       {
         "title": "生成中文分析与质控报告",
@@ -1790,10 +1793,10 @@
           "required": false
         },
         {
-          "name": "转录起始位点（TSS）注释 BED",
+          "name": "TSS 曲线基因区间（BED6/GTF/GFF）",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "source": "用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取",
           "required": true
         }
       ],
@@ -1807,9 +1810,9 @@
         },
         {
           "afterStep": 6,
-          "metric": "TSS 富集、FRiP 与 SPOT",
-          "pass": "TSS 富集分数≥6、FRiP≥0.2，且 SPOT/TSS 曲线产物完整",
-          "warn": "任一必需指标缺失或低于阈值时标记文库质控失败"
+          "metric": "TSS/基因体富集曲线、FRiP 与 SPOT",
+          "pass": "FRiP≥0.2，且 SPOT、720 dpi profile PDF 与 heatmap PNG 产物完整",
+          "warn": "任一必需产物缺失或 FRiP 低于阈值时标记文库质控失败"
         }
       ]
     },
@@ -1820,11 +1823,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2"
+      "importerVersion": "chromatin-qc-bilingual-v3"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -2145,8 +2148,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-wgbs",
@@ -2465,8 +2468,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-hic",
@@ -2785,8 +2788,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-chiapet",
@@ -3050,8 +3053,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-mirnaseq",
@@ -3349,8 +3352,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-eclip",
@@ -3630,8 +3633,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-longread-rnaseq",
@@ -3947,8 +3950,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "encode-rampage",
@@ -4192,8 +4195,8 @@
       "importerVersion": "encode-wrapper-v1"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "builtin-job-troubleshoot",
@@ -4252,8 +4255,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "builtin-blast",
@@ -4314,8 +4317,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "builtin-disk-cleanup",
@@ -4359,8 +4362,8 @@
       "qcGates": []
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888
   },
   {
     "id": "bioskills-biomarker-pipeline",
@@ -14822,9 +14825,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "转录起始位点（TSS）注释 BED",
+        "label": "TSS 曲线基因区间（BED6/GTF/GFF）",
         "type": "path",
-        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。"
       },
       {
         "name": "GENES_BED",
@@ -14870,8 +14874,8 @@
     "steps": [
       {
         "title": "运行前检查：软件、输入文件与参考数据",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
-        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
+        "notes": "只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。"
       },
       {
         "title": "原始序列质控（FastQC）",
@@ -14894,9 +14898,9 @@
         "notes": "裸 gDNA 对照是 DAP-seq 背景校正的关键；候选峰供后续富集质控与注释。"
       },
       {
-        "title": "扩展质控：FRiP、SPOT、TSS 富集曲线与信号轨迹",
-        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
-        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线作为促进子附近信号的扩展诊断，不作为 DAP-seq 的 ENCODE 强制门槛。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED 及未达标指标。"
+        "title": "扩展质控：FRiP、SPOT、TSS/基因体富集曲线与信号轨迹",
+        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/dap.mat.gz\nplotProfile --dpi 720 -m qc/dap.mat.gz -out qc/dap.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/dap.profile.tsv\nplotHeatmap -m qc/dap.mat.gz -out qc/dap.merge.png\npython3 - qc/dap.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；按上游 3 kb、标准化基因体 5 kb、下游 3 kb 生成 720 dpi profile PDF 和 heatmap PNG。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED。"
       },
       {
         "title": "基序富集与峰关联基因注释",
@@ -14987,10 +14991,10 @@
           "required": false
         },
         {
-          "name": "转录起始位点（TSS）注释 BED",
+          "name": "TSS 曲线基因区间（BED6/GTF/GFF）",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "source": "用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取",
           "required": true
         }
       ],
@@ -15017,11 +15021,11 @@
       "sourceRef": "native-dapseq-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2"
+      "importerVersion": "chromatin-qc-bilingual-v3"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -15085,9 +15089,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "转录起始位点（TSS）注释 BED",
+        "label": "TSS 曲线基因区间（BED6/GTF/GFF）",
         "type": "path",
-        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。"
       },
       {
         "name": "GENOME_SIZE",
@@ -15119,8 +15124,8 @@
     "steps": [
       {
         "title": "运行前检查：软件、输入文件与参考数据",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
-        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
+        "notes": "只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。",
         "id": "preflight",
         "dependsOn": [],
         "phase": "Prepare"
@@ -15186,9 +15191,9 @@
         "notes": "官方结构：每个重复随机均分为自伪重复 pr1/pr2（两个不同种子近似官方 shuffle-split），全部重复合并出池化 BAM 与池化伪重复，各跑 MACS2；供 IDR 三路一致性判定"
       },
       {
-        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
-        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
-        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。",
+        "title": "扩展质控：SPOT、TSS/基因体富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/chip.mat.gz\nplotProfile --dpi 720 -m qc/chip.mat.gz -out qc/chip.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/chip.profile.tsv\nplotHeatmap -m qc/chip.mat.gz -out qc/chip.merge.png\npython3 - qc/chip.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；使用 computeMatrix scale-regions 生成 qc/chip.profile.pdf（720 dpi）和 qc/chip.merge.png。曲线形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。",
         "id": "signals-spot",
         "dependsOn": [
           "rep-peaks"
@@ -15288,10 +15293,10 @@
           "required": false
         },
         {
-          "name": "转录起始位点（TSS）注释 BED",
+          "name": "TSS 曲线基因区间（BED6/GTF/GFF）",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "source": "用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取",
           "required": true
         }
       ],
@@ -15324,11 +15329,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2"
+      "importerVersion": "chromatin-qc-bilingual-v3"
     },
     "source": "builtin",
-    "createdAt": 1790436106318,
-    "updatedAt": 1790436106318,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -15384,9 +15389,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "Transcription start sites (TSS), BED",
+        "label": "Gene regions for the TSS profile (BED6/GTF/GFF)",
         "type": "path",
-        "help": "Required. Must match the reference assembly."
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically."
       },
       {
         "name": "GENES_BED",
@@ -15433,7 +15439,7 @@
     "steps": [
       {
         "title": "Preflight: software, inputs, and references",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -15457,8 +15463,8 @@
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
-        "title": "Extended QC: FRiP, SPOT, TSS-enrichment profile, and signal tracks",
-        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "title": "Extended QC: FRiP, SPOT, TSS/gene-body profile, and signal tracks",
+        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/dap.mat.gz\nplotProfile --dpi 720 -m qc/dap.mat.gz -out qc/dap.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/dap.profile.tsv\nplotHeatmap -m qc/dap.mat.gz -out qc/dap.merge.png\npython3 - qc/dap.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -15550,10 +15556,10 @@
           "required": false
         },
         {
-          "name": "Transcription start sites (TSS), BED",
+          "name": "Gene regions for the TSS profile (BED6/GTF/GFF)",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "source": "Provide geneR1.bed or a matching GTF/GFF; the workflow prepares qc/geneR1.bed automatically",
           "required": true
         }
       ],
@@ -15580,11 +15586,11 @@
       "sourceRef": "native-dapseq-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2-en"
+      "importerVersion": "chromatin-qc-bilingual-v3-en"
     },
     "source": "builtin",
-    "createdAt": 1790751814032,
-    "updatedAt": 1790751814032,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -15640,9 +15646,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "Transcription start sites (TSS), BED",
+        "label": "Gene regions for the TSS profile (BED6/GTF/GFF)",
         "type": "path",
-        "help": "Required. Must match the reference assembly."
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically."
       },
       {
         "name": "GENOME_SIZE",
@@ -15675,7 +15682,7 @@
     "steps": [
       {
         "title": "Preflight: software, inputs, and references",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -15704,8 +15711,8 @@
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
-        "title": "Extended QC: SPOT, TSS-enrichment profile, and signal tracks",
-        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "title": "Extended QC: SPOT, TSS/gene-body profile, and signal tracks",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/chip.mat.gz\nplotProfile --dpi 720 -m qc/chip.mat.gz -out qc/chip.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/chip.profile.tsv\nplotHeatmap -m qc/chip.mat.gz -out qc/chip.merge.png\npython3 - qc/chip.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -15788,10 +15795,10 @@
           "required": false
         },
         {
-          "name": "Transcription start sites (TSS), BED",
+          "name": "Gene regions for the TSS profile (BED6/GTF/GFF)",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "source": "Provide geneR1.bed or a matching GTF/GFF; the workflow prepares qc/geneR1.bed automatically",
           "required": true
         }
       ],
@@ -15824,11 +15831,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2-en"
+      "importerVersion": "chromatin-qc-bilingual-v3-en"
     },
     "source": "builtin",
-    "createdAt": 1790751814032,
-    "updatedAt": 1790751814032,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -15884,9 +15891,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "Transcription start sites (TSS), BED",
+        "label": "Gene regions for the TSS profile (BED6/GTF/GFF)",
         "type": "path",
-        "help": "Required. Must match the reference assembly."
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically."
       },
       {
         "name": "GENOME_SIZE",
@@ -15919,7 +15927,7 @@
     "steps": [
       {
         "title": "Preflight: software, inputs, and references",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -15948,8 +15956,8 @@
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
-        "title": "Extended QC: SPOT, TSS-enrichment profile, and signal tracks",
-        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "title": "Extended QC: SPOT, TSS/gene-body profile, and signal tracks",
+        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/chip.mat.gz\nplotProfile --dpi 720 -m qc/chip.mat.gz -out qc/chip.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/chip.profile.tsv\nplotHeatmap -m qc/chip.mat.gz -out qc/chip.merge.png\npython3 - qc/chip.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -16037,10 +16045,10 @@
           "required": false
         },
         {
-          "name": "Transcription start sites (TSS), BED",
+          "name": "Gene regions for the TSS profile (BED6/GTF/GFF)",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "source": "Provide geneR1.bed or a matching GTF/GFF; the workflow prepares qc/geneR1.bed automatically",
           "required": true
         }
       ],
@@ -16073,11 +16081,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2-en"
+      "importerVersion": "chromatin-qc-bilingual-v3-en"
     },
     "source": "builtin",
-    "createdAt": 1790751814032,
-    "updatedAt": 1790751814032,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",
@@ -16125,9 +16133,10 @@
       },
       {
         "name": "TSS_BED",
-        "label": "Transcription start sites (TSS), BED",
+        "label": "Gene regions for the TSS profile (BED6/GTF/GFF)",
         "type": "path",
-        "help": "Required. Must match the reference assembly."
+        "placeholder": "/public/home/chaohe/db/geneR1.bed",
+        "help": "Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically."
       },
       {
         "name": "GENOME_SIZE",
@@ -16169,7 +16178,7 @@
     "steps": [
       {
         "title": "Preflight: software, inputs, and references",
-        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s \"{{TSS_BED}}\"\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile\ncommand -v plotHeatmap",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -16193,8 +16202,8 @@
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
-        "title": "QC: TSS-enrichment profile, FRiP, SPOT, fragment-size distribution, and signal tracks",
-        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.2 6 <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "title": "QC: TSS/gene-body profile, FRiP, SPOT, fragment-size distribution, and signal tracks",
+        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\npython3 - \"{{TSS_BED}}\" qc/geneR1.bed qc/geneR1.source.txt <<'PY'\nimport gzip\nimport sys\n\nsource, target, provenance = sys.argv[1:]\nopener = gzip.open if source.lower().endswith('.gz') else open\nwith opener(source, 'rt', encoding='utf-8', errors='replace') as handle:\n    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]\n\ndef bed6_rows(records):\n    rows = []\n    for line in records:\n        fields = line.split('\\t')\n        if len(fields) < 6 or fields[5] not in ('+', '-'):\n            return []\n        try:\n            start, end = int(fields[1]), int(fields[2])\n        except ValueError:\n            return []\n        if start < 0 or end <= start:\n            continue\n        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))\n    return rows\n\ndef attributes(text):\n    result = {}\n    for item in text.strip().strip(';').split(';'):\n        item = item.strip()\n        if not item:\n            continue\n        if '=' in item:\n            key, value = item.split('=', 1)\n        else:\n            parts = item.split(None, 1)\n            if len(parts) != 2:\n                continue\n            key, value = parts\n        result[key.strip()] = value.strip().strip('\"')\n    return result\n\nrows = bed6_rows(lines)\nmode = 'BED6'\nif not rows:\n    parsed = []\n    for line in lines:\n        fields = line.split('\\t')\n        if len(fields) < 9 or fields[6] not in ('+', '-'):\n            continue\n        try:\n            start, end = int(fields[3]) - 1, int(fields[4])\n        except ValueError:\n            continue\n        if start < 0 or end <= start:\n            continue\n        attrs = attributes(fields[8])\n        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')\n        if name:\n            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))\n    preferred = [row for row in parsed if row[0] == 'gene']\n    if not preferred:\n        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]\n    if not preferred:\n        spans = {}\n        for _feature, chrom, start, end, name, strand in parsed:\n            key = (chrom, name, strand)\n            if key in spans:\n                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))\n            else:\n                spans[key] = (start, end)\n        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]\n    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]\n    mode = 'GTF/GFF extraction'\n\nif not rows:\n    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)\nrows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))\nwith open(target, 'w', encoding='utf-8', newline='') as output:\n    for row in rows:\n        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)\nwith open(provenance, 'w', encoding='utf-8') as output:\n    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))\nprint('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))\nPY\ntest -s qc/geneR1.bed\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nbw_files=()\nsample_labels=()\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  bw_files+=(\"$bw\")\n  sample_labels+=(\"$s\")\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\ntest \"${#bw_files[@]}\" -gt 0\ncomputeMatrix scale-regions -p {{THREADS}} -S \"${bw_files[@]}\" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel \"${sample_labels[@]}\" -o qc/atac.mat.gz\nplotProfile --dpi 720 -m qc/atac.mat.gz -out qc/atac.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/atac.profile.tsv\nplotHeatmap -m qc/atac.mat.gz -out qc/atac.merge.png\npython3 - qc/atac.mat.gz qc/tss_enrichment.tsv <<'PY'\nimport math\nimport sys\nfrom deeptools import heatmapper\n\nmatrix_path, output_path = sys.argv[1:]\nhm = heatmapper.heatmapper()\nhm.read_matrix_file(matrix_path)\nwith open(output_path, 'w', encoding='utf-8', newline='') as output:\n    for index, sample in enumerate(hm.matrix.sample_labels):\n        start = hm.matrix.sample_boundaries[index]\n        end = hm.matrix.sample_boundaries[index + 1]\n        profile = hm.matrix.matrix[:, start:end].mean(axis=0)\n        if hasattr(profile, 'filled'):\n            profile = profile.filled(float('nan'))\n        values = [float(value) for value in profile]\n        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)\n        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]\n        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]\n        baseline = sum(background) / len(background) if background else 0.0\n        score = max(signal) / baseline if signal and baseline > 0 else 0.0\n        output.write('%s\\t%.4f\\n' % (sample, score))\nPY\npython3 - 0.2 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
         "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
       },
       {
@@ -16262,10 +16271,10 @@
           "required": false
         },
         {
-          "name": "Transcription start sites (TSS), BED",
+          "name": "Gene regions for the TSS profile (BED6/GTF/GFF)",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "source": "Provide geneR1.bed or a matching GTF/GFF; the workflow prepares qc/geneR1.bed automatically",
           "required": true
         }
       ],
@@ -16279,9 +16288,9 @@
         },
         {
           "afterStep": 6,
-          "metric": "TSS enrichment, FRiP, and SPOT",
-          "pass": "TSS enrichment ≥6, FRiP ≥0.2, and complete SPOT/TSS-profile outputs",
-          "warn": "Library QC failed when a required metric is missing or below its threshold"
+          "metric": "TSS/gene-body profile, FRiP, and SPOT",
+          "pass": "FRiP ≥0.2 with complete SPOT, 720-dpi profile PDF, and heatmap PNG outputs",
+          "warn": "Library QC failed when a required output is missing or FRiP is below its threshold"
         }
       ]
     },
@@ -16292,11 +16301,11 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "chromatin-qc-bilingual-v2-en"
+      "importerVersion": "chromatin-qc-bilingual-v3-en"
     },
     "source": "builtin",
-    "createdAt": 1790751814032,
-    "updatedAt": 1790751814032,
+    "createdAt": 1790781394888,
+    "updatedAt": 1790781394888,
     "assets": [
       {
         "source": "encode/encode_native_report.py",

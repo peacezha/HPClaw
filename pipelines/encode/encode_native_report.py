@@ -187,13 +187,13 @@ def build_qc_rows(data, language='zh', assay=''):
         'zh': {
             'NSC': 'NSC（标准化链交叉相关）', 'RSC': 'RSC（相对链交叉相关）',
             'NRF': 'NRF（非重复片段比例）', 'FRiP': 'FRiP（峰区内片段比例）',
-            'SPOT': 'SPOT（热点区域信号占比）', 'TSS': 'TSS 富集分数',
+            'SPOT': 'SPOT（热点区域信号占比）', 'TSS': 'TSS 边界富集比（诊断值）',
             'IDR': 'IDR 恢复比（≤2 为一致）', 'all': '全部重复',
         },
         'en': {
             'NSC': 'NSC (normalized strand cross-correlation)', 'RSC': 'RSC (relative strand cross-correlation)',
             'NRF': 'NRF (non-redundant fraction)', 'FRiP': 'FRiP (fraction of fragments in peaks)',
-            'SPOT': 'SPOT (signal portion of tags)', 'TSS': 'TSS enrichment score',
+            'SPOT': 'SPOT (signal portion of tags)', 'TSS': 'TSS-boundary enrichment ratio (diagnostic)',
             'IDR': 'IDR rescue ratio (≤2 is consistent)', 'all': 'All replicates',
         },
     }[language]
@@ -223,10 +223,10 @@ def build_qc_rows(data, language='zh', assay=''):
                 rows.append((labels['SPOT'], s, v, sym, css))
         if s in tss and len(tss[s]) >= 2:
             v = round(float(tss[s][1]), 4)
-            if assay == 'atac':
-                sym, css = verdict(v, 6, 4)
-            else:
-                sym, css = ('●', 'na')
+            # This ratio is derived from the requested scale-regions profile at
+            # the upstream/gene-body boundary. It is diagnostic and is not the
+            # ENCODE ATAC cut-site TSS score, so do not apply the ≥6 gate here.
+            sym, css = ('●', 'na')
             rows.append((labels['TSS'], s, v, sym, css))
     repro = idr.get('_reproducibility') or idr.get('_idr') or {}
     if repro.get('rescue_ratio') is not None:

@@ -63,53 +63,124 @@ function replaceParam(params: WorkflowParam[], param: WorkflowParam): WorkflowPa
 
 function tssParam(language: 'zh' | 'en'): WorkflowParam {
   return language === 'zh'
-    ? { name: 'TSS_BED', label: '转录起始位点（TSS）注释 BED', type: 'path', help: '必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。' }
-    : { name: 'TSS_BED', label: 'Transcription start sites (TSS), BED', type: 'path', help: 'Required. Must match the reference assembly; used for the TSS-enrichment profile and score.' };
+    ? {
+      name: 'TSS_BED', label: 'TSS 曲线基因区间（BED6/GTF/GFF）', type: 'path',
+      placeholder: '/public/home/chaohe/db/geneR1.bed',
+      help: '必填；可直接提供 geneR1.bed（BED6，第 6 列为链方向），也可提供与参考基因组版本一致的 GTF/GFF，流程会自动提取基因区间。',
+    }
+    : {
+      name: 'TSS_BED', label: 'Gene regions for the TSS profile (BED6/GTF/GFF)', type: 'path',
+      placeholder: '/public/home/chaohe/db/geneR1.bed',
+      help: 'Required. Provide a strand-aware BED6 gene-region file such as geneR1.bed, or a GTF/GFF matching the reference assembly; gene regions are extracted automatically.',
+    };
 }
+
+const PREPARE_GENE_BED = `python3 - "{{TSS_BED}}" qc/geneR1.bed qc/geneR1.source.txt <<'PY'
+import gzip
+import sys
+
+source, target, provenance = sys.argv[1:]
+opener = gzip.open if source.lower().endswith('.gz') else open
+with opener(source, 'rt', encoding='utf-8', errors='replace') as handle:
+    lines = [line.rstrip('\\n') for line in handle if line.strip() and not line.startswith(('#', 'track', 'browser'))]
+
+def bed6_rows(records):
+    rows = []
+    for line in records:
+        fields = line.split('\\t')
+        if len(fields) < 6 or fields[5] not in ('+', '-'):
+            return []
+        try:
+            start, end = int(fields[1]), int(fields[2])
+        except ValueError:
+            return []
+        if start < 0 or end <= start:
+            continue
+        rows.append((fields[0], start, end, fields[3] or '.', fields[4] or '.', fields[5]))
+    return rows
+
+def attributes(text):
+    result = {}
+    for item in text.strip().strip(';').split(';'):
+        item = item.strip()
+        if not item:
+            continue
+        if '=' in item:
+            key, value = item.split('=', 1)
+        else:
+            parts = item.split(None, 1)
+            if len(parts) != 2:
+                continue
+            key, value = parts
+        result[key.strip()] = value.strip().strip('"')
+    return result
+
+rows = bed6_rows(lines)
+mode = 'BED6'
+if not rows:
+    parsed = []
+    for line in lines:
+        fields = line.split('\\t')
+        if len(fields) < 9 or fields[6] not in ('+', '-'):
+            continue
+        try:
+            start, end = int(fields[3]) - 1, int(fields[4])
+        except ValueError:
+            continue
+        if start < 0 or end <= start:
+            continue
+        attrs = attributes(fields[8])
+        name = attrs.get('gene_id') or attrs.get('ID') or attrs.get('gene') or attrs.get('Name') or attrs.get('transcript_id') or attrs.get('Parent')
+        if name:
+            parsed.append((fields[2].lower(), fields[0], start, end, name, fields[6]))
+    preferred = [row for row in parsed if row[0] == 'gene']
+    if not preferred:
+        preferred = [row for row in parsed if row[0] in ('transcript', 'mrna')]
+    if not preferred:
+        spans = {}
+        for _feature, chrom, start, end, name, strand in parsed:
+            key = (chrom, name, strand)
+            if key in spans:
+                spans[key] = (min(spans[key][0], start), max(spans[key][1], end))
+            else:
+                spans[key] = (start, end)
+        preferred = [('derived', chrom, start, end, name, strand) for (chrom, name, strand), (start, end) in spans.items()]
+    rows = [(chrom, start, end, name, '.', strand) for _feature, chrom, start, end, name, strand in preferred]
+    mode = 'GTF/GFF extraction'
+
+if not rows:
+    raise SystemExit('No valid strand-aware BED6 gene regions or GTF/GFF gene annotations were found in: ' + source)
+rows = sorted(set(rows), key=lambda row: (row[0], row[1], row[2], row[3], row[5]))
+with open(target, 'w', encoding='utf-8', newline='') as output:
+    for row in rows:
+        output.write('%s\\t%d\\t%d\\t%s\\t%s\\t%s\\n' % row)
+with open(provenance, 'w', encoding='utf-8') as output:
+    output.write('source\\t%s\\nmode\\t%s\\ngene_regions\\t%d\\n' % (source, mode, len(rows)))
+print('Prepared %d strand-aware gene regions in %s from %s (%s)' % (len(rows), target, source, mode))
+PY
+test -s qc/geneR1.bed`;
 
 function qcCommand(spec: QcSpec): string {
   const tssThreshold = spec.tssPass === undefined ? 'None' : String(spec.tssPass);
+  const profilePrefix = spec.assay.startsWith('chip') ? 'chip' : spec.assay;
   const insert = spec.includeInsertSize
     ? '\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I="$b" O=qc/"${s}".insert_size_metrics.txt H=qc/"${s}".insert_size.png'
     : '';
   return `#BSUB -J ${spec.assay.replace(/[^a-z]/g, '_')}_signal_qc -n {{THREADS}} -q {{QUEUE}}
 module load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0${spec.includeInsertSize ? ' Picard/2.27.4' : ''}
 cd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots
+${PREPARE_GENE_BED}
 : > qc/frip.tsv
 : > qc/spot.tsv
 : > qc/tss_enrichment.tsv
+bw_files=()
+sample_labels=()
 for b in ${spec.bamGlob}; do
   s=\${b%${spec.bamSuffix}}
   bw=qc/tracks/"\${s}".rpkm.bw
   bamCoverage -b "$b" -o "$bw" -p {{THREADS}} --normalizeUsing RPKM
-  computeMatrix reference-point --referencePoint TSS -S "$bw" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/"\${s}".tss.mat.gz
-  plotProfile -m qc/"\${s}".tss.mat.gz -o qc/"\${s}".tss_enrichment.png --outFileNameData qc/"\${s}".tss_profile.tsv --plotTitle "\${s} TSS enrichment"
-  python3 - "$s" qc/"\${s}".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'
-import gzip, json, math, sys
-sample, path = sys.argv[1:]
-rows = []
-with gzip.open(path, 'rt') as fh:
-    for line in fh:
-        if line.startswith('@'):
-            continue
-        fields = line.rstrip().split('\\t')[6:]
-        try:
-            values = [float(v) for v in fields]
-        except ValueError:
-            continue
-        rows.append(values)
-if not rows:
-    raise SystemExit('TSS matrix has no numeric rows: ' + path)
-means = []
-for column in zip(*rows):
-    valid = [v for v in column if not math.isnan(v)]
-    means.append(sum(valid) / len(valid) if valid else 0.0)
-edge = means[:10] + means[-10:]
-noise = sum(edge) / len(edge) if edge else 0.0
-mid = len(means) // 2
-score = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0
-print('%s\\t%.4f' % (sample, score))
-PY${insert}
+  bw_files+=("$bw")
+  sample_labels+=("$s")${insert}
   total=$(samtools view -c "$b")
   inpeak=$(bedtools intersect -a "$b" -b peaks/"\${s}"${spec.peakSuffix} -u | samtools view -c - || true)
   printf '%s\\t%s\\t%s\\n' "$s" "$total" "$inpeak" >> qc/frip.tsv
@@ -119,6 +190,33 @@ PY${insert}
   test -s "$spot_file"
   printf '%s\\t%s\\n' "$s" "$(tr -d '[:space:]' < "$spot_file")" >> qc/spot.tsv
 done
+test "\${#bw_files[@]}" -gt 0
+computeMatrix scale-regions -p {{THREADS}} -S "\${bw_files[@]}" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel "\${sample_labels[@]}" -o qc/${profilePrefix}.mat.gz
+plotProfile --dpi 720 -m qc/${profilePrefix}.mat.gz -out qc/${profilePrefix}.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/${profilePrefix}.profile.tsv
+plotHeatmap -m qc/${profilePrefix}.mat.gz -out qc/${profilePrefix}.merge.png
+python3 - qc/${profilePrefix}.mat.gz qc/tss_enrichment.tsv <<'PY'
+import math
+import sys
+from deeptools import heatmapper
+
+matrix_path, output_path = sys.argv[1:]
+hm = heatmapper.heatmapper()
+hm.read_matrix_file(matrix_path)
+with open(output_path, 'w', encoding='utf-8', newline='') as output:
+    for index, sample in enumerate(hm.matrix.sample_labels):
+        start = hm.matrix.sample_boundaries[index]
+        end = hm.matrix.sample_boundaries[index + 1]
+        profile = hm.matrix.matrix[:, start:end].mean(axis=0)
+        if hasattr(profile, 'filled'):
+            profile = profile.filled(float('nan'))
+        values = [float(value) for value in profile]
+        tss_index = min(int(round(len(values) * 3000 / 11000)), len(values) - 1)
+        signal = [value for value in values[max(0, tss_index - 5):tss_index + 6] if math.isfinite(value)]
+        background = [value for value in values[:max(1, min(100, tss_index // 2))] if math.isfinite(value)]
+        baseline = sum(background) / len(background) if background else 0.0
+        score = max(signal) / baseline if signal and baseline > 0 else 0.0
+        output.write('%s\\t%.4f\\n' % (sample, score))
+PY
 python3 - ${spec.fripPass} ${tssThreshold} <<'PY'
 import csv, json, os, sys
 frip_min = float(sys.argv[1])
@@ -165,12 +263,13 @@ function preflightCommand(assay: Assay): string {
 test -d {{INPUT_DIR}}
 ${indexCheck}
 test -s {{REF_FA}}
-test -s {{TSS_BED}}
+test -s "{{TSS_BED}}"
 command -v hotspot2.sh
 command -v samtools
 command -v bedtools
 command -v computeMatrix
-command -v plotProfile`;
+command -v plotProfile
+command -v plotHeatmap`;
 }
 
 function englishCommand(commandText: string): string {
@@ -192,9 +291,9 @@ function commonManifest(workflow: Workflow, language: 'zh' | 'en'): void {
   if (!workflow.manifest) return;
   workflow.manifest.references = (workflow.manifest.references || []).filter(ref => ref.path !== '{{TSS_BED}}' && !/BLACKLIST/i.test(String(ref.path)) && !/blacklist|黑名单/i.test(ref.name));
   workflow.manifest.references.push({
-    name: language === 'zh' ? '转录起始位点（TSS）注释 BED' : 'Transcription start sites (TSS), BED',
+    name: language === 'zh' ? 'TSS 曲线基因区间（BED6/GTF/GFF）' : 'Gene regions for the TSS profile (BED6/GTF/GFF)',
     path: '{{TSS_BED}}', type: 'annotation',
-    source: language === 'zh' ? '由与参考基因组同版本的 GTF/GFF 生成' : 'Generate from a GTF/GFF matching the reference assembly',
+    source: language === 'zh' ? '用户提供 geneR1.bed，或由同版本 GTF/GFF 自动提取' : 'Provide geneR1.bed or extract gene regions automatically from a matching GTF/GFF',
     required: true,
   });
   const hotspot = workflow.manifest.software.find(item => /hotspot2/i.test(item.name));
@@ -215,7 +314,7 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
     INPUT_DIR: '原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）',
     CONTROL_DIR: assay === 'dap' ? '裸 gDNA 阴性对照文库目录' : 'Input/IgG 对照文库目录',
     BWA_INDEX: 'BWA 参考基因组索引前缀', BOWTIE2_INDEX: 'Bowtie2 参考基因组索引前缀',
-    REF_FA: '参考基因组 FASTA', TSS_BED: '转录起始位点（TSS）注释 BED',
+    REF_FA: '参考基因组 FASTA', TSS_BED: 'TSS 曲线基因区间（BED6/GTF/GFF）',
     GENES_BED: '基因注释 BED/GFF', GENOME_SIZE: 'MACS2 有效基因组大小', MOTIF_DB: 'MEME 格式基序数据库',
     ORGANELLE_REGEX: '细胞器染色体名称模式（线粒体+叶绿体）', QUEUE: '作业队列', THREADS: '线程数',
   };
@@ -225,7 +324,7 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
   const preflight = workflow.steps[0];
   preflight.title = '运行前检查：软件、输入文件与参考数据';
   preflight.command = preflightCommand(assay);
-  preflight.notes = '只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。';
+  preflight.notes = '只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。';
 
   if (assay === 'dap') {
     setStep(workflow.steps[1], '原始序列质控（FastQC）', workflow.steps[1].command, '检查碱基质量、接头残留和序列含量分布。');
@@ -233,7 +332,7 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
     setStep(workflow.steps[3], '高质量比对筛选与 PCR 重复去除', workflow.steps[3].command, 'MAPQ≥30；保留正确配对并去除未比对、次要比对、质控失败和 PCR 重复 reads。');
     setStep(workflow.steps[4], 'MACS2 窄峰调用（裸 gDNA 阴性对照）', workflow.steps[4].command
       .replace(/\n  if \[ -s \{\{BLACKLIST\}\} \]; then[\s\S]*?\n  fi\n/g, '\n  cp peaks/"${s}"_peaks.narrowPeak peaks/"${s}".peaks.final.bed\n'), '裸 gDNA 对照是 DAP-seq 背景校正的关键；候选峰供后续富集质控与注释。');
-    setStep(workflow.steps[5], '扩展质控：FRiP、SPOT、TSS 富集曲线与信号轨迹', qcCommand({ assay, bamGlob: '*.dedup.bam', bamSuffix: '.dedup.bam', peakSuffix: '.peaks.final.bed', fripPass: 0.05 }), 'SPOT 由 Hotspot2 直接输出；TSS 富集曲线作为促进子附近信号的扩展诊断，不作为 DAP-seq 的 ENCODE 强制门槛。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED 及未达标指标。');
+    setStep(workflow.steps[5], '扩展质控：FRiP、SPOT、TSS/基因体富集曲线与信号轨迹', qcCommand({ assay, bamGlob: '*.dedup.bam', bamSuffix: '.dedup.bam', peakSuffix: '.peaks.final.bed', fripPass: 0.05 }), '由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；按上游 3 kb、标准化基因体 5 kb、下游 3 kb 生成 720 dpi profile PDF 和 heatmap PNG。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED。');
     workflow.steps[6].title = '基序富集与峰关联基因注释';
     setStep(workflow.steps[7], '生成中文分析与质控报告', reportCommand('zh', assay), '采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。');
     if (workflow.manifest) workflow.manifest.qcGates = [
@@ -253,7 +352,7 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
       ? workflow.steps[peakIndex].command.replace(/\n  bedtools intersect -a peaks\/"\$\{s\}"\.regionPeak -b \{\{BLACKLIST\}\} -v > peaks\/"\$\{s\}"\.peaks\.final\.bed/, '\n  cp peaks/"${s}".regionPeak peaks/"${s}".peaks.final.bed')
       : workflow.steps[peakIndex].command.replace(/\n  bedtools intersect -a peaks\/"\$\{s\}"_peaks\.narrowPeak -b \{\{BLACKLIST\}\} -v > peaks\/"\$\{s\}"\.peaks\.final\.bed/, '\n  cp peaks/"${s}"_peaks.narrowPeak peaks/"${s}".peaks.final.bed');
     workflow.steps[peakIndex].notes = '使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。';
-    setStep(workflow.steps[qcIndex], '扩展质控：SPOT、TSS 富集曲线与信号轨迹', qcCommand({ assay, bamGlob: '*.dedup.bam', bamSuffix: '.dedup.bam', peakSuffix: '.peaks.final.bed', fripPass: 0.01 }), 'SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。');
+    setStep(workflow.steps[qcIndex], '扩展质控：SPOT、TSS/基因体富集曲线与信号轨迹', qcCommand({ assay, bamGlob: '*.dedup.bam', bamSuffix: '.dedup.bam', peakSuffix: '.peaks.final.bed', fripPass: 0.01 }), '由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；使用 computeMatrix scale-regions 生成 qc/chip.profile.pdf（720 dpi）和 qc/chip.merge.png。曲线形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。');
     workflow.steps[7].title = 'FRiP 与重复间 IDR 一致性评估';
     setStep(workflow.steps[8], '生成中文分析与质控报告', reportCommand('zh', assay), '采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。');
     if (workflow.manifest) workflow.manifest.qcGates = [
@@ -267,26 +366,26 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
     setStep(workflow.steps[3], '细胞器序列去除、高质量比对筛选与去重', workflow.steps[3].command
       .replace('  bedtools intersect -a "${s}.dedup.bam" -b {{BLACKLIST}} -v > "${s}.final.bam"', '  cp "${s}.dedup.bam" "${s}.final.bam"'), '去除线粒体/叶绿体序列、低质量比对、次要比对、质控失败 reads 和 PCR 重复。');
     workflow.steps[4].title = 'Tn5 插入位点校正与 MACS2 开放染色质峰调用';
-    setStep(workflow.steps[5], '质控：TSS 富集曲线、FRiP、SPOT、片段长度分布与信号轨迹', qcCommand({ assay, bamGlob: '*.final.bam', bamSuffix: '.final.bam', peakSuffix: '_peaks.narrowPeak', fripPass: 0.2, tssPass: 6, includeInsertSize: true }), 'ATAC-seq 关键信噪指标：TSS 富集分数≥6、FRiP≥0.2；同时必须产出 Hotspot2 SPOT 值和 TSS 富集曲线。未达标时 qc/library_verdict.tsv 直接标记 FAILED 并列出未达标指标。');
+    setStep(workflow.steps[5], '质控：TSS/基因体富集曲线、FRiP、SPOT、片段长度分布与信号轨迹', qcCommand({ assay, bamGlob: '*.final.bam', bamSuffix: '.final.bam', peakSuffix: '_peaks.narrowPeak', fripPass: 0.2, includeInsertSize: true }), '由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；按上游 3 kb、标准化基因体 5 kb、下游 3 kb 生成 720 dpi profile PDF 和 heatmap PNG。FRiP<0.2 或必需产物缺失时直接标记 FAILED。');
     setStep(workflow.steps[6], '生成中文分析与质控报告', reportCommand('zh', assay), '采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。');
     if (workflow.manifest) workflow.manifest.qcGates = [
       { afterStep: 4, metric: '高质量比对率与细胞器序列占比', pass: '高质量比对率达到项目标准，线粒体+叶绿体占比<20%', warn: '任一关键指标低于阈值时标记文库质控失败' },
-      { afterStep: 6, metric: 'TSS 富集、FRiP 与 SPOT', pass: 'TSS 富集分数≥6、FRiP≥0.2，且 SPOT/TSS 曲线产物完整', warn: '任一必需指标缺失或低于阈值时标记文库质控失败' },
+      { afterStep: 6, metric: 'TSS/基因体富集曲线、FRiP 与 SPOT', pass: 'FRiP≥0.2，且 SPOT、720 dpi profile PDF 与 heatmap PNG 产物完整', warn: '任一必需产物缺失或 FRiP 低于阈值时标记文库质控失败' },
     ];
   }
-  if (workflow.provenance) workflow.provenance.importerVersion = 'chromatin-qc-bilingual-v2';
+  if (workflow.provenance) workflow.provenance.importerVersion = 'chromatin-qc-bilingual-v3';
 }
 
 function englishParam(param: WorkflowParam): WorkflowParam {
   const labels: Record<string, string> = {
     INPUT_DIR: 'FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)', CONTROL_DIR: 'Control-library directory',
     BWA_INDEX: 'BWA index prefix', BOWTIE2_INDEX: 'Bowtie2 index prefix', REF_FA: 'Reference genome FASTA',
-    TSS_BED: 'Transcription start sites (TSS), BED', GENES_BED: 'Gene annotation, BED/GFF',
+    TSS_BED: 'Gene regions for the TSS profile (BED6/GTF/GFF)', GENES_BED: 'Gene annotation, BED/GFF',
     GENOME_SIZE: 'MACS2 effective genome size', MOTIF_DB: 'Motif database in MEME format',
     ORGANELLE_REGEX: 'Organelle chromosome-name pattern', QUEUE: 'Queue', THREADS: 'Threads',
   };
   const help: Record<string, string> = {
-    TSS_BED: 'Required. Must match the reference assembly.', GENOME_SIZE: 'Use hs, mm, or a numeric effective genome size.',
+    TSS_BED: 'Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically.', GENOME_SIZE: 'Use hs, mm, or a numeric effective genome size.',
     ORGANELLE_REGEX: 'Adjust this pattern to the mitochondrial and chloroplast chromosome names in the selected assembly; leave empty to retain organelle reads.',
   };
   return { ...param, label: labels[param.name] || param.label, placeholder: param.required === false ? 'Optional; the agent can help locate or prepare this input' : param.placeholder, help: help[param.name] };
@@ -300,10 +399,10 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
   clone.keywords = Array.from(new Set([...clone.keywords.filter(word => !/[\u3400-\u9fff]/.test(word)), 'English', 'SPOT', 'TSS enrichment', 'library QC']));
   clone.params = clone.params.map(englishParam);
   const titles: Record<Assay, string[]> = {
-    dap: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'MACS2 narrow-peak calling against the naked-gDNA control', 'Extended QC: FRiP, SPOT, TSS-enrichment profile, and signal tracks', 'Motif enrichment and peak-to-gene annotation', 'Generate the English analysis and QC report'],
-    'chip-tf': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'MACS2 narrow-peak calling', 'Extended QC: SPOT, TSS-enrichment profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
-    'chip-histone': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'SPP broad-peak calling', 'Extended QC: SPOT, TSS-enrichment profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
-    atac: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'Bowtie2 alignment and coordinate sorting', 'Organelle-read removal, high-quality alignment filtering, and deduplication', 'Tn5 insertion-site correction and MACS2 accessible-chromatin peak calling', 'QC: TSS-enrichment profile, FRiP, SPOT, fragment-size distribution, and signal tracks', 'Generate the English analysis and QC report'],
+    dap: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'MACS2 narrow-peak calling against the naked-gDNA control', 'Extended QC: FRiP, SPOT, TSS/gene-body profile, and signal tracks', 'Motif enrichment and peak-to-gene annotation', 'Generate the English analysis and QC report'],
+    'chip-tf': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'MACS2 narrow-peak calling', 'Extended QC: SPOT, TSS/gene-body profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
+    'chip-histone': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'SPP broad-peak calling', 'Extended QC: SPOT, TSS/gene-body profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
+    atac: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'Bowtie2 alignment and coordinate sorting', 'Organelle-read removal, high-quality alignment filtering, and deduplication', 'Tn5 insertion-site correction and MACS2 accessible-chromatin peak calling', 'QC: TSS/gene-body profile, FRiP, SPOT, fragment-size distribution, and signal tracks', 'Generate the English analysis and QC report'],
   };
   clone.steps.forEach((step, index) => {
     step.title = titles[assay][index] || step.title;
@@ -319,19 +418,19 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
       : assay === 'atac' ? 'Paired-end ATAC-seq FASTQs' : 'Paired-end ChIP-seq FASTQs plus an Input/IgG control library';
     const refNames: Record<string, string> = {
       '{{BWA_INDEX}}': 'BWA index', '{{BOWTIE2_INDEX}}': 'Bowtie2 index', '{{REF_FA}}': 'Reference genome FASTA',
-      '{{TSS_BED}}': 'Transcription start sites (TSS), BED', '{{GENES_BED}}': 'Gene annotation, BED/GFF',
+      '{{TSS_BED}}': 'Gene regions for the TSS profile (BED6/GTF/GFF)', '{{GENES_BED}}': 'Gene annotation, BED/GFF',
       '{{MOTIF_DB}}': 'Motif database in MEME format',
     };
     clone.manifest.references = clone.manifest.references.map(ref => ({
       ...ref,
       name: refNames[String(ref.path)] || ref.name,
       source: ref.path === '{{TSS_BED}}'
-        ? 'Generate from a GTF/GFF matching the reference assembly'
+        ? 'Provide geneR1.bed or a matching GTF/GFF; the workflow prepares qc/geneR1.bed automatically'
         : ref.required ? 'Provide a file matching the selected reference assembly' : 'Optional; locate or prepare this resource when needed',
     }));
     clone.manifest.qcGates = assay === 'atac' ? [
       { afterStep: 4, metric: 'High-quality alignment rate and organelle-read fraction', pass: 'Project alignment criterion met and mitochondrial + chloroplast fraction <20%', warn: 'Library QC failed when a required metric is below its threshold' },
-      { afterStep: 6, metric: 'TSS enrichment, FRiP, and SPOT', pass: 'TSS enrichment ≥6, FRiP ≥0.2, and complete SPOT/TSS-profile outputs', warn: 'Library QC failed when a required metric is missing or below its threshold' },
+      { afterStep: 6, metric: 'TSS/gene-body profile, FRiP, and SPOT', pass: 'FRiP ≥0.2 with complete SPOT, 720-dpi profile PDF, and heatmap PNG outputs', warn: 'Library QC failed when a required output is missing or FRiP is below its threshold' },
     ] : assay === 'dap' ? [
       { afterStep: 4, metric: 'Alignment quality and library complexity', pass: 'Project high-quality-alignment and post-deduplication retention criteria met', warn: 'Library QC failed when a required metric is below its threshold' },
       { afterStep: 6, metric: 'FRiP, SPOT, and TSS-enrichment profile', pass: 'FRiP ≥5% and complete SPOT/TSS-profile outputs', warn: 'Library QC failed when a required metric is missing or FRiP <5%' },
@@ -344,7 +443,7 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
   clone.createdAt = now;
   clone.updatedAt = now;
   clone.assets = clone.assets?.map(asset => ({ ...asset, label: asset.remotePath === 'tools/encode_native_report.py' ? 'Deterministic analysis and QC report generator' : asset.label }));
-  if (clone.provenance) clone.provenance.importerVersion = 'chromatin-qc-bilingual-v2-en';
+  if (clone.provenance) clone.provenance.importerVersion = 'chromatin-qc-bilingual-v3-en';
   return clone;
 }
 
