@@ -33,14 +33,14 @@ const storeFile = () => path.join(state.tmpRoot, 'workflows', 'workflows.json');
 const deletedFile = () => path.join(state.tmpRoot, 'workflows', 'deleted-builtin-seeds.json');
 
 describe('内置流程分类映射', () => {
-  it('55 个内置流程全部有映射，且分类名都在 WORKFLOW_CATEGORIES 内', async () => {
+  it('59 个内置流程全部有映射，且分类名都在 WORKFLOW_CATEGORIES 内', async () => {
     const store = await freshStore();
     const keys = Object.keys(store.BUILTIN_CATEGORIES);
-    expect(keys).toHaveLength(55);
+    expect(keys).toHaveLength(59);
     for (const category of Object.values(store.BUILTIN_CATEGORIES)) {
       expect(WORKFLOW_CATEGORIES).toContain(category);
     }
-    // 18 个硬编码种子 id 全部覆盖
+    // 硬编码种子 id 全部覆盖
     for (const seed of store.builtinWorkflows()) {
       expect(store.BUILTIN_CATEGORIES[seed.id]).toBeTruthy();
     }
@@ -53,12 +53,13 @@ describe('内置流程分类映射', () => {
     }
   });
 
-  it('12 个 ENCODE 内置流程全部映射到转录组与表观调控', async () => {
+  it('ENCODE 中英文内置流程全部映射到转录组与表观调控', async () => {
     const store = await freshStore();
     const encodeIds = [
       'encode-chipseq-tf', 'encode-chipseq-histone', 'encode-rnaseq-bulk', 'encode-atacseq',
       'encode-dnaseseq', 'encode-wgbs', 'encode-hic', 'encode-chiapet', 'encode-mirnaseq',
       'encode-eclip', 'encode-longread-rnaseq', 'encode-rampage',
+      'encode-chipseq-tf-en', 'encode-chipseq-histone-en', 'encode-atacseq-en',
     ];
     const seedIds = store.builtinWorkflows().map(w => w.id);
     for (const id of encodeIds) {
@@ -90,31 +91,31 @@ describe('内置流程分类映射', () => {
 });
 
 describe('新装（无存储）种子注入', () => {
-  it('55 个内置流程照常入库且全部带分类', async () => {
+  it('59 个内置流程照常入库且全部带分类', async () => {
     const store = await freshStore();
     const list = await store.loadWorkflows();
     const builtins = list.filter(w => w.source === 'builtin');
-    expect(builtins).toHaveLength(55);
+    expect(builtins).toHaveLength(59);
     expect(builtins.every(w => Boolean(w.category))).toBe(true);
     expect(builtins.find(w => w.id === 'builtin-rnaseq-qc-align')?.category).toBe('转录组与表观调控');
     expect(builtins.find(w => w.id === 'bioskills-metagenomics-pipeline')?.category).toBe('微生物与病原分析');
-    // 13 个 ENCODE 内置流程一并入库
+    // 16 个 ENCODE 内置流程（含 3 个英文版）一并入库
     const encodeBuiltins = builtins.filter(w => w.id.startsWith('encode-'));
-    expect(encodeBuiltins).toHaveLength(13);
+    expect(encodeBuiltins).toHaveLength(16);
     expect(encodeBuiltins.every(w => w.category === '转录组与表观调控')).toBe(true);
     const chipseq = builtins.find(w => w.id === 'encode-chipseq-tf');
     // chip/atac/rnaseq 四条已恢复为 HPClaw 原生参数式流程（串行 9 步，无 caper/genome TSV）
     expect(chipseq?.steps.length).toBe(9);
-    expect(chipseq?.steps[0]?.title).toContain('Read-only preflight');
-    expect(chipseq?.steps[0]?.command).toContain('module av');
+    expect(chipseq?.steps[0]?.title).toContain('运行前检查');
+    expect(chipseq?.steps[0]?.command).toContain('command -v hotspot2.sh');
     expect(chipseq?.steps[0]?.command).not.toContain('caper');
     expect(chipseq?.manifest?.qcGates.length).toBeGreaterThan(0);
   });
 
-  it('13 条 ENCODE 定义都有固定来源、可解析 DAG 与真实上游入口', async () => {
+  it('16 条 ENCODE 定义都有固定来源、可解析 DAG 与真实上游入口', async () => {
     const store = await freshStore();
     const encode = store.builtinWorkflows().filter(workflow => workflow.id.startsWith('encode-'));
-    expect(encode).toHaveLength(13);
+    expect(encode).toHaveLength(16);
     for (const workflow of encode) {
       expect(workflow.provenance?.sourceUrl).toMatch(/^https:\/\//);
       expect(workflow.provenance?.sourceRef).toBeTruthy();
@@ -129,12 +130,13 @@ describe('新装（无存储）种子注入', () => {
     // 原生参数式四条：直接指定参考文件路径，不走 genome TSV / caper
     const tf = encode.find(workflow => workflow.id === 'encode-chipseq-tf')!;
     expect(tf.provenance?.provider).toBe('hpclaw-native');
-    expect(tf.steps.map(step => step.title).join(' ')).toContain('MACS2 narrow-peak calling');
+    expect(tf.steps.map(step => step.title).join(' ')).toContain('MACS2 窄峰调用');
     expect(tf.steps.map(step => step.title).join(' ')).toContain('IDR');
-    expect(tf.params.map(param => param.name)).toEqual(expect.arrayContaining(['INPUT_DIR', 'CONTROL_DIR', 'BWA_INDEX', 'REF_FA', 'BLACKLIST', 'GENOME_SIZE']));
+    expect(tf.params.map(param => param.name)).toEqual(expect.arrayContaining(['INPUT_DIR', 'CONTROL_DIR', 'BWA_INDEX', 'REF_FA', 'TSS_BED', 'GENOME_SIZE']));
+    expect(tf.params.map(param => param.name)).not.toContain('BLACKLIST');
 
     const histone = encode.find(workflow => workflow.id === 'encode-chipseq-histone')!;
-    expect(histone.steps.map(step => step.title).join(' ')).toContain('SPP broad-peak calling');
+    expect(histone.steps.map(step => step.title).join(' ')).toContain('SPP 宽峰调用');
 
     const rna = encode.find(workflow => workflow.id === 'encode-rnaseq-bulk')!;
     expect(rna.steps.map(step => step.title).join(' ')).toContain('STAR alignment');
@@ -155,6 +157,21 @@ describe('新装（无存储）种子注入', () => {
 });
 
 describe('内置流程编辑保护（provenance.customized）', () => {
+  it('升级时移除已被中英文原生版取代的旧官方包装流程', async () => {
+    const store = await freshStore();
+    await store.loadWorkflows();
+    const raw = JSON.parse(await fs.readFile(storeFile(), 'utf-8')) as Workflow[];
+    raw.push({
+      id: 'encode-chipseq-tf-official', name: 'legacy', description: '', keywords: [], params: [],
+      steps: [{ title: 'legacy', command: 'legacy' }], source: 'builtin', createdAt: 1, updatedAt: 1,
+      provenance: { provider: 'encode-dcc', implementation: 'official-wrapper' },
+    });
+    await fs.writeFile(storeFile(), JSON.stringify(raw, null, 2), 'utf-8');
+    const restarted = await restartStore();
+    const migrated = await restarted.loadWorkflows();
+    expect(migrated.some(workflow => workflow.id === 'encode-chipseq-tf-official')).toBe(false);
+  });
+
   it('编辑硬编码内置流程后 reload 字段不回滚，并补 customized 标记', async () => {
     const store = await freshStore();
     const list = await store.loadWorkflows();
@@ -216,7 +233,7 @@ describe('内置流程删除持久化', () => {
     const cached = await store.loadWorkflows();
     expect(cached.some(w => w.id === 'builtin-blast')).toBe(false);
     // 其余内置流程不受影响
-    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(54);
+    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(58);
   });
 
   it('删除 BioSkills 流程后“重启”也不复活', async () => {
@@ -228,7 +245,7 @@ describe('内置流程删除持久化', () => {
     const reloaded = await store.loadWorkflows();
     expect(reloaded.some(w => w.id === 'bioskills-gwas-pipeline')).toBe(false);
     expect(reloaded.some(w => w.id === 'bioskills-cnv-pipeline')).toBe(true);
-    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(54);
+    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(58);
   });
 
   it('删除用户自建流程不登记 deleted 清单', async () => {
@@ -239,7 +256,7 @@ describe('内置流程删除持久化', () => {
     await expect(fs.readFile(deletedFile(), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
     const reloaded = await store.loadWorkflows();
     expect(reloaded.some(w => w.id === created.id)).toBe(false);
-    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(55);
+    expect(reloaded.filter(w => w.source === 'builtin')).toHaveLength(59);
   });
 
   it('mergeGeneratedBioskills 不复活 deleted 清单中的种子（残留项直接移除）', async () => {

@@ -7,6 +7,7 @@ import { WORKFLOW_CATEGORIES } from '../../shared/workflow';
 import { BIOSKILLS_IMPORTER_VERSION, generateBioskillsWorkflows } from './bioskillsSeed';
 import { buildEnvCheckCommand } from './envCheckScript';
 import { buildOfficialEncodeWorkflows } from './encodeOfficialWorkflows';
+import { addChromatinWorkflowVariants } from './chromatinWorkflowVariants';
 import type { Workflow, WorkflowStep } from './workflowTypes';
 
 const STORE_PATH = dataPath('workflows', 'workflows.json');
@@ -19,6 +20,8 @@ const SEED_MARKER_PATH = dataPath('workflows', '.bioskills-seed-version');
 const DELETED_SEEDS_PATH = dataPath('workflows', 'deleted-builtin-seeds.json');
 /** bioSkills 种子版本：提取规则变化时递增，触发老库重新生成 */
 const BIOSKILLS_SEED_VERSION = BIOSKILLS_IMPORTER_VERSION;
+/** 旧版曾入库、现已由无 blacklist 的中英文原生流程取代的系统种子。 */
+const DEPRECATED_BUILTIN_WORKFLOW_IDS = new Set(['encode-chipseq-tf-official']);
 
 const [
   CATEGORY_GENOMICS,
@@ -31,7 +34,7 @@ const [
 ] = WORKFLOW_CATEGORIES;
 
 /**
- * 53 个内置流程（18 个硬编码 + 35 个 BioSkills 种子）的分类映射。
+ * 内置流程（硬编码流程 + BioSkills 种子）的分类映射。
  * 硬编码种子对象与 workflows/workflows.json 都不存 category（保持二者对齐）：
  * 内置流程的 category 由 loadWorkflows 在读取时按此表派生（applyDerivedCategories，不落盘）；
  * BioSkills 生成器（generateBioskillsWorkflows 的 categories 参数）则在新行入库时注入。
@@ -54,9 +57,13 @@ export const BUILTIN_CATEGORIES: Record<string, string> = {
   'encode-chipseq-tf': CATEGORY_TRANSCRIPTOME,
   'encode-chipseq-tf-dag': CATEGORY_TRANSCRIPTOME,
   'builtin-dapseq-tf': CATEGORY_TRANSCRIPTOME,
+  'builtin-dapseq-tf-en': CATEGORY_TRANSCRIPTOME,
   'encode-chipseq-histone': CATEGORY_TRANSCRIPTOME,
+  'encode-chipseq-tf-en': CATEGORY_TRANSCRIPTOME,
+  'encode-chipseq-histone-en': CATEGORY_TRANSCRIPTOME,
   'encode-rnaseq-bulk': CATEGORY_TRANSCRIPTOME,
   'encode-atacseq': CATEGORY_TRANSCRIPTOME,
+  'encode-atacseq-en': CATEGORY_TRANSCRIPTOME,
   'encode-dnaseseq': CATEGORY_TRANSCRIPTOME,
   'encode-wgbs': CATEGORY_TRANSCRIPTOME,
   'encode-hic': CATEGORY_TRANSCRIPTOME,
@@ -1095,6 +1102,10 @@ export function builtinWorkflows(): Workflow[] {
     if (replacement) workflows[index] = replacement;
   }
 
+  // DAP/ChIP/ATAC 统一质控契约：去除 blacklist，必产 SPOT + TSS 曲线，
+  // 并在保留旧 ID 便于无感升级的前提下新增完整英文版。
+  addChromatinWorkflowVariants(workflows, now);
+
   // TF ChIP-seq 两版并存（用户要求）：现行原生参数式线性版 encode-chipseq-tf 不动；
   // 「原来的」官方结构版以原生参数 + 依赖图形式提供（不要 genome TSV/Caper，
   // 用户直接填文件路径），id 为 encode-chipseq-tf-dag。
@@ -1143,7 +1154,10 @@ export function builtinWorkflows(): Workflow[] {
     if (!usesReport) continue;
     const assets = workflow.assets || [];
     if (!assets.some(a => a.remotePath === 'tools/encode_native_report.py')) {
-      workflow.assets = [...assets, { source: 'encode/encode_native_report.py', remotePath: 'tools/encode_native_report.py', label: '确定性分析报告生成器' }];
+      workflow.assets = [...assets, {
+        source: 'encode/encode_native_report.py', remotePath: 'tools/encode_native_report.py',
+        label: workflow.id.endsWith('-en') ? 'Deterministic analysis and QC report generator' : '确定性分析与质控报告生成器',
+      }];
     }
   }
   return workflows;
@@ -1198,6 +1212,15 @@ export async function loadWorkflows(): Promise<Workflow[]> {
       // 迁移：内置流程为系统所有，params/manifest 随版本升级总是刷新为当前内置定义
       // （用户自建与 AI 生成的流程不受影响）；版本新增的内置流程自动入库
       let migrated = false;
+      const withoutDeprecated = workflows.filter(workflow => !(
+        workflow.source === 'builtin'
+        && !workflow.provenance?.customized
+        && DEPRECATED_BUILTIN_WORKFLOW_IDS.has(workflow.id)
+      ));
+      if (withoutDeprecated.length !== workflows.length) {
+        workflows = withoutDeprecated;
+        migrated = true;
+      }
       // 用户删除过的内置种子：清出库存且不再注入，避免删除后“复活”
       const deletedSeedIds = await loadDeletedBuiltinSeeds();
       if (deletedSeedIds.size > 0) {

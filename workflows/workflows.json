@@ -896,14 +896,14 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
   {
     "id": "encode-chipseq-tf",
-    "name": "ENCODE TF ChIP-seq Analysis & QC Pipeline",
-    "description": "ENCODE TF ChIP-seq pipeline: BWA MEM alignment → filter/dedup (MAPQ≥30, fixmate, MarkDuplicates) → blacklist removal → MACS2 narrow peaks → cross-replicate IDR consistency.",
+    "name": "ENCODE 转录因子 ChIP-seq 分析与质控流程（中文版）",
+    "description": "参照 ENCODE 转录因子 ChIP-seq 分析框架：比对、过滤去重、链交叉相关性、MACS2 窄峰、FRiP 与 IDR；扩展输出 SPOT 值和 TSS 富集曲线。",
     "keywords": [
       "encode",
       "chipseq",
@@ -915,45 +915,48 @@
       "idr",
       "frip",
       "质控",
-      "表观"
+      "表观",
+      "SPOT",
+      "TSS 富集",
+      "文库质控",
+      "中文版"
     ],
     "params": [
       {
         "name": "INPUT_DIR",
-        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "label": "原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）",
         "type": "path"
       },
       {
         "name": "CONTROL_DIR",
-        "label": "Control FASTQ directory (Input/IgG)",
+        "label": "Input/IgG 对照文库目录",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助确认"
       },
       {
         "name": "BWA_INDEX",
-        "label": "BWA index prefix",
+        "label": "BWA 参考基因组索引前缀",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找或构建"
       },
       {
         "name": "REF_FA",
-        "label": "Reference genome FASTA",
+        "label": "参考基因组 FASTA",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找"
       },
       {
-        "name": "BLACKLIST",
-        "label": "ENCODE blacklist BED",
+        "name": "TSS_BED",
+        "label": "转录起始位点（TSS）注释 BED",
         "type": "path",
-        "required": false,
-        "placeholder": "可留空，AI 运行时协助查找"
+        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
       },
       {
         "name": "GENOME_SIZE",
-        "label": "MACS2 effective genome size",
+        "label": "MACS2 有效基因组大小",
         "defaultValue": "hs",
         "type": "text",
         "required": false,
@@ -961,7 +964,7 @@
       },
       {
         "name": "QUEUE",
-        "label": "Queue",
+        "label": "作业队列",
         "defaultValue": "q2680v2",
         "type": "select",
         "options": [
@@ -973,55 +976,56 @@
       },
       {
         "name": "THREADS",
-        "label": "Threads",
+        "label": "线程数",
         "defaultValue": "8",
         "type": "number"
       }
     ],
     "steps": [
       {
-        "title": "Read-only preflight: software, inputs and references",
-        "command": "module av BWA SAMtools Picard MACS2 FastQC BEDTools 确认可加载；ls -ld {{INPUT_DIR}} {{CONTROL_DIR}}；ls -l {{BWA_INDEX}}.sa {{REF_FA}} {{BLACKLIST}}；缺失先问用户"
+        "title": "运行前检查：软件、输入文件与参考数据",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
       },
       {
-        "title": "FastQC raw read QC",
+        "title": "原始序列质控（FastQC）",
         "command": "#BSUB -J chipseq_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
         "notes": "写成 chipseq_qc.lsf 后 bsub 提交；先看报告再决定后续"
       },
       {
-        "title": "BWA MEM alignment and sorting",
+        "title": "BWA MEM 比对与坐标排序",
         "command": "#BSUB -J chipseq_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
         "notes": "写成 chipseq_align.lsf 后 bsub 提交；单端数据只传 R1 一个文件"
       },
       {
-        "title": "Alignment filtering and PCR dedup",
+        "title": "高质量比对筛选与 PCR 重复去除",
         "command": "#BSUB -J chipseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
         "notes": "MAPQ≥30、保留正确配对、去未比对/次要比对/QC 失败 reads；fixmate + MarkDuplicates 去 PCR 重复，dup_metrics 纳入库复杂度评估"
       },
       {
-        "title": "QC: strand cross-correlation and library complexity",
+        "title": "链交叉相关性与文库复杂度质控",
         "command": "#BSUB -J chipseq_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" -savp -p {{THREADS}} -out=qc/\"${s}\".cc.qc\ndone\npython3 - <<'PY'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob(\"qc/*.cc.qc\"):\n    s = os.path.basename(cc).replace(\".cc.qc\", \"\")\n    with open(cc) as fh:\n        header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n        row = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join(\"qc\", s + \".dup_metrics.txt\")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith(\"#\") or line.startswith(\"LIBRARY\") or not line.strip():\n                    continue\n                cols = line.rstrip(\"\\n\").split(\"\\t\")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {\"NSC\": rec.get(\"NSC\"), \"RSC\": rec.get(\"RSC\"), \"NRF\": nrf}\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "达标：NSC≥1.05、RSC≥0.8、NRF≥0.8；警告：NSC 1.0-1.05、RSC 0.5-0.8、NRF 0.6-0.8；PBC≥0.8 可用 preseq 补充评估"
       },
       {
-        "title": "MACS2 narrow-peak calling and blacklist filtering",
-        "command": "#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  bedtools intersect -a peaks/\"${s}\"_peaks.narrowPeak -b {{BLACKLIST}} -v > peaks/\"${s}\".peaks.final.bed\ndone",
-        "notes": "写成 chipseq_peak.lsf 后 bsub 提交；q=0.05 为候选峰，最终集以 IDR 筛选为准；CONTROL_DIR 有去重 BAM 时自动启用对照"
+        "title": "MACS2 窄峰调用",
+        "command": "#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。"
       },
       {
-        "title": "QC: RPKM bigWig tracks, SPOT and peak snapshots",
-        "command": "#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b \"$b\" -o qc/tracks/\"${s}\".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t\"c[2]}' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes \"$b\" hotspots/\"${s}\"\n    total=$(samtools view -c \"$b\")\n    inhot=$(bedtools intersect -a \"$b\" -b hotspots/\"${s}\".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e \"${s}\\t${total}\\t${inhot}\" >> qc/spot.tsv\n  else\n    echo \"SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）\"\n  fi\ndone\npython3 - <<'PY'\nBAM_GLOB = \"*.dedup.bam\"\nBAM_SUFFIX = \".dedup.bam\"\nPEAK_DIR = \"peaks/\"\nPEAK_SUFFIX = \".peaks.final.bed\"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print(\"SKIP: 无 matplotlib，跳过峰快照绘图（%s）\" % exc)\n    sys.exit(0)\nos.makedirs(\"qc/igv\", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith(\"#\"):\n                continue\n            f = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run([\"samtools\", \"depth\", \"-a\", \"-r\", \"%s:%d-%d\" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split(\"\\t\")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color=\"#3b82f6\", lw=0)\n        ax.axvspan(start, end, color=\"#f59e0b\", alpha=0.25)\n        ax.set_title(\"%s  %s:%d-%d\" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel(\"depth\")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig(\"qc/igv/%s_%s_%d.png\" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint(\"IGV 风格峰快照产出 %d 张 → qc/igv/\" % made)\nPY",
-        "notes": "HPClaw 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）"
+        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。"
       },
       {
-        "title": "QC: FRiP and cross-replicate IDR consistency",
+        "title": "FRiP 与重复间 IDR 一致性评估",
         "command": "#BSUB -J chipseq_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c -)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\n# 重复≥2 时对真重复跑 IDR（合并池峰为 oracle）；单重复改用自我伪重复 IDR\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ \"${#PK[@]}\" -lt 2 ]; then\n  echo \"SKIP: 需要至少 2 个重复 peaks 才能算 IDR\"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples \"${PK[0]}\" \"${PK[1]}\" ${POOL:+--peak-list \"$POOL\"} --input-file-type narrowPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists(\"idr/idr.txt\"):\n    n_idr = 0\n    with open(\"idr/idr.txt\") as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc[\"_idr\"] = {\"peaks_global_idr_lt_0.05\": n_idr, \"rule\": \"Np(伪重复)/Nt(真重复) < 2 达标，>= 2 判重复间不一致\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "达标：FRiP≥1%、IDR Np/Nt<2（global IDR<0.05 计 Nt）；警告：FRiP 0.5-1%；idr 包缺失时先 module av 或问用户安装方式"
       },
       {
-        "title": "Generate analysis report",
-        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
-        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
+        "title": "生成中文分析与质控报告",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language zh --assay chip-tf\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。"
       }
     ],
     "manifest": {
@@ -1063,8 +1067,8 @@
         },
         {
           "name": "hotspot2",
-          "checkCmd": "command -v hotspot2",
-          "required": false
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
         },
         {
           "name": "phantompeakqualtools (run_spp.R)",
@@ -1093,38 +1097,32 @@
           "required": false
         },
         {
-          "name": "ENCODE blacklist BED",
-          "path": "{{BLACKLIST}}",
-          "type": "other",
-          "source": "可留空：AI 运行时协助按基因组版本下载（ENCODE blacklist）",
-          "required": false
+          "name": "转录起始位点（TSS）注释 BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "required": true
         }
       ],
       "inputHint": "Paired-end ChIP-seq FASTQ directory, plus an Input/IgG control directory",
       "qcGates": [
         {
-          "afterStep": 2,
-          "metric": "FastQC 碱基质量与接头含量",
-          "pass": "Q30 >80%，接头含量 <5%",
-          "warn": "Q30 70-80% 或接头 5-15%"
-        },
-        {
-          "afterStep": 4,
-          "metric": "比对率与去重后保留率",
-          "pass": "比对率 >80%，去重后保留 >50%",
-          "warn": "比对率 60-80% 或重复率 >70%"
-        },
-        {
           "afterStep": 5,
-          "metric": "链相关与库复杂度",
+          "metric": "链交叉相关性与文库复杂度",
           "pass": "NSC≥1.05、RSC≥0.8、NRF≥0.8",
-          "warn": "NSC 1.0-1.05、RSC 0.5-0.8 或 NRF 0.6-0.8"
+          "warn": "任一关键指标低于阈值时标记文库质控失败"
+        },
+        {
+          "afterStep": 7,
+          "metric": "SPOT 与 TSS 富集曲线",
+          "pass": "SPOT 值与 TSS 富集曲线均成功产出",
+          "warn": "任一产物缺失时标记文库质控失败"
         },
         {
           "afterStep": 8,
           "metric": "FRiP 与重复间 IDR",
-          "pass": "FRiP≥1%，Np/Nt<2",
-          "warn": "FRiP 0.5-1%"
+          "pass": "FRiP≥1%，IDR rescue ratio<2",
+          "warn": "FRiP<1% 或 IDR 不一致时标记文库质控失败"
         }
       ]
     },
@@ -1135,7 +1133,7 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "native-encode-v1"
+      "importerVersion": "chromatin-qc-bilingual-v2"
     },
     "source": "builtin",
     "createdAt": 1790436106318,
@@ -1144,14 +1142,14 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
   {
     "id": "encode-chipseq-histone",
-    "name": "ENCODE Histone ChIP-seq Analysis & QC Pipeline",
-    "description": "ENCODE histone ChIP-seq pipeline: BWA MEM alignment → filter/dedup → SPP/GEM broad peaks → blacklist removal → cross-replicate IDR consistency.",
+    "name": "ENCODE 组蛋白修饰 ChIP-seq 分析与质控流程（中文版）",
+    "description": "参照 ENCODE 组蛋白修饰 ChIP-seq 分析框架：比对、过滤去重、链交叉相关性、SPP 宽峰、FRiP 与 IDR；扩展输出 SPOT 值和 TSS 富集曲线。",
     "keywords": [
       "encode",
       "chipseq",
@@ -1163,52 +1161,55 @@
       "宽峰",
       "spp",
       "idr",
-      "质控"
+      "质控",
+      "SPOT",
+      "TSS 富集",
+      "文库质控",
+      "中文版"
     ],
     "params": [
       {
         "name": "INPUT_DIR",
-        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "label": "原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）",
         "type": "path"
       },
       {
         "name": "CONTROL_DIR",
-        "label": "Control FASTQ directory (Input/IgG)",
+        "label": "Input/IgG 对照文库目录",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助确认"
       },
       {
         "name": "BWA_INDEX",
-        "label": "BWA index prefix",
+        "label": "BWA 参考基因组索引前缀",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找或构建"
       },
       {
         "name": "REF_FA",
-        "label": "Reference genome FASTA",
+        "label": "参考基因组 FASTA",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找"
       },
       {
-        "name": "BLACKLIST",
-        "label": "ENCODE blacklist BED",
+        "name": "TSS_BED",
+        "label": "转录起始位点（TSS）注释 BED",
         "type": "path",
-        "required": false,
-        "placeholder": "可留空，AI 运行时协助查找"
+        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
       },
       {
         "name": "GENOME_SIZE",
-        "label": "MACS2 effective genome size (used by the broad-peak path)",
+        "label": "MACS2 有效基因组大小",
         "defaultValue": "hs",
         "type": "text",
         "required": false
       },
       {
         "name": "QUEUE",
-        "label": "Queue",
+        "label": "作业队列",
         "defaultValue": "q2680v2",
         "type": "select",
         "options": [
@@ -1220,55 +1221,56 @@
       },
       {
         "name": "THREADS",
-        "label": "Threads",
+        "label": "线程数",
         "defaultValue": "8",
         "type": "number"
       }
     ],
     "steps": [
       {
-        "title": "Read-only preflight: software, inputs and references",
-        "command": "module av BWA SAMtools Picard FastQC BEDTools 确认可加载；ls -ld {{INPUT_DIR}} {{CONTROL_DIR}}；ls -l {{BWA_INDEX}}.sa {{REF_FA}} {{BLACKLIST}}；缺失先问用户"
+        "title": "运行前检查：软件、输入文件与参考数据",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
       },
       {
-        "title": "FastQC raw read QC",
+        "title": "原始序列质控（FastQC）",
         "command": "#BSUB -J histone_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
         "notes": "写成 histone_qc.lsf 后 bsub 提交；先看报告再决定后续"
       },
       {
-        "title": "BWA MEM alignment and sorting",
+        "title": "BWA MEM 比对与坐标排序",
         "command": "#BSUB -J histone_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
         "notes": "写成 histone_align.lsf 后 bsub 提交；单端数据只传 R1 一个文件"
       },
       {
-        "title": "Alignment filtering and PCR dedup",
+        "title": "高质量比对筛选与 PCR 重复去除",
         "command": "#BSUB -J histone_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
         "notes": "MAPQ≥30、保留正确配对、去未比对/次要比对/QC 失败 reads；fixmate + MarkDuplicates 去 PCR 重复"
       },
       {
-        "title": "QC: strand cross-correlation and library complexity",
+        "title": "链交叉相关性与文库复杂度质控",
         "command": "#BSUB -J histone_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" -savp -p {{THREADS}} -out=qc/\"${s}\".cc.qc\ndone\npython3 - <<'PY'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob(\"qc/*.cc.qc\"):\n    s = os.path.basename(cc).replace(\".cc.qc\", \"\")\n    with open(cc) as fh:\n        header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n        row = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join(\"qc\", s + \".dup_metrics.txt\")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith(\"#\") or line.startswith(\"LIBRARY\") or not line.strip():\n                    continue\n                cols = line.rstrip(\"\\n\").split(\"\\t\")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {\"NSC\": rec.get(\"NSC\"), \"RSC\": rec.get(\"RSC\"), \"NRF\": nrf}\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "达标：NSC≥1.05、RSC≥0.8、NRF≥0.8；警告：NSC 1.0-1.05、RSC 0.5-0.8、NRF 0.6-0.8"
       },
       {
-        "title": "SPP broad-peak calling and blacklist filtering",
-        "command": "#BSUB -J histone_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" ${CTRL:+-i=\"$CTRL\"} -npeak=300000 -odir=peaks -speak=peaks/\"${s}\" -savp -rf\n  zcat peaks/\"${s}\".regionPeak.gz > peaks/\"${s}\".regionPeak\n  bedtools intersect -a peaks/\"${s}\".regionPeak -b {{BLACKLIST}} -v > peaks/\"${s}\".peaks.final.bed\ndone",
-        "notes": "写成 histone_peak.lsf 后 bsub 提交；SPP 宽峰适合 H3K27ac/H3K36me3 等宽域修饰；备选：macs2 callpeak --broad --broad-cutoff 0.1（需 MACS2 与 {{GENOME_SIZE}}）或 GEM"
+        "title": "SPP 宽峰调用",
+        "command": "#BSUB -J histone_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" ${CTRL:+-i=\"$CTRL\"} -npeak=300000 -odir=peaks -speak=peaks/\"${s}\" -savp -rf\n  zcat peaks/\"${s}\".regionPeak.gz > peaks/\"${s}\".regionPeak\n  cp peaks/\"${s}\".regionPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。"
       },
       {
-        "title": "QC: RPKM bigWig tracks, SPOT and peak snapshots",
-        "command": "#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b \"$b\" -o qc/tracks/\"${s}\".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t\"c[2]}' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes \"$b\" hotspots/\"${s}\"\n    total=$(samtools view -c \"$b\")\n    inhot=$(bedtools intersect -a \"$b\" -b hotspots/\"${s}\".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e \"${s}\\t${total}\\t${inhot}\" >> qc/spot.tsv\n  else\n    echo \"SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）\"\n  fi\ndone\npython3 - <<'PY'\nBAM_GLOB = \"*.dedup.bam\"\nBAM_SUFFIX = \".dedup.bam\"\nPEAK_DIR = \"peaks/\"\nPEAK_SUFFIX = \".peaks.final.bed\"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print(\"SKIP: 无 matplotlib，跳过峰快照绘图（%s）\" % exc)\n    sys.exit(0)\nos.makedirs(\"qc/igv\", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith(\"#\"):\n                continue\n            f = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run([\"samtools\", \"depth\", \"-a\", \"-r\", \"%s:%d-%d\" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split(\"\\t\")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color=\"#3b82f6\", lw=0)\n        ax.axvspan(start, end, color=\"#f59e0b\", alpha=0.25)\n        ax.set_title(\"%s  %s:%d-%d\" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel(\"depth\")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig(\"qc/igv/%s_%s_%d.png\" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint(\"IGV 风格峰快照产出 %d 张 → qc/igv/\" % made)\nPY",
-        "notes": "HPClaw 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）"
+        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。"
       },
       {
-        "title": "QC: FRiP and cross-replicate IDR consistency",
+        "title": "FRiP 与重复间 IDR 一致性评估",
         "command": "#BSUB -J histone_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c -)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ \"${#PK[@]}\" -lt 2 ]; then\n  echo \"SKIP: 需要至少 2 个重复 peaks 才能算 IDR\"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples \"${PK[0]}\" \"${PK[1]}\" ${POOL:+--peak-list \"$POOL\"} --input-file-type broadPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists(\"idr/idr.txt\"):\n    n_idr = 0\n    with open(\"idr/idr.txt\") as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc[\"_idr\"] = {\"peaks_global_idr_lt_0.05\": n_idr, \"rule\": \"Np(伪重复)/Nt(真重复) < 2 达标，>= 2 判重复间不一致\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "达标：FRiP≥1%、IDR Np/Nt<2；警告：FRiP 0.5-1%；重复≥2 用真重复 IDR，单重复用伪重复 IDR"
       },
       {
-        "title": "Generate analysis report",
-        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
-        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
+        "title": "生成中文分析与质控报告",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language zh --assay chip-histone\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。"
       }
     ],
     "manifest": {
@@ -1305,8 +1307,8 @@
         },
         {
           "name": "hotspot2",
-          "checkCmd": "command -v hotspot2",
-          "required": false
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
         },
         {
           "name": "phantompeakqualtools (run_spp.R, broad mode)",
@@ -1345,38 +1347,32 @@
           "required": false
         },
         {
-          "name": "ENCODE blacklist BED",
-          "path": "{{BLACKLIST}}",
-          "type": "other",
-          "source": "可留空：AI 运行时协助按基因组版本下载（ENCODE blacklist）",
-          "required": false
+          "name": "转录起始位点（TSS）注释 BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "required": true
         }
       ],
       "inputHint": "Paired-end histone ChIP-seq FASTQ directory, plus an Input/IgG control directory",
       "qcGates": [
         {
-          "afterStep": 2,
-          "metric": "FastQC 碱基质量与接头含量",
-          "pass": "Q30 >80%，接头含量 <5%",
-          "warn": "Q30 70-80% 或接头 5-15%"
-        },
-        {
-          "afterStep": 4,
-          "metric": "比对率与去重后保留率",
-          "pass": "比对率 >80%，去重后保留 >50%",
-          "warn": "比对率 60-80% 或重复率 >70%"
-        },
-        {
           "afterStep": 5,
-          "metric": "链相关与库复杂度",
+          "metric": "链交叉相关性与文库复杂度",
           "pass": "NSC≥1.05、RSC≥0.8、NRF≥0.8",
-          "warn": "NSC 1.0-1.05、RSC 0.5-0.8 或 NRF 0.6-0.8"
+          "warn": "任一关键指标低于阈值时标记文库质控失败"
+        },
+        {
+          "afterStep": 7,
+          "metric": "SPOT 与 TSS 富集曲线",
+          "pass": "SPOT 值与 TSS 富集曲线均成功产出",
+          "warn": "任一产物缺失时标记文库质控失败"
         },
         {
           "afterStep": 8,
           "metric": "FRiP 与重复间 IDR",
-          "pass": "FRiP≥1%，Np/Nt<2",
-          "warn": "FRiP 0.5-1%"
+          "pass": "FRiP≥1%，IDR rescue ratio<2",
+          "warn": "FRiP<1% 或 IDR 不一致时标记文库质控失败"
         }
       ]
     },
@@ -1387,7 +1383,7 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "native-encode-v1"
+      "importerVersion": "chromatin-qc-bilingual-v2"
     },
     "source": "builtin",
     "createdAt": 1790436106318,
@@ -1396,7 +1392,7 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
@@ -1614,14 +1610,14 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
   {
     "id": "encode-atacseq",
-    "name": "ENCODE ATAC-seq Analysis & QC Pipeline",
-    "description": "ENCODE ATAC-seq pipeline: FastQC → Bowtie2 alignment → filtering (organelle removal, MAPQ≥30, dedup, blacklist) → Tn5 shift correction → MACS2 peaks → TSS enrichment and fragment-size distribution.",
+    "name": "ENCODE ATAC-seq 染色质可及性分析与质控流程（中文版）",
+    "description": "参照 ENCODE ATAC-seq 分析框架：Bowtie2 比对、细胞器序列去除、高质量比对筛选与去重、Tn5 插入位点校正、MACS2 开放染色质峰调用，并输出 FRiP、SPOT、TSS 富集曲线和片段长度分布。",
     "keywords": [
       "encode",
       "atacseq",
@@ -1632,52 +1628,48 @@
       "tss富集",
       "frip",
       "tn5",
-      "质控"
+      "质控",
+      "SPOT",
+      "TSS 富集",
+      "文库质控",
+      "中文版"
     ],
     "params": [
       {
         "name": "INPUT_DIR",
-        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "label": "原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）",
         "type": "path"
       },
       {
         "name": "BOWTIE2_INDEX",
-        "label": "Bowtie2 index prefix",
+        "label": "Bowtie2 参考基因组索引前缀",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找或构建"
       },
       {
         "name": "REF_FA",
-        "label": "Reference genome FASTA",
-        "type": "path",
-        "required": false,
-        "placeholder": "可留空，AI 运行时协助查找"
-      },
-      {
-        "name": "BLACKLIST",
-        "label": "ENCODE blacklist BED",
+        "label": "参考基因组 FASTA",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找"
       },
       {
         "name": "TSS_BED",
-        "label": "TSS annotation BED (for TSS enrichment)",
+        "label": "转录起始位点（TSS）注释 BED",
         "type": "path",
-        "required": false,
-        "placeholder": "可留空，AI 运行时协助由 GTF 生成"
+        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
       },
       {
         "name": "GENOME_SIZE",
-        "label": "MACS2 effective genome size",
+        "label": "MACS2 有效基因组大小",
         "defaultValue": "hs",
         "type": "text",
         "required": false
       },
       {
         "name": "ORGANELLE_REGEX",
-        "label": "Organelle chromosome pattern (mitochondria + chloroplast)",
+        "label": "细胞器染色体名称模式（线粒体+叶绿体）",
         "defaultValue": "chrM|chrMT|chrC|chrPt|ChrM|ChrMt|ChrC|ChrPt|mitochondria|chloroplast|plastid",
         "type": "text",
         "required": false,
@@ -1685,7 +1677,7 @@
       },
       {
         "name": "QUEUE",
-        "label": "Queue",
+        "label": "作业队列",
         "defaultValue": "q2680v2",
         "type": "select",
         "options": [
@@ -1697,45 +1689,46 @@
       },
       {
         "name": "THREADS",
-        "label": "Threads",
+        "label": "线程数",
         "defaultValue": "8",
         "type": "number"
       }
     ],
     "steps": [
       {
-        "title": "Read-only preflight: software, inputs and references",
-        "command": "module av FastQC Bowtie2 MACS2 SAMtools Picard deepTools BEDTools 确认可加载；ls -ld {{INPUT_DIR}}；ls -l {{BOWTIE2_INDEX}}.1.bt2 {{REF_FA}} {{BLACKLIST}} {{TSS_BED}}；缺失先问用户"
+        "title": "运行前检查：软件、输入文件与参考数据",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
       },
       {
-        "title": "FastQC raw read QC",
+        "title": "原始序列质控（FastQC）",
         "command": "#BSUB -J atac_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
         "notes": "写成 atac_qc.lsf 后 bsub 提交；先看报告再决定后续"
       },
       {
-        "title": "Bowtie2 alignment and sorting",
+        "title": "Bowtie2 比对与坐标排序",
         "command": "#BSUB -J atac_align -n {{THREADS}} -q {{QUEUE}}\nmodule load Bowtie2/2.4.5 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bowtie2 -p {{THREADS}} -X 2000 --very-sensitive -x {{BOWTIE2_INDEX}} -1 \"$i\" -2 \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
         "notes": "写成 atac_align.lsf 后 bsub 提交；-X 2000 允许长片段"
       },
       {
-        "title": "Filtering (organelle/mito+chloroplast removal, MAPQ≥30, dedup, blacklist)",
-        "command": "#BSUB -J atac_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  total=$(samtools view -c \"$b\")\n  mito=$(samtools view \"$b\" | grep -cE 'chrM|chrMT|ChrM|ChrMt|mitochondria' || true)\n  chloro=$(samtools view \"$b\" | grep -cE 'chrC|chrPt|ChrC|ChrPt|chloroplast|plastid' || true)\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then org=$(samtools view \"$b\" | grep -cE \"{{ORGANELLE_REGEX}}\" || true); else org=0; fi\n  echo -e \"${s}\\t${total}\\t${mito}\\t${chloro}\\t${org}\" >> qc/organelle.tsv\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then\n    samtools view -@ {{THREADS}} -h -q 30 -F 1804 \"$b\" | { grep -vE \"{{ORGANELLE_REGEX}}\" || true; } | samtools view -@ {{THREADS}} -b - > \"${s}.noorg.bam\"\n  else\n    samtools view -@ {{THREADS}} -b -q 30 -F 1804 \"$b\" > \"${s}.noorg.bam\"\n  fi\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.noorg.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  bedtools intersect -a \"${s}.dedup.bam\" -b {{BLACKLIST}} -v > \"${s}.final.bam\"\n  samtools index \"${s}.final.bam\"\ndone",
-        "notes": "ENCODE 原版只去线粒体（chrM）；植物样本必须同时去叶绿体——去除模式由 ORGANELLE_REGEX 全局参数控制（默认覆盖线粒体/叶绿体常见命名，清空则保留细胞器 reads）。MAPQ≥30、去未比对/次要/QC 失败 reads；MarkDuplicates 去重；bedtools 去黑名单；organelle.tsv 记录线粒体/叶绿体/合计占比"
+        "title": "细胞器序列去除、高质量比对筛选与去重",
+        "command": "#BSUB -J atac_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  total=$(samtools view -c \"$b\")\n  mito=$(samtools view \"$b\" | grep -cE 'chrM|chrMT|ChrM|ChrMt|mitochondria' || true)\n  chloro=$(samtools view \"$b\" | grep -cE 'chrC|chrPt|ChrC|ChrPt|chloroplast|plastid' || true)\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then org=$(samtools view \"$b\" | grep -cE \"{{ORGANELLE_REGEX}}\" || true); else org=0; fi\n  echo -e \"${s}\\t${total}\\t${mito}\\t${chloro}\\t${org}\" >> qc/organelle.tsv\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then\n    samtools view -@ {{THREADS}} -h -q 30 -F 1804 \"$b\" | { grep -vE \"{{ORGANELLE_REGEX}}\" || true; } | samtools view -@ {{THREADS}} -b - > \"${s}.noorg.bam\"\n  else\n    samtools view -@ {{THREADS}} -b -q 30 -F 1804 \"$b\" > \"${s}.noorg.bam\"\n  fi\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.noorg.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  cp \"${s}.dedup.bam\" \"${s}.final.bam\"\n  samtools index \"${s}.final.bam\"\ndone",
+        "notes": "去除线粒体/叶绿体序列、低质量比对、次要比对、质控失败 reads 和 PCR 重复。"
       },
       {
-        "title": "Tn5 shift correction and MACS2 peak calling",
+        "title": "Tn5 插入位点校正与 MACS2 开放染色质峰调用",
         "command": "#BSUB -J atac_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 MACS2/2.2.7.1 SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p peaks\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  alignmentSieve -b \"$b\" -o \"${s}.shifted.bam\" --ATACshift --numberOfProcessors {{THREADS}}\n  samtools index \"${s}.shifted.bam\"\n  macs2 callpeak -t \"${s}.shifted.bam\" -f BAMPE -n \"${s}\" -g {{GENOME_SIZE}} --nomodel --shift -75 --extsize 150 -q 0.01 --outdir peaks\ndone",
         "notes": "Tn5 偏移 +4/-5 bp 由 alignmentSieve --ATACshift 完成；无 deepTools 时在 BED 层平移替代"
       },
       {
-        "title": "QC: TSS enrichment, FRiP, SPOT, signal tracks and peak snapshots",
-        "command": "#BSUB -J atac_tss_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 Picard/2.27.4 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc qc/tracks qc/igv\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bamCoverage -b \"$b\" -o qc/tracks/\"${s}\".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point -S \"${s}\".bw -R {{TSS_BED}} -a 2000 -b 2000 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t\"c[2]}' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes \"$b\" hotspots/\"${s}\"\n    inhot=$(bedtools intersect -a \"$b\" -b hotspots/\"${s}\".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e \"${s}\\t${total}\\t${inhot}\" >> qc/spot.tsv\n  else\n    echo \"SKIP: hotspot2 不可用，跳过 SPOT（FRiP 已覆盖类似信息；module load 或一键部署 hotspot2 即可启用）\"\n  fi\ndone\npython3 - <<'PY'\nBAM_GLOB = \"*.final.bam\"\nBAM_SUFFIX = \".final.bam\"\nPEAK_DIR = \"peaks/\"\nPEAK_SUFFIX = \"_peaks.narrowPeak\"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print(\"SKIP: 无 matplotlib，跳过峰快照绘图（%s）\" % exc)\n    sys.exit(0)\nos.makedirs(\"qc/igv\", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith(\"#\"):\n                continue\n            f = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run([\"samtools\", \"depth\", \"-a\", \"-r\", \"%s:%d-%d\" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split(\"\\t\")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color=\"#3b82f6\", lw=0)\n        ax.axvspan(start, end, color=\"#f59e0b\", alpha=0.25)\n        ax.set_title(\"%s  %s:%d-%d\" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel(\"depth\")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig(\"qc/igv/%s_%s_%d.png\" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint(\"IGV 风格峰快照产出 %d 张 → qc/igv/\" % made)\nPY\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/organelle.tsv\"):\n    with open(\"qc/organelle.tsv\") as fh:\n        for line in fh:\n            parts = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(parts) < 5:\n                continue\n            s, total, mito, chloro, org = parts[:5]\n            if int(total):\n                entry = qc.setdefault(s, {})\n                entry[\"mito_rate\"] = round(int(mito) / int(total), 4)\n                entry[\"chloro_rate\"] = round(int(chloro) / int(total), 4)\n                entry[\"organelle_rate\"] = round(int(org) / int(total), 4)\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc.setdefault(s, {})[\"FRiP\"] = round(int(inpeak) / int(total), 4) if int(total) else None\nif os.path.exists(\"qc/spot.tsv\"):\n    with open(\"qc/spot.tsv\") as fh:\n        for line in fh:\n            s, total, inhot = line.rstrip(\"\\n\").split(\"\\t\")\n            qc.setdefault(s, {})[\"SPOT\"] = round(int(inhot) / int(total), 4) if int(total) else None\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
-        "notes": "达标：TSS enrichment >6（>10 理想）、FRiP≥0.2、SPOT≥0.3（hotspot2 可用时才计算，缺失自动 SKIP）、NRF>0.8、细胞器（线粒体+叶绿体）占比 <20%；TSS 分数取 tss.mat.gz 中心/侧翼均值比；insert_size 图应呈核小体周期性；RPKM bigWig 在 qc/tracks/，随机 5 个峰的 IGV 风格快照在 qc/igv/（需 matplotlib，缺失自动 SKIP）"
+        "title": "质控：TSS 富集曲线、FRiP、SPOT、片段长度分布与信号轨迹",
+        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.2 6 <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "ATAC-seq 关键信噪指标：TSS 富集分数≥6、FRiP≥0.2；同时必须产出 Hotspot2 SPOT 值和 TSS 富集曲线。未达标时 qc/library_verdict.tsv 直接标记 FAILED 并列出未达标指标。"
       },
       {
-        "title": "Generate analysis report",
-        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
-        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
+        "title": "生成中文分析与质控报告",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language zh --assay atac\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。"
       }
     ],
     "manifest": {
@@ -1777,8 +1770,8 @@
         },
         {
           "name": "hotspot2",
-          "checkCmd": "command -v hotspot2",
-          "required": false
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
         }
       ],
       "references": [
@@ -1797,39 +1790,26 @@
           "required": false
         },
         {
-          "name": "ENCODE blacklist BED",
-          "path": "{{BLACKLIST}}",
-          "type": "other",
-          "source": "可留空：AI 运行时协助按基因组版本下载（ENCODE blacklist）",
-          "required": false
-        },
-        {
-          "name": "TSS annotation BED",
+          "name": "转录起始位点（TSS）注释 BED",
           "path": "{{TSS_BED}}",
           "type": "annotation",
-          "source": "可留空：AI 运行时协助由基因注释 GTF 生成",
-          "required": false
+          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "required": true
         }
       ],
       "inputHint": "Paired-end ATAC-seq FASTQ directory",
       "qcGates": [
         {
-          "afterStep": 2,
-          "metric": "FastQC 碱基质量与接头含量",
-          "pass": "Q30 >80%，接头含量 <5%",
-          "warn": "Q30 70-80% 或接头 5-15%"
-        },
-        {
           "afterStep": 4,
-          "metric": "比对率与细胞器 reads 占比",
-          "pass": "比对率 >80%，线粒体+叶绿体占比 <20%",
-          "warn": "细胞器占比 20-50%（植物样本叶绿体高时先确认 ORGANELLE_REGEX 已覆盖）"
+          "metric": "高质量比对率与细胞器序列占比",
+          "pass": "高质量比对率达到项目标准，线粒体+叶绿体占比<20%",
+          "warn": "任一关键指标低于阈值时标记文库质控失败"
         },
         {
           "afterStep": 6,
           "metric": "TSS 富集、FRiP 与 SPOT",
-          "pass": "TSS enrichment >6，FRiP≥0.2，SPOT≥0.3（需 hotspot2）",
-          "warn": "TSS 4-6 或 FRiP 0.1-0.2 或 SPOT 0.2-0.3"
+          "pass": "TSS 富集分数≥6、FRiP≥0.2，且 SPOT/TSS 曲线产物完整",
+          "warn": "任一必需指标缺失或低于阈值时标记文库质控失败"
         }
       ]
     },
@@ -1840,7 +1820,7 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "native-encode-v1"
+      "importerVersion": "chromatin-qc-bilingual-v2"
     },
     "source": "builtin",
     "createdAt": 1790436106318,
@@ -1849,7 +1829,7 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
@@ -14792,8 +14772,8 @@
   },
   {
     "id": "builtin-dapseq-tf",
-    "name": "DAP-seq 转录因子结合分析流程",
-    "description": "DAP-seq（DNA 亲和纯化测序）标准分析：FastQC → BWA MEM 比对 → 过滤去重（MAPQ≥30、MarkDuplicates）→ MACS2 窄峰（以裸 gDNA 文库为对照）→ 黑名单过滤 → FRiP/指纹图 QC → 基序富集与峰基因注释。",
+    "name": "DAP-seq 转录因子结合位点分析与质控流程（中文版）",
+    "description": "DAP-seq 标准分析：原始序列质控、BWA MEM 比对、高质量比对筛选与去重、以裸 gDNA 文库为阴性对照的 MACS2 窄峰调用，并输出 FRiP、SPOT、TSS 富集曲线、信号轨迹、基序富集和峰关联基因。",
     "keywords": [
       "dapseq",
       "dap-seq",
@@ -14807,52 +14787,55 @@
       "frip",
       "植物",
       "wheat",
-      "体外亲和"
+      "体外亲和",
+      "SPOT",
+      "TSS 富集",
+      "文库质控",
+      "中文版"
     ],
     "params": [
       {
         "name": "INPUT_DIR",
-        "label": "DAP 文库 FASTQ 目录（*_R1.fq.gz / *_R2.fq.gz）",
+        "label": "原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）",
         "type": "path"
       },
       {
         "name": "CONTROL_DIR",
-        "label": "裸 gDNA 对照文库目录（不加 TF 的阴性对照）",
+        "label": "裸 gDNA 阴性对照文库目录",
         "type": "path",
         "required": false,
         "placeholder": "强烈建议提供；可留空由 AI 运行时确认"
       },
       {
         "name": "BWA_INDEX",
-        "label": "BWA index prefix",
+        "label": "BWA 参考基因组索引前缀",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找或构建"
       },
       {
         "name": "REF_FA",
-        "label": "Reference genome FASTA",
+        "label": "参考基因组 FASTA",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找"
       },
       {
-        "name": "BLACKLIST",
-        "label": "黑名单区域 BED（可选）",
+        "name": "TSS_BED",
+        "label": "转录起始位点（TSS）注释 BED",
         "type": "path",
-        "required": false,
-        "placeholder": "可留空跳过黑名单过滤"
+        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
       },
       {
         "name": "GENES_BED",
-        "label": "基因注释 BED/GFF（峰到基因注释用）",
+        "label": "基因注释 BED/GFF",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助从公共库匹配"
       },
       {
         "name": "GENOME_SIZE",
-        "label": "MACS2 effective genome size",
+        "label": "MACS2 有效基因组大小",
         "defaultValue": "hs",
         "type": "text",
         "required": false,
@@ -14860,14 +14843,14 @@
       },
       {
         "name": "MOTIF_DB",
-        "label": "基序数据库（MEME 格式，如 JASPAR 植物）",
+        "label": "MEME 格式基序数据库",
         "type": "path",
         "required": false,
         "placeholder": "可留空跳过 AME 基序富集"
       },
       {
         "name": "QUEUE",
-        "label": "Queue",
+        "label": "作业队列",
         "defaultValue": "q2680v2",
         "type": "select",
         "options": [
@@ -14879,50 +14862,51 @@
       },
       {
         "name": "THREADS",
-        "label": "Threads",
+        "label": "线程数",
         "defaultValue": "8",
         "type": "number"
       }
     ],
     "steps": [
       {
-        "title": "Read-only preflight: software, inputs and references",
-        "command": "module av BWA SAMtools Picard MACS2 FastQC BEDTools deepTools 确认可加载；ls -ld {{INPUT_DIR}} {{CONTROL_DIR}}；ls -l {{BWA_INDEX}}.sa {{REF_FA}} {{GENES_BED}}；缺失先问用户"
+        "title": "运行前检查：软件、输入文件与参考数据",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。"
       },
       {
-        "title": "FastQC raw read QC",
+        "title": "原始序列质控（FastQC）",
         "command": "#BSUB -J dapseq_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
-        "notes": "写成 dapseq_qc.lsf 后 bsub 提交；先看报告再决定后续"
+        "notes": "检查碱基质量、接头残留和序列含量分布。"
       },
       {
-        "title": "BWA MEM alignment and sorting",
+        "title": "BWA MEM 比对与坐标排序",
         "command": "#BSUB -J dapseq_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
-        "notes": "写成 dapseq_align.lsf 后 bsub 提交；单端数据只传 R1 一个文件；对照文库（CONTROL_DIR）同样跑一遍本步"
+        "notes": "实验文库和裸 gDNA 对照文库需采用相同参数处理。"
       },
       {
-        "title": "Alignment filtering and PCR dedup",
+        "title": "高质量比对筛选与 PCR 重复去除",
         "command": "#BSUB -J dapseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
-        "notes": "MAPQ≥30、保留正确配对；DAP-seq 文库 PCR 重复率通常高于 ChIP-seq，dup_metrics 纳入评估"
+        "notes": "MAPQ≥30；保留正确配对并去除未比对、次要比对、质控失败和 PCR 重复 reads。"
       },
       {
-        "title": "MACS2 narrow-peak calling（裸 gDNA 对照）and blacklist filtering",
-        "command": "#BSUB -J dapseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  if [ -s {{BLACKLIST}} ]; then\n    bedtools intersect -a peaks/\"${s}\"_peaks.narrowPeak -b {{BLACKLIST}} -v > peaks/\"${s}\".peaks.final.bed\n  else\n    cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\n  fi\ndone",
-        "notes": "DAP-seq 必须以未加 TF 的裸 gDNA 文库为对照；无对照时结果仅供探索，报告中必须注明"
+        "title": "MACS2 窄峰调用（裸 gDNA 阴性对照）",
+        "command": "#BSUB -J dapseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "裸 gDNA 对照是 DAP-seq 背景校正的关键；候选峰供后续富集质控与注释。"
       },
       {
-        "title": "QC: FRiP、RPKM bigWig tracks 与对照指纹图",
-        "command": "#BSUB -J dapseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b \"$b\" -o qc/tracks/\"${s}\".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\nCTRL_BAM=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nif [ -n \"$CTRL_BAM\" ]; then\n  plotFingerprint -b *.dedup.bam \"$CTRL_BAM\" -p {{THREADS}} -o qc/fingerprint.png --plotFileFormat png\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nwith open(\"qc/frip_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
-        "notes": "DAP-seq 的 FRiP 通常显著高于 ChIP-seq（无染色质背景）；指纹图用于确认处理与裸 DNA 对照的富集分离"
+        "title": "扩展质控：FRiP、SPOT、TSS 富集曲线与信号轨迹",
+        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线作为促进子附近信号的扩展诊断，不作为 DAP-seq 的 ENCODE 强制门槛。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED 及未达标指标。"
       },
       {
-        "title": "基序富集与峰基因注释",
+        "title": "基序富集与峰关联基因注释",
         "command": "#BSUB -J dapseq_motif -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0 SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p motif annotation\nfor p in peaks/*.peaks.final.bed; do\n  s=$(basename \"$p\" .peaks.final.bed)\n  awk -F'\\t' '{c=$2+int(($3-$2)/2); print $1\"\\t\"(c-100>0?c-100:0)\"\\t\"c+100}' \"$p\" > motif/\"${s}\".summits200.bed\n  bedtools getfasta -fi {{REF_FA}} -bed motif/\"${s}\".summits200.bed -fo motif/\"${s}\".summits200.fa\n  if [ -s {{MOTIF_DB}} ] && command -v ame >/dev/null 2>&1; then\n    ame --oc motif/\"${s}\"_ame --control --shuffle-- {{MOTIF_DB}} motif/\"${s}\".summits200.fa\n  else\n    echo \"SKIP: 未提供 MOTIF_DB 或无 MEME Suite（ame），跳过基序富集\"\n  fi\n  if [ -s {{GENES_BED}} ]; then\n    bedtools closest -a \"$p\" -b {{GENES_BED}} -D ref > annotation/\"${s}\".nearest_gene.tsv\n  else\n    echo \"SKIP: 未提供 GENES_BED，跳过峰基因注释\"\n  fi\ndone",
         "notes": "取峰中心 ±100bp 做基序富集（AME，对照用打乱序列）；AME 依赖 MEME Suite（可选）；注释用 bedtools closest 找最近基因及距离"
       },
       {
-        "title": "Generate analysis report",
-        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
-        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件"
+        "title": "生成中文分析与质控报告",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language zh --assay dap\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。"
       }
     ],
     "manifest": {
@@ -14966,6 +14950,11 @@
           "name": "MEME Suite (ame)",
           "checkCmd": "command -v ame",
           "required": false
+        },
+        {
+          "name": "Hotspot2",
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
         }
       ],
       "references": [
@@ -14984,13 +14973,6 @@
           "required": false
         },
         {
-          "name": "黑名单 BED（可选）",
-          "path": "{{BLACKLIST}}",
-          "type": "other",
-          "source": "可留空跳过黑名单过滤",
-          "required": false
-        },
-        {
           "name": "基因注释 BED/GFF",
           "path": "{{GENES_BED}}",
           "type": "annotation",
@@ -15003,27 +14985,28 @@
           "type": "other",
           "source": "可留空跳过基序富集；植物推荐 JASPAR CORE Plants",
           "required": false
+        },
+        {
+          "name": "转录起始位点（TSS）注释 BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "required": true
         }
       ],
       "inputHint": "DAP 文库双端 FASTQ 目录 + 裸 gDNA 对照文库目录（未加 TF 的阴性对照）",
       "qcGates": [
         {
-          "afterStep": 2,
-          "metric": "FastQC 碱基质量与接头含量",
-          "pass": "Q30 >80%，接头含量 <5%",
-          "warn": "Q30 70-80% 或接头 5-15%"
-        },
-        {
           "afterStep": 4,
-          "metric": "比对率与去重后保留率",
-          "pass": "比对率 >80%，去重后保留 >40%",
-          "warn": "比对率 60-80% 或重复率 >80%（DAP 文库重复率偏高需关注）"
+          "metric": "比对质量与文库复杂度",
+          "pass": "高质量比对率与去重后保留率达到项目预设标准",
+          "warn": "任一关键指标低于阈值时直接标记文库质控失败"
         },
         {
           "afterStep": 6,
-          "metric": "FRiP 与指纹图分离",
-          "pass": "FRiP≥5% 且指纹图处理/对照明显分离",
-          "warn": "FRiP 1-5% 或指纹图分离不清"
+          "metric": "FRiP、SPOT 与 TSS 富集曲线",
+          "pass": "FRiP≥5%；SPOT 和 TSS 曲线必须成功产出",
+          "warn": "指标缺失或 FRiP<5% 时标记文库质控失败"
         }
       ]
     },
@@ -15034,7 +15017,7 @@
       "sourceRef": "native-dapseq-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "native-dapseq-v1"
+      "importerVersion": "chromatin-qc-bilingual-v2"
     },
     "source": "builtin",
     "createdAt": 1790436106318,
@@ -15043,7 +15026,7 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
       }
     ]
   },
@@ -15063,6 +15046,10 @@
       "frip",
       "质控",
       "表观",
+      "SPOT",
+      "TSS 富集",
+      "文库质控",
+      "中文版",
       "官方结构",
       "dag",
       "分支",
@@ -15072,40 +15059,39 @@
     "params": [
       {
         "name": "INPUT_DIR",
-        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "label": "原始 FASTQ 文件目录（*_R1.fq.gz / *_R2.fq.gz）",
         "type": "path"
       },
       {
         "name": "CONTROL_DIR",
-        "label": "Control FASTQ directory (Input/IgG)",
+        "label": "Input/IgG 对照文库目录",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助确认"
       },
       {
         "name": "BWA_INDEX",
-        "label": "BWA index prefix",
+        "label": "BWA 参考基因组索引前缀",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找或构建"
       },
       {
         "name": "REF_FA",
-        "label": "Reference genome FASTA",
+        "label": "参考基因组 FASTA",
         "type": "path",
         "required": false,
         "placeholder": "可留空，AI 运行时协助查找"
       },
       {
-        "name": "BLACKLIST",
-        "label": "ENCODE blacklist BED",
+        "name": "TSS_BED",
+        "label": "转录起始位点（TSS）注释 BED",
         "type": "path",
-        "required": false,
-        "placeholder": "可留空，AI 运行时协助查找"
+        "help": "必填；与参考基因组版本一致，用于计算 TSS 富集曲线与富集分数。"
       },
       {
         "name": "GENOME_SIZE",
-        "label": "MACS2 effective genome size",
+        "label": "MACS2 有效基因组大小",
         "defaultValue": "hs",
         "type": "text",
         "required": false,
@@ -15113,7 +15099,7 @@
       },
       {
         "name": "QUEUE",
-        "label": "Queue",
+        "label": "作业队列",
         "defaultValue": "q2680v2",
         "type": "select",
         "options": [
@@ -15125,21 +15111,22 @@
       },
       {
         "name": "THREADS",
-        "label": "Threads",
+        "label": "线程数",
         "defaultValue": "8",
         "type": "number"
       }
     ],
     "steps": [
       {
-        "title": "Read-only preflight: software, inputs and references",
-        "command": "module av BWA SAMtools Picard MACS2 FastQC BEDTools 确认可加载；ls -ld {{INPUT_DIR}} {{CONTROL_DIR}}；ls -l {{BWA_INDEX}}.sa {{REF_FA}} {{BLACKLIST}}；缺失先问用户",
+        "title": "运行前检查：软件、输入文件与参考数据",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "只读检查。TSS 注释 BED 和 Hotspot2 为必需项；任一缺失时停止并返回明确原因。",
         "id": "preflight",
         "dependsOn": [],
         "phase": "Prepare"
       },
       {
-        "title": "FastQC raw read QC",
+        "title": "原始序列质控（FastQC）",
         "command": "#BSUB -J chipseq_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
         "notes": "写成 chipseq_qc.lsf 后 bsub 提交；先看报告再决定后续",
         "id": "fastqc",
@@ -15149,7 +15136,7 @@
         "phase": "Prepare"
       },
       {
-        "title": "BWA MEM alignment and sorting",
+        "title": "BWA MEM 比对与坐标排序",
         "command": "#BSUB -J chipseq_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
         "notes": "写成 chipseq_align.lsf 后 bsub 提交；单端数据只传 R1 一个文件",
         "id": "align",
@@ -15159,7 +15146,7 @@
         "phase": "Alignment"
       },
       {
-        "title": "Alignment filtering and PCR dedup",
+        "title": "高质量比对筛选与 PCR 重复去除",
         "command": "#BSUB -J chipseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
         "notes": "MAPQ≥30、保留正确配对、去未比对/次要比对/QC 失败 reads；fixmate + MarkDuplicates 去 PCR 重复，dup_metrics 纳入库复杂度评估",
         "id": "filter-dedup",
@@ -15169,7 +15156,7 @@
         "phase": "Alignment"
       },
       {
-        "title": "QC: strand cross-correlation and library complexity",
+        "title": "链交叉相关性与文库复杂度质控",
         "command": "#BSUB -J chipseq_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" -savp -p {{THREADS}} -out=qc/\"${s}\".cc.qc\ndone\npython3 - <<'PY'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob(\"qc/*.cc.qc\"):\n    s = os.path.basename(cc).replace(\".cc.qc\", \"\")\n    with open(cc) as fh:\n        header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n        row = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join(\"qc\", s + \".dup_metrics.txt\")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith(\"#\") or line.startswith(\"LIBRARY\") or not line.strip():\n                    continue\n                cols = line.rstrip(\"\\n\").split(\"\\t\")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {\"NSC\": rec.get(\"NSC\"), \"RSC\": rec.get(\"RSC\"), \"NRF\": nrf}\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "达标：NSC≥1.05、RSC≥0.8、NRF≥0.8；警告：NSC 1.0-1.05、RSC 0.5-0.8、NRF 0.6-0.8；PBC≥0.8 可用 preseq 补充评估",
         "id": "xcor",
@@ -15179,9 +15166,9 @@
         "phase": "QC"
       },
       {
-        "title": "MACS2 narrow-peak calling and blacklist filtering",
-        "command": "#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  bedtools intersect -a peaks/\"${s}\"_peaks.narrowPeak -b {{BLACKLIST}} -v > peaks/\"${s}\".peaks.final.bed\ndone",
-        "notes": "写成 chipseq_peak.lsf 后 bsub 提交；q=0.05 为候选峰，最终集以 IDR 筛选为准；CONTROL_DIR 有去重 BAM 时自动启用对照",
+        "title": "MACS2 窄峰调用",
+        "command": "#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "使用 Input/IgG 文库估计背景；候选峰供后续 FRiP 与 IDR 评估。",
         "id": "rep-peaks",
         "dependsOn": [
           "filter-dedup"
@@ -15199,9 +15186,9 @@
         "notes": "官方结构：每个重复随机均分为自伪重复 pr1/pr2（两个不同种子近似官方 shuffle-split），全部重复合并出池化 BAM 与池化伪重复，各跑 MACS2；供 IDR 三路一致性判定"
       },
       {
-        "title": "QC: RPKM bigWig tracks, SPOT and peak snapshots",
-        "command": "#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b \"$b\" -o qc/tracks/\"${s}\".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t\"c[2]}' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes \"$b\" hotspots/\"${s}\"\n    total=$(samtools view -c \"$b\")\n    inhot=$(bedtools intersect -a \"$b\" -b hotspots/\"${s}\".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e \"${s}\\t${total}\\t${inhot}\" >> qc/spot.tsv\n  else\n    echo \"SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）\"\n  fi\ndone\npython3 - <<'PY'\nBAM_GLOB = \"*.dedup.bam\"\nBAM_SUFFIX = \".dedup.bam\"\nPEAK_DIR = \"peaks/\"\nPEAK_SUFFIX = \".peaks.final.bed\"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print(\"SKIP: 无 matplotlib，跳过峰快照绘图（%s）\" % exc)\n    sys.exit(0)\nos.makedirs(\"qc/igv\", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith(\"#\"):\n                continue\n            f = line.rstrip(\"\\n\").split(\"\\t\")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run([\"samtools\", \"depth\", \"-a\", \"-r\", \"%s:%d-%d\" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split(\"\\t\")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color=\"#3b82f6\", lw=0)\n        ax.axvspan(start, end, color=\"#f59e0b\", alpha=0.25)\n        ax.set_title(\"%s  %s:%d-%d\" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel(\"depth\")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig(\"qc/igv/%s_%s_%d.png\" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint(\"IGV 风格峰快照产出 %d 张 → qc/igv/\" % made)\nPY",
-        "notes": "HPClaw 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）",
+        "title": "扩展质控：SPOT、TSS 富集曲线与信号轨迹",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "SPOT 由 Hotspot2 直接输出；TSS 富集曲线是扩展诊断，其形态受靶蛋白或组蛋白修饰类型影响，不作为 ChIP-seq 的统一强制阈值。qc/library_verdict.tsv 直接给出文库 PASS/FAILED 及未达标指标。",
         "id": "signals-spot",
         "dependsOn": [
           "rep-peaks"
@@ -15209,7 +15196,7 @@
         "phase": "QC"
       },
       {
-        "title": "QC: FRiP and cross-replicate IDR consistency",
+        "title": "FRiP 与重复间 IDR 一致性评估",
         "command": "#BSUB -J chipseq_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c -)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\n# 重复≥2 时对真重复跑 IDR（合并池峰为 oracle）；单重复改用自我伪重复 IDR\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ \"${#PK[@]}\" -lt 2 ]; then\n  echo \"SKIP: 需要至少 2 个重复 peaks 才能算 IDR\"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples \"${PK[0]}\" \"${PK[1]}\" ${POOL:+--peak-list \"$POOL\"} --input-file-type narrowPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists(\"idr/idr.txt\"):\n    n_idr = 0\n    with open(\"idr/idr.txt\") as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc[\"_idr\"] = {\"peaks_global_idr_lt_0.05\": n_idr, \"rule\": \"Np(伪重复)/Nt(真重复) < 2 达标，>= 2 判重复间不一致\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY\n# 池化伪重复 IDR（Np）与 rescue ratio（官方可重复性判定）\nif [ -f peaks/pooled/pooled.pr1_peaks.narrowPeak ] && [ -f peaks/pooled/pooled.pr2_peaks.narrowPeak ]; then\n  idr --samples peaks/pooled/pooled.pr1_peaks.narrowPeak peaks/pooled/pooled.pr2_peaks.narrowPeak --peak-list peaks/pooled/pooled_peaks.narrowPeak --input-file-type narrowPeak --rank p.value -o idr/idr.ppr.txt --plot || true\nfi\npython3 - <<'PY'\nimport json, os\ndef count_idr(path):\n    if not os.path.exists(path): return None\n    n = 0\n    with open(path) as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05: n += 1\n            except (IndexError, ValueError): continue\n    return n\nnt = count_idr(\"idr/idr.txt\")\nnp_pooled = count_idr(\"idr/idr.ppr.txt\")\nqc = {}\nif os.path.exists(\"qc/idr_qc.json\"):\n    with open(\"qc/idr_qc.json\") as fh: qc = json.load(fh)\nrescue = None\nif nt is not None and np_pooled is not None and min(nt, np_pooled) > 0:\n    rescue = round(max(nt, np_pooled) / min(nt, np_pooled), 3)\nqc[\"_reproducibility\"] = {\"Nt_true_replicate\": nt, \"Np_pooled_pseudorep\": np_pooled, \"rescue_ratio\": rescue, \"rule\": \"rescue ratio <= 2 为重复间一致（官方 ENCODE 判定）\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out: json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
         "notes": "FRiP + 真重复 IDR（Nt）+ 池化伪重复 IDR（Np）：rescue ratio = max(Np,Nt)/min(Np,Nt) ≤ 2 判重复间一致（官方 ENCODE 标准）；单重复时只有自伪重复一致性可参考",
         "id": "idr-frip",
@@ -15220,9 +15207,9 @@
         "phase": "IDR"
       },
       {
-        "title": "Generate analysis report",
-        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html",
-        "notes": "确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件",
+        "title": "生成中文分析与质控报告",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language zh --assay chip-tf\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。",
         "id": "report",
         "dependsOn": [
           "xcor",
@@ -15271,8 +15258,8 @@
         },
         {
           "name": "hotspot2",
-          "checkCmd": "command -v hotspot2",
-          "required": false
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
         },
         {
           "name": "phantompeakqualtools (run_spp.R)",
@@ -15301,38 +15288,32 @@
           "required": false
         },
         {
-          "name": "ENCODE blacklist BED",
-          "path": "{{BLACKLIST}}",
-          "type": "other",
-          "source": "可留空：AI 运行时协助按基因组版本下载（ENCODE blacklist）",
-          "required": false
+          "name": "转录起始位点（TSS）注释 BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "由与参考基因组同版本的 GTF/GFF 生成",
+          "required": true
         }
       ],
       "inputHint": "Paired-end ChIP-seq FASTQ directory, plus an Input/IgG control directory",
       "qcGates": [
         {
-          "afterStep": 2,
-          "metric": "FastQC 碱基质量与接头含量",
-          "pass": "Q30 >80%，接头含量 <5%",
-          "warn": "Q30 70-80% 或接头 5-15%"
-        },
-        {
-          "afterStep": 4,
-          "metric": "比对率与去重后保留率",
-          "pass": "比对率 >80%，去重后保留 >50%",
-          "warn": "比对率 60-80% 或重复率 >70%"
-        },
-        {
           "afterStep": 5,
-          "metric": "链相关与库复杂度",
+          "metric": "链交叉相关性与文库复杂度",
           "pass": "NSC≥1.05、RSC≥0.8、NRF≥0.8",
-          "warn": "NSC 1.0-1.05、RSC 0.5-0.8 或 NRF 0.6-0.8"
+          "warn": "任一关键指标低于阈值时标记文库质控失败"
+        },
+        {
+          "afterStep": 7,
+          "metric": "SPOT 与 TSS 富集曲线",
+          "pass": "SPOT 值与 TSS 富集曲线均成功产出",
+          "warn": "任一产物缺失时标记文库质控失败"
         },
         {
           "afterStep": 8,
           "metric": "FRiP 与重复间 IDR",
-          "pass": "FRiP≥1%，Np/Nt<2",
-          "warn": "FRiP 0.5-1%"
+          "pass": "FRiP≥1%，IDR rescue ratio<2",
+          "warn": "FRiP<1% 或 IDR 不一致时标记文库质控失败"
         }
       ]
     },
@@ -15343,7 +15324,7 @@
       "sourceRef": "native-encode-v1",
       "upstreamWorkflow": "hpclaw-native",
       "implementation": "reference-extension",
-      "importerVersion": "native-encode-v1"
+      "importerVersion": "chromatin-qc-bilingual-v2"
     },
     "source": "builtin",
     "createdAt": 1790436106318,
@@ -15352,7 +15333,975 @@
       {
         "source": "encode/encode_native_report.py",
         "remotePath": "tools/encode_native_report.py",
-        "label": "确定性分析报告生成器"
+        "label": "确定性分析与质控报告生成器"
+      }
+    ]
+  },
+  {
+    "id": "builtin-dapseq-tf-en",
+    "name": "DAP-seq Transcription-Factor Binding Analysis and QC (English)",
+    "description": "DAP-seq analysis with raw-read QC, BWA-MEM alignment, high-quality alignment filtering and deduplication, MACS2 narrow-peak calling against a naked-gDNA control, FRiP, SPOT, TSS-enrichment profiles, signal tracks, motif enrichment, and peak-to-gene annotation.",
+    "keywords": [
+      "dapseq",
+      "dap-seq",
+      "dap",
+      "tf",
+      "macs2",
+      "motif",
+      "frip",
+      "wheat",
+      "SPOT",
+      "English",
+      "TSS enrichment",
+      "library QC"
+    ],
+    "params": [
+      {
+        "name": "INPUT_DIR",
+        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "type": "path"
+      },
+      {
+        "name": "CONTROL_DIR",
+        "label": "Control-library directory",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "BWA_INDEX",
+        "label": "BWA index prefix",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "REF_FA",
+        "label": "Reference genome FASTA",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "TSS_BED",
+        "label": "Transcription start sites (TSS), BED",
+        "type": "path",
+        "help": "Required. Must match the reference assembly."
+      },
+      {
+        "name": "GENES_BED",
+        "label": "Gene annotation, BED/GFF",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "GENOME_SIZE",
+        "label": "MACS2 effective genome size",
+        "defaultValue": "hs",
+        "type": "text",
+        "required": false,
+        "help": "Use hs, mm, or a numeric effective genome size.",
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "MOTIF_DB",
+        "label": "Motif database in MEME format",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "QUEUE",
+        "label": "Queue",
+        "defaultValue": "q2680v2",
+        "type": "select",
+        "options": [
+          "q2680v2",
+          "normal",
+          "smp",
+          "high"
+        ]
+      },
+      {
+        "name": "THREADS",
+        "label": "Threads",
+        "defaultValue": "8",
+        "type": "number"
+      }
+    ],
+    "steps": [
+      {
+        "title": "Preflight: software, inputs, and references",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Raw-read QC with FastQC",
+        "command": "#BSUB -J dapseq_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "BWA-MEM alignment and coordinate sorting",
+        "command": "#BSUB -J dapseq_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "High-quality alignment filtering and PCR duplicate removal",
+        "command": "#BSUB -J dapseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "MACS2 narrow-peak calling against the naked-gDNA control",
+        "command": "#BSUB -J dapseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Extended QC: FRiP, SPOT, TSS-enrichment profile, and signal tracks",
+        "command": "#BSUB -J dap_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.05 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Motif enrichment and peak-to-gene annotation",
+        "command": "#BSUB -J dapseq_motif -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0 SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p motif annotation\nfor p in peaks/*.peaks.final.bed; do\n  s=$(basename \"$p\" .peaks.final.bed)\n  awk -F'\\t' '{c=$2+int(($3-$2)/2); print $1\"\\t\"(c-100>0?c-100:0)\"\\t\"c+100}' \"$p\" > motif/\"${s}\".summits200.bed\n  bedtools getfasta -fi {{REF_FA}} -bed motif/\"${s}\".summits200.bed -fo motif/\"${s}\".summits200.fa\n  if [ -s {{MOTIF_DB}} ] && command -v ame >/dev/null 2>&1; then\n    ame --oc motif/\"${s}\"_ame --control --shuffle-- {{MOTIF_DB}} motif/\"${s}\".summits200.fa\n  else\n    echo \"SKIP: MOTIF_DB or MEME Suite (ame) is unavailable; motif enrichment was skipped\"\n  fi\n  if [ -s {{GENES_BED}} ]; then\n    bedtools closest -a \"$p\" -b {{GENES_BED}} -D ref > annotation/\"${s}\".nearest_gene.tsv\n  else\n    echo \"SKIP: GENES_BED is unavailable; peak-to-gene annotation was skipped\"\n  fi\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Generate the English analysis and QC report",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language en --assay dap\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "Uses standard bioinformatics terminology. A failed sample is reported explicitly as \"Library QC failed\" with the failed metrics."
+      }
+    ],
+    "manifest": {
+      "software": [
+        {
+          "name": "FastQC",
+          "module": "FastQC/0.11.9",
+          "required": true
+        },
+        {
+          "name": "BWA",
+          "module": "BWA/0.7.17",
+          "required": true
+        },
+        {
+          "name": "SAMtools",
+          "module": "SAMtools/1.17",
+          "required": true
+        },
+        {
+          "name": "Picard",
+          "module": "Picard/2.27.4",
+          "required": true
+        },
+        {
+          "name": "MACS2",
+          "module": "MACS2/2.2.7.1",
+          "required": true
+        },
+        {
+          "name": "BEDTools",
+          "module": "BEDTools/2.30.0",
+          "required": true
+        },
+        {
+          "name": "deepTools",
+          "module": "deepTools/3.5.1",
+          "required": true
+        },
+        {
+          "name": "MEME Suite (ame)",
+          "checkCmd": "command -v ame",
+          "required": false
+        },
+        {
+          "name": "Hotspot2",
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
+        }
+      ],
+      "references": [
+        {
+          "name": "BWA index",
+          "path": "{{BWA_INDEX}}",
+          "type": "index",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Reference genome FASTA",
+          "path": "{{REF_FA}}",
+          "type": "genome",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Gene annotation, BED/GFF",
+          "path": "{{GENES_BED}}",
+          "type": "annotation",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Motif database in MEME format",
+          "path": "{{MOTIF_DB}}",
+          "type": "other",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Transcription start sites (TSS), BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "required": true
+        }
+      ],
+      "inputHint": "Paired-end DAP-seq FASTQs plus a naked-gDNA negative-control library",
+      "qcGates": [
+        {
+          "afterStep": 4,
+          "metric": "Alignment quality and library complexity",
+          "pass": "Project high-quality-alignment and post-deduplication retention criteria met",
+          "warn": "Library QC failed when a required metric is below its threshold"
+        },
+        {
+          "afterStep": 6,
+          "metric": "FRiP, SPOT, and TSS-enrichment profile",
+          "pass": "FRiP ≥5% and complete SPOT/TSS-profile outputs",
+          "warn": "Library QC failed when a required metric is missing or FRiP <5%"
+        }
+      ]
+    },
+    "provenance": {
+      "provider": "hpclaw-native",
+      "sourceName": "DAP-seq protocol (O’Malley et al. 2016 / Bartlett et al. 2017, HPClaw native implementation)",
+      "sourceUrl": "https://github.com/peacezha/HPClaw",
+      "sourceRef": "native-dapseq-v1",
+      "upstreamWorkflow": "hpclaw-native",
+      "implementation": "reference-extension",
+      "importerVersion": "chromatin-qc-bilingual-v2-en"
+    },
+    "source": "builtin",
+    "createdAt": 1790751814032,
+    "updatedAt": 1790751814032,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "Deterministic analysis and QC report generator"
+      }
+    ]
+  },
+  {
+    "id": "encode-chipseq-tf-en",
+    "name": "ENCODE-aligned TF ChIP-seq Analysis and QC (English)",
+    "description": "ENCODE-aligned TF ChIP-seq analysis with alignment, filtering and deduplication, strand cross-correlation, MACS2 narrow peaks, FRiP and IDR, plus extended SPOT and TSS-enrichment-profile QC.",
+    "keywords": [
+      "encode",
+      "chipseq",
+      "chip-seq",
+      "tf",
+      "bwa",
+      "macs2",
+      "idr",
+      "frip",
+      "SPOT",
+      "English",
+      "TSS enrichment",
+      "library QC"
+    ],
+    "params": [
+      {
+        "name": "INPUT_DIR",
+        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "type": "path"
+      },
+      {
+        "name": "CONTROL_DIR",
+        "label": "Control-library directory",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "BWA_INDEX",
+        "label": "BWA index prefix",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "REF_FA",
+        "label": "Reference genome FASTA",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "TSS_BED",
+        "label": "Transcription start sites (TSS), BED",
+        "type": "path",
+        "help": "Required. Must match the reference assembly."
+      },
+      {
+        "name": "GENOME_SIZE",
+        "label": "MACS2 effective genome size",
+        "defaultValue": "hs",
+        "type": "text",
+        "required": false,
+        "help": "Use hs, mm, or a numeric effective genome size.",
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "QUEUE",
+        "label": "Queue",
+        "defaultValue": "q2680v2",
+        "type": "select",
+        "options": [
+          "q2680v2",
+          "normal",
+          "smp",
+          "high"
+        ]
+      },
+      {
+        "name": "THREADS",
+        "label": "Threads",
+        "defaultValue": "8",
+        "type": "number"
+      }
+    ],
+    "steps": [
+      {
+        "title": "Preflight: software, inputs, and references",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Raw-read QC with FastQC",
+        "command": "#BSUB -J chipseq_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "BWA-MEM alignment and coordinate sorting",
+        "command": "#BSUB -J chipseq_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "High-quality alignment filtering and PCR duplicate removal",
+        "command": "#BSUB -J chipseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Strand cross-correlation and library-complexity QC",
+        "command": "#BSUB -J chipseq_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" -savp -p {{THREADS}} -out=qc/\"${s}\".cc.qc\ndone\npython3 - <<'PY'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob(\"qc/*.cc.qc\"):\n    s = os.path.basename(cc).replace(\".cc.qc\", \"\")\n    with open(cc) as fh:\n        header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n        row = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join(\"qc\", s + \".dup_metrics.txt\")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith(\"#\") or line.startswith(\"LIBRARY\") or not line.strip():\n                    continue\n                cols = line.rstrip(\"\\n\").split(\"\\t\")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {\"NSC\": rec.get(\"NSC\"), \"RSC\": rec.get(\"RSC\"), \"NRF\": nrf}\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "MACS2 narrow-peak calling",
+        "command": "#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t \"$b\" ${CTRL:+-c \"$CTRL\"} -n \"${s}\" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  cp peaks/\"${s}\"_peaks.narrowPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Extended QC: SPOT, TSS-enrichment profile, and signal tracks",
+        "command": "#BSUB -J chip_tf_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "FRiP and cross-replicate IDR reproducibility",
+        "command": "#BSUB -J chipseq_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c -)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\n# Run true-replicate IDR for two or more replicates; use self-pseudoreplicates for a single replicate\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ \"${#PK[@]}\" -lt 2 ]; then\n  echo \"SKIP: at least two replicate peak sets are required for IDR\"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples \"${PK[0]}\" \"${PK[1]}\" ${POOL:+--peak-list \"$POOL\"} --input-file-type narrowPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists(\"idr/idr.txt\"):\n    n_idr = 0\n    with open(\"idr/idr.txt\") as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc[\"_idr\"] = {\"peaks_global_idr_lt_0.05\": n_idr, \"rule\": \"Np(pseudoreplicate)/Nt(true replicate) < 2 passes; >= 2 indicates replicate inconsistency\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Generate the English analysis and QC report",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language en --assay chip-tf\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "Uses standard bioinformatics terminology. A failed sample is reported explicitly as \"Library QC failed\" with the failed metrics."
+      }
+    ],
+    "manifest": {
+      "software": [
+        {
+          "name": "FastQC",
+          "module": "FastQC/0.11.9",
+          "required": true
+        },
+        {
+          "name": "BWA",
+          "module": "BWA/0.7.17",
+          "required": true
+        },
+        {
+          "name": "SAMtools",
+          "module": "SAMtools/1.17",
+          "required": true
+        },
+        {
+          "name": "Picard",
+          "module": "Picard/2.27.4",
+          "required": true
+        },
+        {
+          "name": "MACS2",
+          "module": "MACS2/2.2.7.1",
+          "required": true
+        },
+        {
+          "name": "BEDTools",
+          "module": "BEDTools/2.30.0",
+          "required": true
+        },
+        {
+          "name": "deepTools",
+          "module": "deepTools/3.5.1",
+          "required": true
+        },
+        {
+          "name": "hotspot2",
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
+        },
+        {
+          "name": "phantompeakqualtools (run_spp.R)",
+          "checkCmd": "command -v run_spp.R",
+          "required": true
+        },
+        {
+          "name": "IDR",
+          "checkCmd": "command -v idr",
+          "required": false
+        }
+      ],
+      "references": [
+        {
+          "name": "BWA index",
+          "path": "{{BWA_INDEX}}",
+          "type": "index",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Reference genome FASTA",
+          "path": "{{REF_FA}}",
+          "type": "genome",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Transcription start sites (TSS), BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "required": true
+        }
+      ],
+      "inputHint": "Paired-end ChIP-seq FASTQs plus an Input/IgG control library",
+      "qcGates": [
+        {
+          "afterStep": 5,
+          "metric": "Strand cross-correlation and library complexity",
+          "pass": "NSC ≥1.05, RSC ≥0.8, and NRF ≥0.8",
+          "warn": "Library QC failed when a required metric is below its threshold"
+        },
+        {
+          "afterStep": 7,
+          "metric": "SPOT and TSS-enrichment profile",
+          "pass": "Both the SPOT value and TSS-enrichment profile are produced",
+          "warn": "Library QC failed when either required output is missing"
+        },
+        {
+          "afterStep": 8,
+          "metric": "FRiP and cross-replicate IDR",
+          "pass": "FRiP ≥1% and IDR rescue ratio <2",
+          "warn": "Library QC failed when FRiP or IDR reproducibility does not meet the criterion"
+        }
+      ]
+    },
+    "provenance": {
+      "provider": "hpclaw-native",
+      "sourceName": "ENCODE TF ChIP-seq protocol (HPClaw native implementation)",
+      "sourceUrl": "https://github.com/peacezha/HPClaw",
+      "sourceRef": "native-encode-v1",
+      "upstreamWorkflow": "hpclaw-native",
+      "implementation": "reference-extension",
+      "importerVersion": "chromatin-qc-bilingual-v2-en"
+    },
+    "source": "builtin",
+    "createdAt": 1790751814032,
+    "updatedAt": 1790751814032,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "Deterministic analysis and QC report generator"
+      }
+    ]
+  },
+  {
+    "id": "encode-chipseq-histone-en",
+    "name": "ENCODE-aligned Histone ChIP-seq Analysis and QC (English)",
+    "description": "ENCODE-aligned histone ChIP-seq analysis with alignment, filtering and deduplication, strand cross-correlation, SPP broad peaks, FRiP and IDR, plus extended SPOT and TSS-enrichment-profile QC.",
+    "keywords": [
+      "encode",
+      "chipseq",
+      "chip-seq",
+      "histone",
+      "h3k27ac",
+      "h3k4me3",
+      "spp",
+      "idr",
+      "SPOT",
+      "English",
+      "TSS enrichment",
+      "library QC"
+    ],
+    "params": [
+      {
+        "name": "INPUT_DIR",
+        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "type": "path"
+      },
+      {
+        "name": "CONTROL_DIR",
+        "label": "Control-library directory",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "BWA_INDEX",
+        "label": "BWA index prefix",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "REF_FA",
+        "label": "Reference genome FASTA",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "TSS_BED",
+        "label": "Transcription start sites (TSS), BED",
+        "type": "path",
+        "help": "Required. Must match the reference assembly."
+      },
+      {
+        "name": "GENOME_SIZE",
+        "label": "MACS2 effective genome size",
+        "defaultValue": "hs",
+        "type": "text",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input",
+        "help": "Use hs, mm, or a numeric effective genome size."
+      },
+      {
+        "name": "QUEUE",
+        "label": "Queue",
+        "defaultValue": "q2680v2",
+        "type": "select",
+        "options": [
+          "q2680v2",
+          "normal",
+          "smp",
+          "high"
+        ]
+      },
+      {
+        "name": "THREADS",
+        "label": "Threads",
+        "defaultValue": "8",
+        "type": "number"
+      }
+    ],
+    "steps": [
+      {
+        "title": "Preflight: software, inputs, and references",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BWA_INDEX}}.sa\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Raw-read QC with FastQC",
+        "command": "#BSUB -J histone_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "BWA-MEM alignment and coordinate sorting",
+        "command": "#BSUB -J histone_align -n {{THREADS}} -q {{QUEUE}}\nmodule load BWA/0.7.17 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bwa mem -t {{THREADS}} {{BWA_INDEX}} \"$i\" \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "High-quality alignment filtering and PCR duplicate removal",
+        "command": "#BSUB -J histone_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 \"$b\" > \"${s}.filt.bam\"\n  samtools sort -@ {{THREADS}} -n \"${s}.filt.bam\" -o \"${s}.filt.nsrt.bam\"\n  samtools fixmate -@ {{THREADS}} -m \"${s}.filt.nsrt.bam\" \"${s}.fixmate.bam\"\n  samtools sort -@ {{THREADS}} \"${s}.fixmate.bam\" -o \"${s}.fixmate.sorted.bam\"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.fixmate.sorted.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index \"${s}.dedup.bam\"\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Strand cross-correlation and library-complexity QC",
+        "command": "#BSUB -J histone_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" -savp -p {{THREADS}} -out=qc/\"${s}\".cc.qc\ndone\npython3 - <<'PY'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob(\"qc/*.cc.qc\"):\n    s = os.path.basename(cc).replace(\".cc.qc\", \"\")\n    with open(cc) as fh:\n        header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n        row = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join(\"qc\", s + \".dup_metrics.txt\")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith(\"#\") or line.startswith(\"LIBRARY\") or not line.strip():\n                    continue\n                cols = line.rstrip(\"\\n\").split(\"\\t\")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {\"NSC\": rec.get(\"NSC\"), \"RSC\": rec.get(\"RSC\"), \"NRF\": nrf}\nwith open(\"qc/qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "SPP broad-peak calling",
+        "command": "#BSUB -J histone_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c=\"$b\" ${CTRL:+-i=\"$CTRL\"} -npeak=300000 -odir=peaks -speak=peaks/\"${s}\" -savp -rf\n  zcat peaks/\"${s}\".regionPeak.gz > peaks/\"${s}\".regionPeak\n  cp peaks/\"${s}\".regionPeak peaks/\"${s}\".peaks.final.bed\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Extended QC: SPOT, TSS-enrichment profile, and signal tracks",
+        "command": "#BSUB -J chip_histone_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.01 None <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "FRiP and cross-replicate IDR reproducibility",
+        "command": "#BSUB -J histone_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\".peaks.final.bed -u | samtools view -c -)\n  echo -e \"${s}\\t${total}\\t${inpeak}\" >> qc/frip.tsv\ndone\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ \"${#PK[@]}\" -lt 2 ]; then\n  echo \"SKIP: at least two replicate peak sets are required for IDR\"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples \"${PK[0]}\" \"${PK[1]}\" ${POOL:+--peak-list \"$POOL\"} --input-file-type broadPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<'PY'\nimport json, os\nqc = {}\nif os.path.exists(\"qc/frip.tsv\"):\n    with open(\"qc/frip.tsv\") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip(\"\\n\").split(\"\\t\")\n            qc[s] = {\"FRiP\": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists(\"idr/idr.txt\"):\n    n_idr = 0\n    with open(\"idr/idr.txt\") as fh:\n        for line in fh:\n            cols = line.rstrip(\"\\n\").split(\"\\t\")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc[\"_idr\"] = {\"peaks_global_idr_lt_0.05\": n_idr, \"rule\": \"Np(pseudoreplicate)/Nt(true replicate) < 2 passes; >= 2 indicates replicate inconsistency\"}\nwith open(\"qc/idr_qc.json\", \"w\") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Generate the English analysis and QC report",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language en --assay chip-histone\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "Uses standard bioinformatics terminology. A failed sample is reported explicitly as \"Library QC failed\" with the failed metrics."
+      }
+    ],
+    "manifest": {
+      "software": [
+        {
+          "name": "FastQC",
+          "module": "FastQC/0.11.9",
+          "required": true
+        },
+        {
+          "name": "BWA",
+          "module": "BWA/0.7.17",
+          "required": true
+        },
+        {
+          "name": "SAMtools",
+          "module": "SAMtools/1.17",
+          "required": true
+        },
+        {
+          "name": "Picard",
+          "module": "Picard/2.27.4",
+          "required": true
+        },
+        {
+          "name": "BEDTools",
+          "module": "BEDTools/2.30.0",
+          "required": true
+        },
+        {
+          "name": "deepTools",
+          "module": "deepTools/3.5.1",
+          "required": true
+        },
+        {
+          "name": "hotspot2",
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
+        },
+        {
+          "name": "phantompeakqualtools (run_spp.R, broad mode)",
+          "checkCmd": "command -v run_spp.R",
+          "required": true
+        },
+        {
+          "name": "MACS2 (broad-peak fallback)",
+          "module": "MACS2/2.2.7.1",
+          "required": false
+        },
+        {
+          "name": "GEM (broad-peak fallback)",
+          "checkCmd": "command -v gem",
+          "required": false
+        },
+        {
+          "name": "IDR",
+          "checkCmd": "command -v idr",
+          "required": false
+        }
+      ],
+      "references": [
+        {
+          "name": "BWA index",
+          "path": "{{BWA_INDEX}}",
+          "type": "index",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Reference genome FASTA",
+          "path": "{{REF_FA}}",
+          "type": "genome",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Transcription start sites (TSS), BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "required": true
+        }
+      ],
+      "inputHint": "Paired-end ChIP-seq FASTQs plus an Input/IgG control library",
+      "qcGates": [
+        {
+          "afterStep": 5,
+          "metric": "Strand cross-correlation and library complexity",
+          "pass": "NSC ≥1.05, RSC ≥0.8, and NRF ≥0.8",
+          "warn": "Library QC failed when a required metric is below its threshold"
+        },
+        {
+          "afterStep": 7,
+          "metric": "SPOT and TSS-enrichment profile",
+          "pass": "Both the SPOT value and TSS-enrichment profile are produced",
+          "warn": "Library QC failed when either required output is missing"
+        },
+        {
+          "afterStep": 8,
+          "metric": "FRiP and cross-replicate IDR",
+          "pass": "FRiP ≥1% and IDR rescue ratio <2",
+          "warn": "Library QC failed when FRiP or IDR reproducibility does not meet the criterion"
+        }
+      ]
+    },
+    "provenance": {
+      "provider": "hpclaw-native",
+      "sourceName": "ENCODE histone ChIP-seq protocol (HPClaw native implementation)",
+      "sourceUrl": "https://github.com/peacezha/HPClaw",
+      "sourceRef": "native-encode-v1",
+      "upstreamWorkflow": "hpclaw-native",
+      "implementation": "reference-extension",
+      "importerVersion": "chromatin-qc-bilingual-v2-en"
+    },
+    "source": "builtin",
+    "createdAt": 1790751814032,
+    "updatedAt": 1790751814032,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "Deterministic analysis and QC report generator"
+      }
+    ]
+  },
+  {
+    "id": "encode-atacseq-en",
+    "name": "ENCODE-aligned ATAC-seq Analysis and QC (English)",
+    "description": "ENCODE-aligned ATAC-seq analysis with Bowtie2 alignment, organelle-read removal, high-quality alignment filtering and deduplication, Tn5 insertion-site correction, MACS2 accessible-chromatin peaks, FRiP, SPOT, TSS-enrichment profiles, and fragment-size distribution.",
+    "keywords": [
+      "encode",
+      "atacseq",
+      "atac-seq",
+      "bowtie2",
+      "macs2",
+      "frip",
+      "tn5",
+      "SPOT",
+      "English",
+      "TSS enrichment",
+      "library QC"
+    ],
+    "params": [
+      {
+        "name": "INPUT_DIR",
+        "label": "FASTQ directory (*_R1.fq.gz / *_R2.fq.gz)",
+        "type": "path"
+      },
+      {
+        "name": "BOWTIE2_INDEX",
+        "label": "Bowtie2 index prefix",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "REF_FA",
+        "label": "Reference genome FASTA",
+        "type": "path",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "TSS_BED",
+        "label": "Transcription start sites (TSS), BED",
+        "type": "path",
+        "help": "Required. Must match the reference assembly."
+      },
+      {
+        "name": "GENOME_SIZE",
+        "label": "MACS2 effective genome size",
+        "defaultValue": "hs",
+        "type": "text",
+        "required": false,
+        "placeholder": "Optional; the agent can help locate or prepare this input",
+        "help": "Use hs, mm, or a numeric effective genome size."
+      },
+      {
+        "name": "ORGANELLE_REGEX",
+        "label": "Organelle chromosome-name pattern",
+        "defaultValue": "chrM|chrMT|chrC|chrPt|ChrM|ChrMt|ChrC|ChrPt|mitochondria|chloroplast|plastid",
+        "type": "text",
+        "required": false,
+        "help": "Adjust this pattern to the mitochondrial and chloroplast chromosome names in the selected assembly; leave empty to retain organelle reads.",
+        "placeholder": "Optional; the agent can help locate or prepare this input"
+      },
+      {
+        "name": "QUEUE",
+        "label": "Queue",
+        "defaultValue": "q2680v2",
+        "type": "select",
+        "options": [
+          "q2680v2",
+          "normal",
+          "smp",
+          "high"
+        ]
+      },
+      {
+        "name": "THREADS",
+        "label": "Threads",
+        "defaultValue": "8",
+        "type": "number"
+      }
+    ],
+    "steps": [
+      {
+        "title": "Preflight: software, inputs, and references",
+        "command": "set -euo pipefail\ntest -d {{INPUT_DIR}}\ntest -s {{BOWTIE2_INDEX}}.1.bt2\ntest -s {{REF_FA}}\ntest -s {{TSS_BED}}\ncommand -v hotspot2.sh\ncommand -v samtools\ncommand -v bedtools\ncommand -v computeMatrix\ncommand -v plotProfile",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Raw-read QC with FastQC",
+        "command": "#BSUB -J atac_qc -n 1 -q {{QUEUE}}\nmodule load FastQC/0.11.9\ncd {{INPUT_DIR}} && mkdir -p fastqc_results\nfastqc *.fq.gz -o ./fastqc_results -t {{THREADS}}",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Bowtie2 alignment and coordinate sorting",
+        "command": "#BSUB -J atac_align -n {{THREADS}} -q {{QUEUE}}\nmodule load Bowtie2/2.4.5 SAMtools/1.17\ncd {{INPUT_DIR}}\nfor i in *_R1.fq.gz; do\n  s=${i%_R1.fq.gz}\n  bowtie2 -p {{THREADS}} -X 2000 --very-sensitive -x {{BOWTIE2_INDEX}} -1 \"$i\" -2 \"${s}_R2.fq.gz\" | samtools sort -@ {{THREADS}} -o \"${s}.sorted.bam\" -\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Organelle-read removal, high-quality alignment filtering, and deduplication",
+        "command": "#BSUB -J atac_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  total=$(samtools view -c \"$b\")\n  mito=$(samtools view \"$b\" | grep -cE 'chrM|chrMT|ChrM|ChrMt|mitochondria' || true)\n  chloro=$(samtools view \"$b\" | grep -cE 'chrC|chrPt|ChrC|ChrPt|chloroplast|plastid' || true)\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then org=$(samtools view \"$b\" | grep -cE \"{{ORGANELLE_REGEX}}\" || true); else org=0; fi\n  echo -e \"${s}\\t${total}\\t${mito}\\t${chloro}\\t${org}\" >> qc/organelle.tsv\n  if [ -n \"{{ORGANELLE_REGEX}}\" ]; then\n    samtools view -@ {{THREADS}} -h -q 30 -F 1804 \"$b\" | { grep -vE \"{{ORGANELLE_REGEX}}\" || true; } | samtools view -@ {{THREADS}} -b - > \"${s}.noorg.bam\"\n  else\n    samtools view -@ {{THREADS}} -b -q 30 -F 1804 \"$b\" > \"${s}.noorg.bam\"\n  fi\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I=\"${s}.noorg.bam\" O=\"${s}.dedup.bam\" M=qc/\"${s}\".dup_metrics.txt REMOVE_DUPLICATES=true\n  cp \"${s}.dedup.bam\" \"${s}.final.bam\"\n  samtools index \"${s}.final.bam\"\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Tn5 insertion-site correction and MACS2 accessible-chromatin peak calling",
+        "command": "#BSUB -J atac_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 MACS2/2.2.7.1 SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p peaks\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  alignmentSieve -b \"$b\" -o \"${s}.shifted.bam\" --ATACshift --numberOfProcessors {{THREADS}}\n  samtools index \"${s}.shifted.bam\"\n  macs2 callpeak -t \"${s}.shifted.bam\" -f BAMPE -n \"${s}\" -g {{GENOME_SIZE}} --nomodel --shift -75 --extsize 150 -q 0.01 --outdir peaks\ndone",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "QC: TSS-enrichment profile, FRiP, SPOT, fragment-size distribution, and signal tracks",
+        "command": "#BSUB -J atac_signal_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots\n: > qc/frip.tsv\n: > qc/spot.tsv\n: > qc/tss_enrichment.tsv\nfor b in *.final.bam; do\n  s=${b%.final.bam}\n  bw=qc/tracks/\"${s}\".rpkm.bw\n  bamCoverage -b \"$b\" -o \"$bw\" -p {{THREADS}} --normalizeUsing RPKM\n  computeMatrix reference-point --referencePoint TSS -S \"$bw\" -R {{TSS_BED}} -a 2000 -b 2000 --binSize 10 -p {{THREADS}} -o qc/\"${s}\".tss.mat.gz\n  plotProfile -m qc/\"${s}\".tss.mat.gz -o qc/\"${s}\".tss_enrichment.png --outFileNameData qc/\"${s}\".tss_profile.tsv --plotTitle \"${s} TSS enrichment\"\n  python3 - \"$s\" qc/\"${s}\".tss.mat.gz >> qc/tss_enrichment.tsv <<'PY'\nimport gzip, json, math, sys\nsample, path = sys.argv[1:]\nrows = []\nwith gzip.open(path, 'rt') as fh:\n    for line in fh:\n        if line.startswith('@'):\n            continue\n        fields = line.rstrip().split('\\t')[6:]\n        try:\n            values = [float(v) for v in fields]\n        except ValueError:\n            continue\n        rows.append(values)\nif not rows:\n    raise SystemExit('TSS matrix has no numeric rows: ' + path)\nmeans = []\nfor column in zip(*rows):\n    valid = [v for v in column if not math.isnan(v)]\n    means.append(sum(valid) / len(valid) if valid else 0.0)\nedge = means[:10] + means[-10:]\nnoise = sum(edge) / len(edge) if edge else 0.0\nmid = len(means) // 2\nscore = max(means[max(0, mid - 10):mid + 10]) / noise if noise > 0 else 0.0\nprint('%s\\t%.4f' % (sample, score))\nPY\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I=\"$b\" O=qc/\"${s}\".insert_size_metrics.txt H=qc/\"${s}\".insert_size.png\n  total=$(samtools view -c \"$b\")\n  inpeak=$(bedtools intersect -a \"$b\" -b peaks/\"${s}\"_peaks.narrowPeak -u | samtools view -c - || true)\n  printf '%s\\t%s\\t%s\\n' \"$s\" \"$total\" \"$inpeak\" >> qc/frip.tsv\n  samtools view -H \"$b\" | awk -F'\\t' '/^@SQ/{split($2,a,\":\");split($3,c,\":\");print a[2]\"\\t0\\t\"c[2]}' > qc/\"${s}\".chrom.sizes.bed\n  hotspot2.sh -c qc/\"${s}\".chrom.sizes.bed \"$b\" hotspots/\"${s}\"\n  spot_file=$(find hotspots/\"${s}\" -type f -name '*.SPOT.txt' | head -1)\n  test -s \"$spot_file\"\n  printf '%s\\t%s\\n' \"$s\" \"$(tr -d '[:space:]' < \"$spot_file\")\" >> qc/spot.tsv\ndone\npython3 - 0.2 6 <<'PY'\nimport csv, json, os, sys\nfrip_min = float(sys.argv[1])\ntss_min = None if sys.argv[2] == 'None' else float(sys.argv[2])\ndef ratios(path):\n    out = {}\n    with open(path) as fh:\n        for row in csv.reader(fh, delimiter='\\t'):\n            if len(row) >= 3:\n                out[row[0]] = int(row[2]) / int(row[1]) if int(row[1]) else 0.0\n            elif len(row) >= 2:\n                out[row[0]] = float(row[1])\n    return out\nfrip, spot, tss = ratios('qc/frip.tsv'), ratios('qc/spot.tsv'), ratios('qc/tss_enrichment.tsv')\nlibqc = {}\nif os.path.exists('qc/qc.json'):\n    with open('qc/qc.json') as fh: libqc = json.load(fh)\nsamples = sorted(set(frip) | set(spot) | set(tss))\nwith open('qc/library_verdict.tsv', 'w', newline='') as out:\n    writer = csv.writer(out, delimiter='\\t', lineterminator='\\n')\n    writer.writerow(['sample', 'verdict', 'reason'])\n    for sample in samples:\n        reasons = []\n        if sample not in frip or frip[sample] < frip_min: reasons.append('FRiP below QC threshold')\n        if sample not in spot: reasons.append('SPOT unavailable')\n        if sample not in tss: reasons.append('TSS enrichment unavailable')\n        if tss_min is not None and sample in tss and tss[sample] < tss_min: reasons.append('TSS enrichment below QC threshold')\n        for metric, cutoff in [('NSC', 1.05), ('RSC', 0.8), ('NRF', 0.8)]:\n            value = (libqc.get(sample) or {}).get(metric)\n            if value is not None and float(value) < cutoff: reasons.append(metric + ' below QC threshold')\n        verdict = 'FAILED' if reasons else 'PASS'\n        writer.writerow([sample, verdict, '; '.join(reasons) if reasons else 'All required library QC checks passed'])\nPY\ntest -s qc/library_verdict.tsv",
+        "notes": "Follow the declared inputs, outputs, and assay-specific QC criteria."
+      },
+      {
+        "title": "Generate the English analysis and QC report",
+        "command": "python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report --language en --assay atac\ntest -s <RUN>/reports/final-report/report.html",
+        "notes": "Uses standard bioinformatics terminology. A failed sample is reported explicitly as \"Library QC failed\" with the failed metrics."
+      }
+    ],
+    "manifest": {
+      "software": [
+        {
+          "name": "FastQC",
+          "module": "FastQC/0.11.9",
+          "required": true
+        },
+        {
+          "name": "Bowtie2",
+          "module": "Bowtie2/2.4.5",
+          "required": true
+        },
+        {
+          "name": "SAMtools",
+          "module": "SAMtools/1.17",
+          "required": true
+        },
+        {
+          "name": "Picard",
+          "module": "Picard/2.27.4",
+          "required": true
+        },
+        {
+          "name": "MACS2",
+          "module": "MACS2/2.2.7.1",
+          "required": true
+        },
+        {
+          "name": "deepTools",
+          "module": "deepTools/3.5.1",
+          "required": true
+        },
+        {
+          "name": "BEDTools",
+          "module": "BEDTools/2.30.0",
+          "required": true
+        },
+        {
+          "name": "hotspot2",
+          "checkCmd": "command -v hotspot2.sh",
+          "required": true
+        }
+      ],
+      "references": [
+        {
+          "name": "Bowtie2 index",
+          "path": "{{BOWTIE2_INDEX}}",
+          "type": "index",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Reference genome FASTA",
+          "path": "{{REF_FA}}",
+          "type": "genome",
+          "source": "Optional; locate or prepare this resource when needed",
+          "required": false
+        },
+        {
+          "name": "Transcription start sites (TSS), BED",
+          "path": "{{TSS_BED}}",
+          "type": "annotation",
+          "source": "Generate from a GTF/GFF matching the reference assembly",
+          "required": true
+        }
+      ],
+      "inputHint": "Paired-end ATAC-seq FASTQs",
+      "qcGates": [
+        {
+          "afterStep": 4,
+          "metric": "High-quality alignment rate and organelle-read fraction",
+          "pass": "Project alignment criterion met and mitochondrial + chloroplast fraction <20%",
+          "warn": "Library QC failed when a required metric is below its threshold"
+        },
+        {
+          "afterStep": 6,
+          "metric": "TSS enrichment, FRiP, and SPOT",
+          "pass": "TSS enrichment ≥6, FRiP ≥0.2, and complete SPOT/TSS-profile outputs",
+          "warn": "Library QC failed when a required metric is missing or below its threshold"
+        }
+      ]
+    },
+    "provenance": {
+      "provider": "hpclaw-native",
+      "sourceName": "ENCODE ATAC-seq protocol (HPClaw native implementation)",
+      "sourceUrl": "https://github.com/peacezha/HPClaw",
+      "sourceRef": "native-encode-v1",
+      "upstreamWorkflow": "hpclaw-native",
+      "implementation": "reference-extension",
+      "importerVersion": "chromatin-qc-bilingual-v2-en"
+    },
+    "source": "builtin",
+    "createdAt": 1790751814032,
+    "updatedAt": 1790751814032,
+    "assets": [
+      {
+        "source": "encode/encode_native_report.py",
+        "remotePath": "tools/encode_native_report.py",
+        "label": "Deterministic analysis and QC report generator"
       }
     ]
   }
