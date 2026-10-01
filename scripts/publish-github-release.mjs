@@ -2,6 +2,8 @@
 // Token is read from the local git credential manager (never printed, never on argv).
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import yaml from 'js-yaml';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,8 +18,9 @@ const releaseDir = process.argv[2];
 if (!releaseDir) throw new Error('usage: node publish-github-release.mjs <releaseDir>');
 const artifacts = [
   { file: `HPClaw-Setup-${TAG.slice(1)}-x64.exe`, type: 'application/octet-stream' },
-  { file: 'latest.yml', type: 'text/yaml' },
   { file: `HPClaw-Setup-${TAG.slice(1)}-x64.exe.blockmap`, type: 'application/octet-stream' },
+  // Publish update metadata last, after the installer and blockmap are present.
+  { file: 'latest.yml', type: 'text/yaml' },
 ];
 
 function readToken() {
@@ -48,6 +51,22 @@ async function apiJson(url, options = {}) {
 }
 
 async function main() {
+  for (const { file } of artifacts) {
+    const artifact = path.join(releaseDir, file);
+    if (!fs.statSync(artifact).isFile() || fs.statSync(artifact).size === 0) throw new Error(`Missing release artifact: ${file}`);
+  }
+  const metadata = yaml.load(fs.readFileSync(path.join(releaseDir, 'latest.yml'), 'utf8'));
+  const installerName = artifacts[0].file;
+  const installerPath = path.join(releaseDir, installerName);
+  const hash = crypto.createHash('sha512');
+  for await (const chunk of fs.createReadStream(installerPath)) hash.update(chunk);
+  const sha512 = hash.digest('base64');
+  const manifestFile = metadata.files?.find(file => file.url === installerName);
+  if (metadata.version !== TAG.slice(1) || metadata.path !== installerName || metadata.sha512 !== sha512
+      || manifestFile?.sha512 !== sha512 || manifestFile?.size !== fs.statSync(installerPath).size) {
+    throw new Error('latest.yml does not match the version, filename, size and SHA-512 of this installer');
+  }
+  console.log('verified update manifest:', metadata.version, installerName);
   const notesFile = process.env.HPCLAW_RELEASE_NOTES
     || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', `v${TAG.slice(1)}_更新说明.md`);
   let body = `HPClaw ${TAG} 更新。`;
@@ -70,7 +89,7 @@ async function main() {
     const created = await apiJson(`${API}/releases`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag_name: TAG, target_commitish: 'main', name: NAME, body, draft: false, prerelease: false }),
+      body: JSON.stringify({ tag_name: TAG, target_commitish: 'main', name: NAME, body, draft: true, prerelease: false }),
     });
     if (created.status !== 201) throw new Error(`create release failed: ${created.status} ${created.text.slice(0, 400)}`);
     release = created.json;
@@ -108,13 +127,26 @@ async function main() {
   };
   for (const artifact of artifacts) {
     const { file } = artifact;
-    if (!fs.existsSync(path.join(releaseDir, file))) { console.log('skip missing:', file); continue; }
     const oldId = existingAssets.get(file);
     if (oldId) {
       const del = await apiJson(`${API}/releases/assets/${oldId}`, { method: 'DELETE' });
       console.log('delete old asset:', file, del.status);
     }
     await uploadOne(artifact);
+  }
+
+  const uploaded = await apiJson(`${API}/releases/${release.id}/assets?per_page=100`);
+  if (uploaded.status !== 200) throw new Error('Could not verify uploaded release assets');
+  for (const { file } of artifacts) {
+    const asset = uploaded.json.find(item => item.name === file);
+    if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(path.join(releaseDir, file)).size) throw new Error(`Uploaded asset incomplete: ${file}`);
+  }
+  if (release.draft) {
+    const published = await apiJson(`${API}/releases/${release.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft: false, make_latest: 'true' }),
+    });
+    if (published.status !== 200) throw new Error(`Publish release failed: ${published.status}`);
   }
 
   // 3) verify release assets are publicly reachable

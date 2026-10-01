@@ -286,8 +286,8 @@ export function buildAgentSystemPrompt(
   locale: 'zh-CN' | 'en-US' = 'zh-CN',
 ): string {
   const userLanguageRule = locale === 'en-US'
-    ? 'Use English for all user-facing questions, progress updates, explanations, and final answers. Keep commands, paths, directory names, filenames, tool output, and scientific identifiers unchanged — never translate or paraphrase them.'
-    : '全程用中文、简洁、说人话；先给结论再给依据。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用，禁止翻译或改写（目录名如 04_results、results 不得写成中文）。';
+    ? 'Use English for all user-facing questions, progress updates, explanations, and final answers. Keep commands, paths, directory names, filenames, tool output, scientific identifiers, assay names, software names, parameter flags, file formats, and established bioinformatics metrics unchanged — never translate or paraphrase them.'
+    : '全程用中文、简洁、说人话；先给结论再给依据。命令、路径、目录名、文件名、工具原始输出和科学标识符必须逐字原样引用，禁止翻译或改写（目录名如 04_results、results 不得写成中文）。生物信息学固定术语、实验类型、软件名、参数名、文件格式和指标使用领域通行写法，不逐词硬译：例如 ChIP-seq、ATAC-seq、DAP-seq、FRiP、SPOT、TSS enrichment、IDR、bigWig、deepTools 原样保留；确需解释时首次写“规范中文解释（英文术语）”，不得自行创造中文术语。';
   const finalLanguageRule = locale === 'en-US'
     ? 'Reply in English. Be concise. Show real command output; do not merely describe it.'
     : '用中文回答，保持简洁。展示真实命令输出，不要只描述你看到的内容。';

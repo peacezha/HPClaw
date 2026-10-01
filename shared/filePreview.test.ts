@@ -66,10 +66,11 @@ describe('classifyPreview', () => {
     expect(classifyPreview('movie.mov', 100)).toMatchObject({ kind: 'video', mime: 'video/quicktime' });
   });
 
-  it('does not attempt to render oversized HTML, even above the large-text boundary', () => {
+  it('keeps large HTML intact for the dedicated streaming preview', () => {
     expect(classifyPreview('huge-report.html', LARGE_TEXT_BYTES)).toMatchObject({
-      kind: 'unsupported',
-      mode: 'unsupported',
+      kind: 'html',
+      mode: 'text',
     });
+    expect(classifyPreview('huge-report.html', 2 * 1024 ** 3).mode).toBe('text');
   });
 });

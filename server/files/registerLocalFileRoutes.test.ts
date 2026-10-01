@@ -49,6 +49,25 @@ function seedVisionArtifact(dataRoot: string, name = 'R16_D_view.png', bytes = B
 }
 
 describe('local file routes', () => {
+  it('streams HTML and its relative CSS within the report directory', async () => {
+    const root = makeTempDir('hpclaw-html-stream-');
+    const report = path.join(root, 'report.html');
+    fs.writeFileSync(report, '<!doctype html><html><head><link rel="stylesheet" href="style.css"></head><body>结果</body></html>');
+    fs.writeFileSync(path.join(root, 'style.css'), 'body{color:red}');
+    const base = await startRoutes(root);
+    const resolved = await post(base, '/api/local/files/html/resolve', { path: report });
+    expect(resolved.status).toBe(200);
+    const meta = await resolved.json();
+    const response = await fetch(`${base}/api/local/files/html/document?path=${encodeURIComponent(report)}&scripts=0`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain("script-src 'none'");
+    expect(await response.text()).toContain('<base href=');
+    const asset = await fetch(`${base}${meta.assetBaseUrl}style.css`);
+    expect(asset.status).toBe(200);
+    expect(await asset.text()).toBe('body{color:red}');
+    const traversal = await fetch(`${base}${meta.assetBaseUrl}..%2Foutside.txt`);
+    expect([403, 404]).toContain(traversal.status);
+  });
   it('reads a dot-relative dsh artifact path (form 1)', async () => {
     const dataRoot = makeTempDir('hpclaw-local-root-');
     seedVisionArtifact(dataRoot);

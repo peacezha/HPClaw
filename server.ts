@@ -1224,20 +1224,28 @@ app.put('/api/conversations/:id', async (req, res) => {
   }
   try {
     const existing = await store.get(String(req.params.id));
-    if (!existing) {
-      res.status(404).json({ success: false, error: '对话不存在' });
+    const { title, messages, contextKey } = req.body || {};
+    if (!existing && (!Array.isArray(messages) || messages.length === 0)) {
+      res.status(404).json({ success: false, error: '对话不存在，恢复保存需要完整消息快照' });
       return;
     }
-    const { title, messages, contextKey } = req.body || {};
+    const now = Date.now();
+    // Auto-save is deliberately idempotent. A prior version could retain an
+    // activeConversationId after the backing cluster file was moved, an index
+    // was rebuilt, or the target reconnected; returning 404 then made every
+    // subsequent save fail forever. Recreate the same safe id from the latest
+    // in-memory snapshot instead of requiring manual conversation recovery.
     const record = enrichConversation({
-      ...(existing as ConversationRecord),
-      contextKey: (existing as ConversationRecord).contextKey
-        || normalizeConversationContextKey(contextKey, `saved-${existing.id}`),
+      ...(existing as ConversationRecord | undefined),
+      id: String(req.params.id),
+      contextKey: (existing as ConversationRecord | undefined)?.contextKey
+        || normalizeConversationContextKey(contextKey, `saved-${req.params.id}`),
       // 旧记录没有 scopeKey：首次保存时按当前请求的计算目标补齐
-      scopeKey: (existing as ConversationRecord).scopeKey || conversationScopeKey(req),
-      title: title || existing.title,
-      messages: Array.isArray(messages) ? messages : (existing.messages as AIMessage[]),
-      updatedAt: Date.now(),
+      scopeKey: (existing as ConversationRecord | undefined)?.scopeKey || conversationScopeKey(req),
+      title: title || (existing as ConversationRecord | undefined)?.title || '新对话',
+      messages: Array.isArray(messages) ? messages : ((existing as ConversationRecord | undefined)?.messages || []),
+      createdAt: (existing as ConversationRecord | undefined)?.createdAt || now,
+      updatedAt: now,
     });
     await store.save(record);
     res.json({

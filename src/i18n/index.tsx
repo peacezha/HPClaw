@@ -19,6 +19,17 @@ const LANGUAGE_STORAGE_KEY = 'hpclaw_language';
  * 不在这里自动改写，避免科研内容失真。
  */
 const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
+  ['当前任务执行位置', 'Execution target'],
+  ['收起导航', 'Collapse navigation'], ['展开导航', 'Expand navigation'], ['关闭导航', 'Close navigation'],
+  ['高级执行设置', 'Advanced execution settings'], ['今天想完成什么任务？', 'What would you like to accomplish?'],
+  ['可以先讨论方案，也可以选择左侧文件或流程；需要计算时，HPClaw 会调用后台计算资源。', 'Discuss a plan, choose your data or a workflow, and run it on your selected compute resource.'],
+  ['配置你的 AI 工作台', 'Set up your AI workspace'],
+  ['完成一次配置后，就可以直接从对话开始科研计算任务。', 'Configure once, then start research tasks directly from a conversation.'],
+  ['全屏预览', 'Full-screen preview'], ['退出全屏预览', 'Exit full-screen preview'],
+  ['调整网页面板宽度', 'Resize report panel'], ['拖动调整宽度', 'Drag to resize'],
+  ['重新读取报告', 'Reload report'], ['隔离预览 · 外部网络资源已禁用', 'Isolated preview · External network disabled'],
+  ['允许外部资源', 'Allow external resources'], ['禁止外部资源', 'Block external resources'],
+  ['隔离预览 ·', 'Isolated preview ·'], ['本地资源', 'Local resources'], ['集群资源', 'Cluster resources'], ['· 流式加载', '· Streaming'],
   ['生物信息智能计算助手', 'Bioinformatics Intelligent Computing Assistant'],
   ['已保存的账号', 'Saved accounts'],
   ['选择账号快速登录…', 'Select an account for quick login…'],
@@ -682,9 +693,6 @@ for (const [zh, en] of UI_PHRASES) {
   if (!EN_TO_ZH.has(en)) EN_TO_ZH.set(en, zh);
 }
 
-const SORTED_ZH = [...ZH_TO_EN.keys()].sort((a, b) => b.length - a.length);
-const SORTED_EN = [...EN_TO_ZH.keys()].sort((a, b) => b.length - a.length);
-
 export function getStoredLocale(): AppLocale {
   if (typeof window === 'undefined') return 'zh-CN';
   return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en-US' ? 'en-US' : 'zh-CN';
@@ -714,14 +722,23 @@ function translateUiTextUncached(value: string, locale: AppLocale): string {
   const exact = (locale === 'en-US' ? ZH_TO_EN : EN_TO_ZH).get(core);
   if (exact !== undefined) return `${leading}${exact}${trailing}`;
 
-  let translated = core;
-  const keys = locale === 'en-US' ? SORTED_ZH : SORTED_EN;
-  const phrases = locale === 'en-US' ? ZH_TO_EN : EN_TO_ZH;
-  for (const key of keys) {
-    if (key.length < 2 || !translated.includes(key)) continue;
-    translated = translated.split(key).join(phrases.get(key) || key);
+  // Only translate explicitly modelled dynamic UI sentences. The old generic
+  // substring replacement changed product/scientific names inside otherwise
+  // unrelated text (for example "ChatGPT (OpenAI)" became a word-by-word
+  // Chinese hybrid). Exact phrases and typed templates keep the boundary
+  // between interface copy and domain/user content auditable.
+  if (locale === 'en-US') {
+    const deleteItems = core.match(/^确定要删除\s+(.+?)\s+个项目吗？$/);
+    if (deleteItems) return `${leading}Delete ${deleteItems[1]} item(s)?${trailing}`;
+    const messages = core.match(/^(\d+)\s*条消息(.*)$/);
+    if (messages) return `${leading}${messages[1]} messages${messages[2]}${trailing}`;
+  } else {
+    const deleteItems = core.match(/^Delete\s+(.+?)\s+item\(s\)\?$/);
+    if (deleteItems) return `${leading}确定要删除 ${deleteItems[1]} 个项目吗？${trailing}`;
+    const messages = core.match(/^(\d+)\s+messages(.*)$/);
+    if (messages) return `${leading}${messages[1]} 条消息${messages[2]}${trailing}`;
   }
-  return `${leading}${translated}${trailing}`;
+  return value;
 }
 
 interface LocaleContextValue {

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Socket } from 'socket.io-client';
+import { PanelLeftOpen } from 'lucide-react';
 
 import LoginForm from './components/LoginForm';
 import TerminalAI from './components/TerminalAI';
@@ -144,6 +145,11 @@ export default function App() {
   const [showQQBotSettings, setShowQQBotSettings] = useState(false);
   const [showUpdateCenter, setShowUpdateCenter] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<'chat' | 'workflow' | 'workflowManage' | 'cluster' | 'webapis'>('chat');
+  const [sidebarExpanded, setSidebarExpanded] = useState(() => window.innerWidth >= 800 && window.localStorage.getItem('hpclaw_sidebar_collapsed') !== 'true');
+  const toggleSidebar = () => setSidebarExpanded(value => {
+    window.localStorage.setItem('hpclaw_sidebar_collapsed', String(value));
+    return !value;
+  });
   const [workbenchSidebarTab, setWorkbenchSidebarTab] = useState<WorkbenchSidebarTab>('conversations');
   // 主导航切换：对话回 chat、计算资源进 cluster 控制台、数据资源进 webapis 页；文件/流程不动主区（保持现状语义）
   const handleSidebarTabChange = useCallback((tab: WorkbenchSidebarTab) => {
@@ -778,8 +784,13 @@ export default function App() {
     : null;
 
   return (
-    <div className="h-[100dvh] w-screen bg-scholar-950 flex font-sans text-scholar-50 overflow-hidden">
+    <div className="hpclaw-workspace-shell h-[100dvh] w-screen bg-scholar-950 flex font-sans text-scholar-50 overflow-hidden" data-sidebar-expanded={sidebarExpanded}>
+      {sidebarExpanded && <button type="button" className="hpclaw-sidebar-scrim" onClick={toggleSidebar} aria-label="关闭导航" />}
+      {!sidebarExpanded && <button type="button" className="hpclaw-sidebar-launcher btn-icon" onClick={toggleSidebar} aria-label="展开导航" title="展开导航"><PanelLeftOpen className="h-4 w-4" /></button>}
       <WorkbenchSidebar
+        expanded={sidebarExpanded}
+        onToggleExpanded={toggleSidebar}
+        onChooseChatTarget={id => { setActiveTabId(id); setWorkspaceView('chat'); if (window.innerWidth < 800) setSidebarExpanded(false); }}
         activeTab={workbenchSidebarTab}
         onActiveTabChange={handleSidebarTabChange}
         connectedComputeCount={connectedComputeCount}
@@ -795,6 +806,7 @@ export default function App() {
         conversationRefresh={convListRefresh}
         onLoadConversation={id => {
           setWorkspaceView('chat');
+          if (window.innerWidth < 800) setSidebarExpanded(false);
           void handleLoadConversation(id);
         }}
         onNewConversation={() => {
@@ -805,6 +817,7 @@ export default function App() {
         onSelectWorkflow={workflow => {
           setSelectedWorkflow(workflow);
           setWorkspaceView('workflow');
+          if (window.innerWidth < 800) setSidebarExpanded(false);
         }}
         onManageWorkflows={() => setWorkspaceView('workflowManage')}
         selectedPath={selectedRemoteEntry?.path}

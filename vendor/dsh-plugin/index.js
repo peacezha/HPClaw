@@ -1010,6 +1010,34 @@ export function apply(ctx, config = {}) {
       },
       required: ['service', 'endpoint'],
     },
+    // dsh 0.4+ validates every registered tool before the sidecar becomes
+    // available.  Leaving this contract implicit makes the whole plugin tree
+    // fail to boot (and HPClaw silently falls back to the less capable legacy
+    // agent), even when this particular tool is never called.
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          status: { type: 'integer' },
+          url: { type: 'string' },
+          durationMs: { type: 'number' },
+          truncated: { type: 'boolean' },
+          data: {},
+          text: { type: 'string' },
+          error: { type: 'string' },
+          output: { type: 'string' },
+        },
+        required: ['ok'],
+        additionalProperties: true,
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.ok
+          ? clip(value.text ?? JSON.stringify(value.data ?? value, null, 2))
+          : clip(value.output || `公共数据 API 调用失败：${value.error || 'unknown error'}`),
+      }],
+    },
     timeoutMs: 50_000, // 服务端对上游 20s 超时 + 富余
     isConcurrencySafe: () => true,
     async execute(args, exec) {

@@ -3,14 +3,18 @@
 // 因此允许根固定为 DATA_ROOT + 当前工作区（workspace），不做全盘开放。
 
 import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { Express, Response } from 'express';
 import { classifyPreview } from '../../shared/filePreview';
 import { DATA_ROOT } from '../paths';
 import { normalizeWorkspace } from '../dsh/workspace';
 import { LocalPathError, resolveLocalChatFilePath } from './localPaths';
+import { contentTypeForReportAsset, streamHtmlReport } from './htmlReportStream';
 
 /** /api/local/files/read(+batch) 单文件上限：与远程 read 一致 */
 const LOCAL_FILE_READ_MAX_BYTES = 10 * 1024 * 1024;
+const LOCAL_HTML_REPORT_MAX_BYTES = 100 * 1024 * 1024;
 /** /api/local/files/view 直出上限：与远程 view 一致 */
 const LOCAL_FILE_VIEW_MAX_BYTES = 25 * 1024 * 1024;
 /** 批量读取的单次文件数上限：与远程 batch 一致 */
@@ -110,11 +114,65 @@ function requiredPath(value: unknown): string {
 export function registerLocalFileRoutes(app: Express, options: LocalFileRouteOptions = {}): void {
   const dataRoot = options.dataRoot ?? DATA_ROOT;
 
+  const resolveReport = (input: unknown, workspace: unknown) => {
+    const filePath = resolveLocalChatFilePath(requiredPath(input), allowedRoots(dataRoot, workspace));
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || !/\.x?html?$/i.test(filePath)) throw new HttpLocalFileError(415, 'LOCAL_HTML_REQUIRED', 'path is not an HTML document');
+    return { filePath, metadata: { size: stat.size, mime: 'text/html' } };
+  };
+  const assetBase = (filePath: string, workspace: unknown) => `/api/local/files/html-assets/${Buffer.from(JSON.stringify({ root: path.dirname(filePath), workspace })).toString('base64url')}/`;
+
+  app.post('/api/local/files/html/resolve', (req, res) => {
+    try {
+      const report = resolveReport(req.body?.path, req.body?.workspace);
+      res.json({ ...report, assetBaseUrl: assetBase(report.filePath, req.body?.workspace) });
+    } catch (error) { sendRouteError(res, error); }
+  });
+  app.get('/api/local/files/html/document', async (req, res) => {
+    try {
+      const report = resolveReport(req.query.path, req.query.workspace);
+      const assetBaseUrl = new URL(assetBase(report.filePath, req.query.workspace), `${req.protocol}://${req.get('host')}`).href;
+      await streamHtmlReport(fs.createReadStream(report.filePath), res, req.query.scripts !== '0', { assetBaseUrl, allowRemoteNetwork: req.query.network === '1' });
+    } catch (error) { if (!res.headersSent && !res.destroyed) sendRouteError(res, error); }
+  });
+  app.get('/api/local/files/html-assets/:rootToken/*', async (req, res) => {
+    try {
+      const { root, workspace } = JSON.parse(Buffer.from(req.params.rootToken, 'base64url').toString('utf8'));
+      if (typeof root !== 'string' || !path.isAbsolute(root)) throw new HttpLocalFileError(400, 'LOCAL_HTML_ROOT_REQUIRED', 'invalid report directory');
+      const filePath = resolveLocalChatFilePath(path.resolve(root, req.params[0]), allowedRoots(dataRoot, workspace));
+      const realRoot = fs.realpathSync(root);
+      const relative = path.relative(realRoot, filePath);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new HttpLocalFileError(403, 'LOCAL_HTML_ASSET_OUTSIDE_ROOT', 'HTML asset escapes the report directory');
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) throw new HttpLocalFileError(400, 'LOCAL_FILE_IS_DIRECTORY', 'asset path is a directory');
+      res.setHeader('Content-Type', contentTypeForReportAsset(filePath));
+      res.setHeader('Content-Length', String(stat.size));
+      res.setHeader('Access-Control-Allow-Origin', 'null');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+      await pipeline(fs.createReadStream(filePath), res);
+    } catch (error) { if (!res.headersSent && !res.destroyed) sendRouteError(res, error); }
+  });
+
   app.post('/api/local/files/read', (req, res) => {
     try {
       const input = requiredPath(req.body?.path);
       const roots = allowedRoots(dataRoot, req.body?.workspace);
       res.json(readLocalFileContent(roots, input, LOCAL_FILE_READ_MAX_BYTES));
+    } catch (error) {
+      sendRouteError(res, error);
+    }
+  });
+
+  app.post('/api/local/files/html/read', (req, res) => {
+    try {
+      const input = requiredPath(req.body?.path);
+      const roots = allowedRoots(dataRoot, req.body?.workspace);
+      const result = readLocalFileContent(roots, input, LOCAL_HTML_REPORT_MAX_BYTES);
+      if (!/^text\/html\b/i.test(result.metadata.mime)) {
+        throw new HttpLocalFileError(415, 'LOCAL_HTML_REQUIRED', 'path is not an HTML document');
+      }
+      res.json(result);
     } catch (error) {
       sendRouteError(res, error);
     }

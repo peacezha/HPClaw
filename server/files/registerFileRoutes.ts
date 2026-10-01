@@ -1,13 +1,19 @@
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { Express, Request, Response } from 'express';
 import type { ClusterSession } from '../cluster/clusterSession';
 import { resolveRequestSessionId } from '../cluster/sessionRequest';
 import { assertSafeRemoteMutation } from './pathSafety';
 import { SftpFileService } from './sftpFileService';
 import { classifyPreview } from '../../shared/filePreview';
+import { streamHtmlReport } from './htmlReportStream';
 
 const MAX_SEARCH_RESULTS = 5_000;
 /** /api/files/read(+batch) 单文件读取上限：AI 回答内联卡片只承载小结果文件 */
 const FILE_READ_MAX_BYTES = 10 * 1024 * 1024;
+/** Dedicated report reader: large self-contained scientific HTML is common. */
+const HTML_REPORT_MAX_BYTES = 100 * 1024 * 1024;
+/** Relative report assets can be larger plots/data bundles, but remain bounded. */
 /** /api/files/view 直出上限：与 shared/filePreview 图片组一致 */
 const FILE_VIEW_MAX_BYTES = 25 * 1024 * 1024;
 /** 批量读取的单次文件数上限（前端内联卡片最多 5 个） */
@@ -108,12 +114,44 @@ function optionalBoolean(value: unknown): boolean {
   return value;
 }
 
+function contentTypeForAsset(filePath: string): string {
+  const extension = path.posix.extname(filePath).toLowerCase();
+  const types: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.ico': 'image/x-icon',
+    '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
+    '.csv': 'text/csv; charset=utf-8', '.tsv': 'text/tab-separated-values; charset=utf-8',
+    '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8',
+    '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+  };
+  return types[extension] || 'application/octet-stream';
+}
+
+function decodeAssetRoot(token: string): string {
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    if (!decoded.startsWith('/')) throw new Error('asset root must be absolute');
+    return decoded;
+  } catch {
+    throw new Error('invalid HTML asset root');
+  }
+}
+
 export function registerFileRoutes(app: Express, resolveSession: ResolveRemoteFileSession): void {
   // querySessionId 仅用于 <img src> 这类无法携带请求头的场景（与 /api/files/download 的 ?sessionId= 同理）
   const withSession = (req: Request, res: Response, querySessionId?: unknown): RemoteFileRouteSession | undefined => {
+    const explicit = typeof querySessionId === 'string' ? querySessionId : req.get('X-SSH-Session-Id');
+    if (explicit && !resolveSession(explicit)) {
+      sendError(res, 401, 'SSH_SESSION_REQUIRED', 'The requested SSH session is not active');
+      return undefined;
+    }
     const sessionId = resolveRequestSessionId({
       cookie: (req.session as any)?.sshSessionId,
-      header: req.get('X-SSH-Session-Id') || (typeof querySessionId === 'string' ? querySessionId : undefined),
+      header: explicit,
       auth: undefined,
     }, id => Boolean(resolveSession(id)));
     const session = sessionId ? resolveSession(sessionId) : undefined;
@@ -340,6 +378,80 @@ export function registerFileRoutes(app: Express, resolveSession: ResolveRemoteFi
       res.json(await readRemoteFileContent(serviceFor(session), remotePath, FILE_READ_MAX_BYTES));
     } catch (error) {
       sendRouteError(res, error);
+    }
+  });
+
+  /** Large scientific report source. Kept separate so ordinary inline cards
+   * retain their conservative 10 MiB guard. */
+  app.post('/api/files/html/read', async (req, res) => {
+    const session = withSession(req, res);
+    if (!session) return;
+    try {
+      const remotePath = requiredString(req.body?.path, 'path');
+      const result = await readRemoteFileContent(serviceFor(session), remotePath, HTML_REPORT_MAX_BYTES);
+      if (!/^text\/html\b/i.test(result.metadata.mime)) {
+        throw new HttpFileError(415, 'REMOTE_HTML_REQUIRED', 'path is not an HTML document');
+      }
+      res.json(result);
+    } catch (error) {
+      sendRouteError(res, error);
+    }
+  });
+
+  app.post('/api/files/html/resolve', async (req, res) => {
+    const session = withSession(req, res);
+    if (!session) return;
+    try {
+      const entry = await serviceFor(session).stat(requiredString(req.body?.path, 'path'));
+      if (entry.kind === 'directory' || !/\.x?html?$/i.test(entry.name)) throw new HttpFileError(415, 'REMOTE_HTML_REQUIRED', 'path is not an HTML document');
+      res.json({ filePath: entry.path, metadata: { size: entry.size, mime: 'text/html' } });
+    } catch (error) { sendRouteError(res, error); }
+  });
+
+  app.get('/api/files/html/document', async (req, res) => {
+    const session = withSession(req, res, req.query.sessionId);
+    if (!session) return;
+    try {
+      const service = serviceFor(session);
+      const entry = await service.stat(requiredString(req.query.path, 'path'));
+      if (entry.kind === 'directory' || !/\.x?html?$/i.test(entry.name)) throw new HttpFileError(415, 'REMOTE_HTML_REQUIRED', 'path is not an HTML document');
+      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : req.get('X-SSH-Session-Id') || (req.session as any)?.sshSessionId;
+      const base = `/api/files/html-assets/${encodeURIComponent(sessionId)}/${Buffer.from(path.posix.dirname(entry.path)).toString('base64url')}/`;
+      const assetBaseUrl = new URL(base, `${req.protocol}://${req.get('host')}`).href;
+      await streamHtmlReport(service.openReadStream(entry.path), res, req.query.scripts !== '0', { assetBaseUrl, allowRemoteNetwork: req.query.network === '1' });
+    } catch (error) { if (!res.headersSent && !res.destroyed) sendRouteError(res, error); }
+  });
+
+  /**
+   * Read-only SFTP asset proxy for sandboxed reports. The encoded root fixes
+   * the report directory; path.resolve + containment prevents ../ traversal.
+   * Keeping the session in the URL also makes multiple clusters deterministic
+   * when the active UI tab changes while a report remains open.
+   */
+  app.get('/api/files/html-assets/:sessionId/:rootToken/*', async (req, res) => {
+    const session = withSession(req, res, req.params.sessionId);
+    if (!session) return;
+    try {
+      const root = decodeAssetRoot(requiredString(req.params.rootToken, 'root token'));
+      const relative = String(req.params[0] || '').replace(/^\/+/, '');
+      const target = path.posix.resolve(root, relative || '.');
+      const normalizedRoot = path.posix.resolve(root);
+      if (target !== normalizedRoot && !target.startsWith(`${normalizedRoot}/`)) {
+        throw new HttpFileError(403, 'REMOTE_HTML_ASSET_OUTSIDE_ROOT', 'HTML asset escapes the report directory');
+      }
+      const service = serviceFor(session);
+      const entry = await service.stat(target);
+      if (entry.kind === 'directory') throw new HttpFileError(400, 'REMOTE_FILE_IS_DIRECTORY', 'asset path is a directory');
+      res.setHeader('Content-Type', contentTypeForAsset(target));
+      res.setHeader('Content-Length', String(entry.size));
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Access-Control-Allow-Origin', 'null');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+      await pipeline(service.openReadStream(target), res);
+    } catch (error) {
+      if (!res.headersSent && !res.destroyed) sendRouteError(res, error);
     }
   });
 

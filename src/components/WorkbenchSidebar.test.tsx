@@ -5,6 +5,9 @@ import WorkbenchSidebar, { type WorkbenchSidebarTab } from './WorkbenchSidebar';
 import { listWorkflows } from '../features/workflows/api';
 import type { Workflow } from '@/shared/workflow';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
+// The language switch is tested with its real provider in src/i18n; this
+// suite isolates sidebar navigation and does not mutate translated DOM.
+vi.mock('../i18n', () => ({ LanguageToggle: () => <button>EN</button> }));
 
 vi.mock('../features/workflows/api', () => ({
   listWorkflows: vi.fn(async () => []),

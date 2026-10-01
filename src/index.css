@@ -362,3 +362,54 @@ body {
   background-size: 200% 100%;
   animation: card-shimmer 1.5s infinite;
 }
+
+/* Research cockpit: quiet surfaces, visible execution context, fluid workspace. */
+.hpclaw-workspace-shell { isolation: isolate; }
+.hpclaw-sidebar { width: 284px; transition: width .2s ease, transform .2s ease; }
+.hpclaw-sidebar[data-sidebar-open='false'] { width: 0; border: 0; visibility: hidden; }
+.hpclaw-sidebar > * { min-width: 284px; }
+.hpclaw-brand { border-bottom: 1px solid rgb(var(--line-rgb) / .2); margin-bottom: 1rem; }
+.hpclaw-sidebar-launcher { position: absolute; top: 1rem; left: .8rem; z-index: 20; background: var(--color-scholar-900); }
+.hpclaw-sidebar-scrim { display: none; }
+.hpclaw-workspace-shell[data-sidebar-expanded='false'] .hpclaw-chat-header { padding-left: 3.6rem; }
+.hpclaw-chat-header { gap: 1rem; align-items: center; }
+.hpclaw-chat-header > :first-child { min-width: 0; }
+.hpclaw-chat-header > :last-child { flex-shrink: 0; }
+.hpclaw-header-description { max-width: 42rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hpclaw-main-nav button[aria-pressed='true'] { box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / .14); }
+.hpclaw-target-picker { box-shadow: 0 3px 14px rgb(var(--scrim-rgb) / .04); }
+.hpclaw-target-picker select option { color: var(--color-scholar-100); background: var(--color-scholar-900); }
+.hpclaw-setup form { border-radius: 1rem; padding: 1.6rem; background: var(--color-scholar-900); }
+.hpclaw-setup form input, .hpclaw-setup form select { min-height: 2.6rem; }
+.hpclaw-advanced-settings { border-top: 1px solid rgb(var(--line-rgb) / .3); padding-top: .5rem; }
+.hpclaw-welcome { max-width: 56rem; margin: auto; }
+.hpclaw-welcome-title { font-size: clamp(1.8rem, 3.3vw, 2.8rem); line-height: 1.2; letter-spacing: -.045em; }
+.hpclaw-starter-card { min-height: 6.2rem; border-radius: .85rem; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.hpclaw-starter-card:hover { transform: translateY(-2px); border-color: rgb(var(--accent-rgb) / .5); box-shadow: 0 8px 24px rgb(var(--scrim-rgb) / .08); }
+.hpclaw-chat-workspace [data-chat-messages], .hpclaw-chat-workspace [data-chat-composer] { padding-left: clamp(1.25rem, 4vw, 5rem); padding-right: clamp(1.25rem, 4vw, 5rem); }
+.hpclaw-chat-workspace [data-chat-composer] textarea { line-height: 1.65; }
+.hpclaw-web-drawer { box-shadow: -16px 0 60px rgb(var(--scrim-rgb) / .18); }
+@media (max-width: 1100px) {
+  .hpclaw-sidebar { width: 260px; }
+  .hpclaw-sidebar > * { min-width: 260px; }
+  .hpclaw-header-description { max-width: 20rem; }
+}
+@media (max-width: 799px) {
+  .hpclaw-sidebar { position: absolute; inset: 0 auto 0 0; z-index: 30; width: min(300px, 85vw); box-shadow: 12px 0 45px rgb(var(--scrim-rgb) / .25); }
+  .hpclaw-sidebar > * { min-width: min(300px, 85vw); }
+  .hpclaw-sidebar[data-sidebar-open='false'] { transform: translateX(-100%); }
+  .hpclaw-sidebar-scrim { display: block; position: absolute; inset: 0; background: rgb(var(--scrim-rgb) / .35); z-index: 29; backdrop-filter: blur(2px); }
+  .hpclaw-chat-header { padding: .8rem 1rem .8rem 3.6rem; gap: .5rem; }
+  .hpclaw-header-description { display: none; }
+  .hpclaw-chat-header > :first-child { flex: 1; }
+  .hpclaw-chat-header > :last-child { gap: .2rem; }
+  .hpclaw-chat-header h2 { font-size: .85rem; }
+  .hpclaw-setup { padding: 1.5rem 1rem; }
+  .hpclaw-setup form { padding: 1rem; }
+  .hpclaw-chat-workspace [data-chat-messages], .hpclaw-chat-workspace [data-chat-composer] { padding-left: 1rem; padding-right: 1rem; }
+  .hpclaw-welcome { padding-top: 1.2rem; }
+  .hpclaw-welcome-title { font-size: 1.8rem; }
+  .hpclaw-welcome .grid { grid-template-columns: 1fr; }
+  .hpclaw-starter-card { min-height: 4.6rem; }
+  .hpclaw-web-drawer { width: 100vw !important; }
+}

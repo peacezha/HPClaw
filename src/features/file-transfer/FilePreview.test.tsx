@@ -166,6 +166,7 @@ describe('FilePreview', () => {
   });
 
   it('renders HTML in a sandbox with scripts and external resources disabled by default', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ filePath: 'C:\\data\\report.html', metadata: { size: 110 } }) })));
     desktopWithPreview({
       path: 'C:\\data\\report.html', encoding: 'utf8',
       content: '<html><head><title>Report</title></head><body><h1>Result</h1><script>window.bad = true</script></body></html>',
@@ -176,12 +177,13 @@ describe('FilePreview', () => {
 
     const frame = await screen.findByTitle('HTML 预览 report.html') as HTMLIFrameElement;
     expect(frame.getAttribute('sandbox')).toBe('');
-    expect(frame.srcdoc).toContain("default-src 'none'");
-    expect(frame.srcdoc).toContain("script-src 'none'");
+    expect(frame.getAttribute('src')).toContain('/api/local/files/html/document?');
+    expect(frame.getAttribute('src')).toContain('scripts=0&network=0');
     expect(screen.getByRole('button', { name: '启用交互内容' })).toBeInTheDocument();
   });
 
   it('allows editing HTML source', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ filePath: 'C:\\data\\report.html', metadata: { size: 15 } }) })));
     desktopWithPreview({
       path: 'C:\\data\\report.html', encoding: 'utf8',
       content: '<h1>Result</h1>', bytesRead: 15, totalSize: 15, truncated: false,

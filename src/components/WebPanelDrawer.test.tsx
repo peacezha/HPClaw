@@ -62,10 +62,11 @@ describe('WebPanelDrawer', () => {
     expect((init as RequestInit).headers).toMatchObject({ 'X-SSH-Session-Id': 'sess-1' });
 
     const iframe = document.querySelector('iframe')!;
-    const srcDoc = iframe.getAttribute('srcdoc') || '';
-    expect(srcDoc).toContain('<h1>报告</h1>');
-    // buildSafeHtmlPreviewDocument 注入了 CSP；用户自己的结果网页默认允许脚本（交互图表需要 JS）
-    expect(srcDoc).toContain('Content-Security-Policy');
+    const url = new URL(iframe.getAttribute('src')!, 'http://localhost');
+    expect(url.pathname).toBe('/api/files/html/document');
+    expect(url.searchParams.get('path')).toBe('/home/u/run/report.html');
+    expect(url.searchParams.get('sessionId')).toBe('sess-1');
+    expect(iframe.hasAttribute('srcdoc')).toBe(false);
     expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
   });
 
@@ -86,7 +87,7 @@ describe('WebPanelDrawer', () => {
 
   it('shows an error state with retry for failed remote fetches', async () => {
     (fetch as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ error: { code: 'REMOTE_FILE_NOT_FOUND', message: 'no such file' } }) } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ error: { code: 'REMOTE_FILE_FORBIDDEN', message: 'permission denied' } }) } as Response)
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ filePath: '/home/u/run/report.html', content: '<p>ok</p>', metadata: { size: 7, mime: 'text/html' } }),

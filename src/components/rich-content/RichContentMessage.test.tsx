@@ -165,9 +165,9 @@ describe('RichContentMessage', () => {
     expect(within(card).queryByRole('button', { name: '在侧边预览' })).toBeNull();
 
     fireEvent.click(within(card).getByRole('button', { name: '展开网页预览' }));
-    await waitFor(() => expect(within(card).getByTestId('html-artifact-iframe')).toBeTruthy());
+    await waitFor(() => expect(within(card).getByTestId('html-report-iframe')).toBeTruthy());
     const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe('/api/local/files/read');
+    expect(url).toBe('/api/local/files/html/resolve');
   });
 
   it('silently skips files the server rejects', async () => {

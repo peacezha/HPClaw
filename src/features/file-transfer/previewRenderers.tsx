@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { renderAsync } from 'docx-preview';
 import { read, utils } from 'xlsx';
+import { htmlReportHead, injectHtmlReportHead } from '../../../shared/htmlReport';
 
 export function decodeBase64(value: string): Uint8Array {
   const binary = atob(value);
@@ -45,39 +46,19 @@ export function ImagePreview({ base64, mime, name }: {
   );
 }
 
-const HTML_PREVIEW_CSP_BASE = [
-  "default-src 'none'",
-  "img-src data: blob:",
-  "style-src 'unsafe-inline' data:",
-  "font-src data:",
-  "media-src data: blob:",
-  "connect-src 'none'",
-  "frame-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "navigate-to 'none'",
-];
-
-export function buildSafeHtmlPreviewDocument(html: string, allowScripts = false): string {
-  const csp = [
-    ...HTML_PREVIEW_CSP_BASE,
-    allowScripts ? "script-src 'unsafe-inline' blob:" : "script-src 'none'",
-  ].join('; ');
-  const safetyHead = [
-    `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
-    '<meta name="referrer" content="no-referrer">',
-    '<style>a[href]{pointer-events:none;cursor:not-allowed}</style>',
-  ].join('');
-  if (/<head(?:\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(?:\s[^>]*)?>/i, match => `${match}${safetyHead}`);
-  }
-  if (/<html(?:\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<html(?:\s[^>]*)?>/i, match => `${match}<head>${safetyHead}</head>`);
-  }
-  return `<!doctype html><html><head>${safetyHead}</head><body>${html}</body></html>`;
+export interface HtmlPreviewDocumentOptions {
+  /** Read-only proxy base for resources stored beside a cluster HTML report. */
+  assetBaseUrl?: string;
+  /** Opt-in for reports that intentionally load public CDN/API resources. */
+  allowRemoteNetwork?: boolean;
 }
 
+export function buildSafeHtmlPreviewDocument(
+  html: string, allowScripts = false, options: HtmlPreviewDocumentOptions = {},
+): string {
+  const resolved = { ...options, assetBaseUrl: options.assetBaseUrl ? new URL(options.assetBaseUrl, window.location.href).href : undefined };
+  return injectHtmlReportHead(html, htmlReportHead(allowScripts, resolved));
+}
 export function HtmlPreview({ html, name }: { html: string; name: string }) {
   const [allowScripts, setAllowScripts] = useState(false);
   const document = useMemo(

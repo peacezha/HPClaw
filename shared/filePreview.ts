@@ -94,7 +94,10 @@ const GROUPS: readonly PreviewGroup[] = [
     kind: 'html',
     extensions: ['html', 'htm', 'xhtml'],
     mime: 'text/html',
-    maxBytes: 10 * MIB,
+    // Scientific reports (MultiQC, Plotly, Jupyter exports) routinely embed
+    // data and figures in one self-contained document. Keep those previewable
+    // through the dedicated streaming reader instead of a text/head preview.
+    maxBytes: Number.MAX_SAFE_INTEGER,
     textual: true,
   },
   {
@@ -217,7 +220,7 @@ export function classifyPreview(name: string, size: number): PreviewDescriptor {
     };
   }
 
-  if (group.textual && size >= LARGE_TEXT_BYTES) {
+  if (group.textual && group.kind !== 'html' && size >= LARGE_TEXT_BYTES) {
     return {
       kind: group.kind === 'sheet' ? 'text' : group.kind,
       mode: 'head',

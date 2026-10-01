@@ -219,7 +219,7 @@ export default function ConversationList({
                 <div className="flex justify-between items-start">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-xs font-medium text-scholar-100 truncate">{conv.title}</p>
+                      <p data-user-content="true" className="text-xs font-medium text-scholar-100 truncate">{conv.title}</p>
                       {remoteOnly && (
                         <span className="shrink-0 inline-flex items-center rounded border border-accent/40 bg-accent/10 px-1 text-[10px] leading-4 text-accent">计算资源</span>
                       )}

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerFileRoutes } from './registerFileRoutes';
@@ -32,6 +33,49 @@ async function startRoutes(service: Record<string, any>, onResponse?: (response:
 }
 
 describe('remote file routes', () => {
+  it('streams large report documents without using the bounded text reader', async () => {
+    const html = '<html><head></head><body>中文<script src="assets/plot.js"></script></body></html>';
+    const bytes = Buffer.from(html);
+    const service = {
+      stat: vi.fn(async () => ({ name: 'report.html', path: '/home/lin/run/report.html', kind: 'file', size: 512 * 1024 ** 2 })),
+      openReadStream: vi.fn(() => Readable.from([
+        ...[...bytes].map(byte => Buffer.from([byte])),
+        ...Array.from({ length: 12 }, () => Buffer.alloc(1024 * 1024, 32)),
+        Buffer.from('<!--STREAM_COMPLETE-->'),
+      ])),
+      readPreview: vi.fn(),
+    };
+    const base = await startRoutes(service);
+    const response = await fetch(`${base}/api/files/html/document?path=/home/lin/run/report.html&sessionId=active`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
+    const body = await response.text();
+    expect(body).toContain('中文');
+    expect(body).toContain('<base href=');
+    expect(body).toContain('/api/files/html-assets/active/');
+    expect(body.length).toBeGreaterThan(10 * 1024 * 1024);
+    expect(body.endsWith('<!--STREAM_COMPLETE-->')).toBe(true);
+    expect(service.readPreview).not.toHaveBeenCalled();
+    expect(service.openReadStream).toHaveBeenCalledWith('/home/lin/run/report.html');
+  });
+
+  it('reads relative assets but rejects traversal and stale-session cookie fallback', async () => {
+    const service = {
+      stat: vi.fn(async (target: string) => ({ name: 'plot.js', path: target, kind: 'file', size: 2 })),
+      openReadStream: vi.fn(() => Readable.from(['ok'])),
+    };
+    const base = await startRoutes(service);
+    const root = Buffer.from('/home/lin/run').toString('base64url');
+    const asset = await fetch(`${base}/api/files/html-assets/active/${root}/assets/plot.js`);
+    expect(asset.status).toBe(200);
+    expect(await asset.text()).toBe('ok');
+    expect(asset.headers.get('content-type')).toContain('javascript');
+    expect(service.stat).toHaveBeenCalledWith('/home/lin/run/assets/plot.js');
+    const traversal = await fetch(`${base}/api/files/html-assets/active/${root}/..%2Fsecret.txt`);
+    expect(traversal.status).toBe(403);
+    const stale = await fetch(`${base}/api/files/html-assets/stale/${root}/assets/plot.js`, { headers: { 'X-Test-Cookie-Session-Id': 'active' } });
+    expect(stale.status).toBe(401);
+  });
   it('requires the explicit active SSH session header', async () => {
     const baseUrl = await startRoutes({ list: vi.fn() });
     const response = await fetch(`${baseUrl}/api/remote/files?path=/home/lin`);

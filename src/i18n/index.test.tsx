@@ -74,4 +74,20 @@ describe('global bilingual UI', () => {
     expect(translateUiText('AI request timed out or was interrupted. Click retry.', 'zh-CN'))
       .toBe('AI 请求超时或连接中断，可点击重试');
   });
+
+  it('never translates substrings in brands, domain terms or arbitrary prose', () => {
+    for (const source of ['ChatGPT (OpenAI)', 'OpenAI-compatible API', 'ChIP-seq / DAP-seq / ATAC-seq', 'TSS enrichment, SPOT, FRiP, IDR, bigWig, deepTools', 'Open report_sample.html', '用户的文件传输流程 /data/样本.bw']) {
+      expect(translateUiText(source, 'zh-CN')).toBe(source);
+      expect(translateUiText(source, 'en-US')).toBe(source);
+    }
+  });
+
+  it('preserves user titles even when they match a UI phrase', async () => {
+    render(<LocaleProvider><LanguageToggle /><p data-user-content="true">文件传输</p><span>保存设置</span></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    await waitFor(() => expect(screen.getByText('Save settings')).toBeTruthy());
+    expect(screen.getByText('文件传输')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    await waitFor(() => expect(screen.getByText('保存设置')).toBeTruthy());
+  });
 });

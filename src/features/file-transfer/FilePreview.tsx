@@ -7,10 +7,10 @@ import {
   type FilePreviewPayload,
 } from '@/shared/filePreview';
 import { previewRemote, writeRemote } from './api';
+import HtmlReportFrame from '../../components/rich-content/HtmlReportFrame';
 import {
   decodeBase64,
   DocxPreview,
-  HtmlPreview,
   ImagePreview,
   MarkdownPreview,
   MediaPreview,
@@ -67,17 +67,24 @@ export default function FilePreview({
 
   const loadPreview = useCallback((signal: AbortSignal) => {
     if (!file || !descriptor) return Promise.resolve();
+    if (descriptor.kind === 'html' && file.size >= 50 * 1024 * 1024) {
+      // Reports use the streaming reader rather than buffering/truncating an
+      // entire HTML document in the general file-preview endpoint.
+      setState({ status: 'ready', payload: { path: file.path, content: '', encoding: 'utf8', bytesRead: 0, totalSize: file.size, truncated: true } });
+      return Promise.resolve();
+    }
     if (descriptor.mode === 'unsupported') {
       setState({ status: 'unsupported', reason: descriptor.reason || '暂不支持此文件类型' });
       return Promise.resolve();
     }
     setState({ status: 'loading' });
+    const readDescriptor = descriptor.kind === 'html' ? { ...descriptor, maxBytes: 50 * 1024 * 1024 } : descriptor;
     const request = resolvedSource === 'remote'
       ? sessionId
-        ? previewRemote(sessionId, file.path, descriptor, signal)
+        ? previewRemote(sessionId, file.path, readDescriptor, signal)
         : Promise.reject(new Error('远程预览需要活动的 SSH 会话'))
       : window.hpclawDesktop?.localFiles.preview
-        ? window.hpclawDesktop.localFiles.preview(file.path, descriptor)
+        ? window.hpclawDesktop.localFiles.preview(file.path, readDescriptor)
         : Promise.reject(new Error('本地预览仅在桌面应用中可用'));
     return request.then(payload => {
       if (!signal.aborted) setState({ status: 'ready', payload });
@@ -173,7 +180,7 @@ export default function FilePreview({
           ? <SheetPreview text={payload.content} />
           : <SheetPreview bytes={binary!} />;
       case 'html':
-        return <HtmlPreview html={payload.content} name={file.name} />;
+        return <HtmlReportFrame path={file.path} sessionId={resolvedSource === 'remote' ? sessionId : undefined} workspace={resolvedSource === 'local' ? file.path.slice(0, Math.max(file.path.lastIndexOf('/'), file.path.lastIndexOf('\\'))) : undefined} title={`HTML 预览 ${file.name}`} initialScripts={false} />;
       case 'audio':
       case 'video':
         return (

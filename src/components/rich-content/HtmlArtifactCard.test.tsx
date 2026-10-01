@@ -47,17 +47,16 @@ describe('HtmlArtifactCard', () => {
     render(<HtmlArtifactCard path="/home/u/run/report.html" sessionId={SESSION} />);
     fireEvent.click(screen.getByRole('button', { name: '展开网页预览' }));
 
-    await waitFor(() => expect(screen.getByTestId('html-artifact-iframe')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('html-report-iframe')).toBeTruthy());
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe('/api/files/read');
+    expect(url).toBe('/api/files/html/resolve');
     expect((init as RequestInit).headers).toMatchObject({ 'X-SSH-Session-Id': SESSION });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ path: '/home/u/run/report.html' });
 
-    const iframe = screen.getByTestId('html-artifact-iframe');
-    const srcDoc = iframe.getAttribute('srcdoc') || '';
-    expect(srcDoc).toContain('<h1>报告</h1>');
-    expect(srcDoc).toContain('Content-Security-Policy');
-    expect(srcDoc).toContain("script-src 'unsafe-inline'");
+    const iframe = screen.getByTestId('html-report-iframe');
+    expect(iframe.getAttribute('src')).toContain('/api/files/html/document?');
+    expect(iframe.getAttribute('src')).toContain(`sessionId=${SESSION}`);
+    expect(iframe.hasAttribute('srcdoc')).toBe(false);
     expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
   });
 
@@ -100,7 +99,7 @@ describe('HtmlArtifactCard', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
 
-    await waitFor(() => expect(screen.getByTestId('html-artifact-iframe')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('html-report-iframe')).toBeTruthy());
     expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(failedCalls);
   });
 

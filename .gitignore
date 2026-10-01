@@ -16,6 +16,8 @@ coverage/
 .creds_*.json
 uploads/
 conversations/
+# Source modules are not runtime conversation archives.
+!server/conversations/
 .superpowers/
 .worktrees/
 

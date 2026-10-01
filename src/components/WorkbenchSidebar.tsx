@@ -12,6 +12,7 @@ import {
   MessageCircle,
   MessageSquare,
   Moon,
+  PanelLeftClose,
   Play,
   Plus,
   RefreshCw,
@@ -27,6 +28,8 @@ import { listWorkflows } from '../features/workflows/api';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
 import ConversationList from './ConversationList';
 import ClusterFileTree from './ClusterFileTree';
+import { LanguageToggle } from '../i18n';
+import { version as appVersion } from '../../package.json';
 
 export type WorkbenchSidebarTab = 'conversations' | 'compute' | 'files' | 'workflows' | 'webapis';
 
@@ -60,6 +63,9 @@ function orderWorkflowCategories(categories: Iterable<string>): string[] {
 }
 
 interface WorkbenchSidebarProps {
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
+  onChooseChatTarget?: (id: string) => void;
   activeTab: WorkbenchSidebarTab;
   onActiveTabChange: (tab: WorkbenchSidebarTab) => void;
   /** 已连接计算资源数量（>0 时在“计算资源”导航上显示徽标） */
@@ -98,6 +104,9 @@ interface WorkbenchSidebarProps {
 }
 
 export default function WorkbenchSidebar({
+  expanded = true,
+  onToggleExpanded,
+  onChooseChatTarget,
   activeTab,
   onActiveTabChange,
   connectedComputeCount,
@@ -166,11 +175,25 @@ export default function WorkbenchSidebar({
     .map(category => ({ category, items: byCategory.get(category)! }));
 
   return (
-    <aside className="w-[288px] max-w-[34vw] min-w-[232px] h-full shrink-0 border-r border-scholar-700 bg-scholar-950 flex flex-col overflow-hidden">
+    <aside data-sidebar-open={expanded} className="hpclaw-sidebar h-full shrink-0 border-r border-scholar-700 bg-scholar-950 flex flex-col overflow-hidden">
       {/* 品牌块 */}
-      <div className="flex shrink-0 items-center gap-2 px-4 pt-3.5 pb-1.5">
-        <span className="text-sm font-semibold tracking-wide text-scholar-50">HPClaw</span>
+      <div className="hpclaw-brand flex shrink-0 items-center gap-3 px-4 py-5">
+        <svg viewBox="0 0 36 36" className="h-9 w-9 text-accent shrink-0" fill="none" aria-hidden="true">
+          <path d="M8 9L28 9L28 27L8 27Z M8 9L28 27 M28 9L8 27" stroke="currentColor" strokeWidth="1.2" opacity=".45" />
+          <circle cx="8" cy="9" r="3.4" fill="currentColor" /><circle cx="28" cy="9" r="3.4" fill="currentColor" />
+          <circle cx="8" cy="27" r="3.4" fill="currentColor" /><circle cx="28" cy="27" r="3.4" fill="currentColor" />
+          <circle cx="18" cy="18" r="3" fill="currentColor" opacity=".5" />
+        </svg>
+        <div className="min-w-0 flex-1"><span className="block text-base font-semibold tracking-tight text-scholar-50">HPClaw</span><span className="block text-[10px] tracking-wider text-scholar-400" data-i18n-skip="true">RESEARCH WORKSPACE</span></div>
+        {onToggleExpanded && <button type="button" onClick={onToggleExpanded} className="btn-icon" aria-label="收起导航" title="收起导航"><PanelLeftClose className="h-4 w-4" /></button>}
       </div>
+
+      {onChooseChatTarget && <label className="hpclaw-target-picker mx-3 mb-3 block rounded-xl border border-scholar-700 bg-scholar-900 p-3">
+        <span className="mb-1.5 flex items-center gap-2 text-[10px] font-medium text-scholar-300"><span className={`h-1.5 w-1.5 rounded-full ${activeComputeTargetId !== 'local-workbench' ? 'bg-emerald-500' : 'bg-scholar-400'}`} />当前任务执行位置</span>
+        <select aria-label="当前任务执行位置" value={activeComputeTargetId} onChange={event => onChooseChatTarget(event.target.value)} className="w-full min-w-0 bg-transparent text-xs font-medium text-scholar-100 outline-none" data-i18n-skip="true">
+          {computeTargets.map(target => <option key={target.id} value={target.id}>{target.label}</option>)}
+        </select>
+      </label>}
 
       <div className="px-3 pt-1.5 pb-2 shrink-0">
         {/* 区标题行：固定单行高度，动作（新任务/管理流程）收进同一行，
@@ -196,7 +219,7 @@ export default function WorkbenchSidebar({
       </div>
 
       {/* 主导航：对话 / 计算资源 / 文件 / 流程 —— 横排（图标在上、小字在下，省纵向空间） */}
-      <nav className="shrink-0 grid grid-cols-4 gap-1 px-2 pb-2.5" aria-label="主导航">
+      <nav className="hpclaw-main-nav shrink-0 grid grid-cols-2 gap-1.5 px-3 pb-3" aria-label="主导航">
         {NAV_ITEMS.map(item => {
           const Icon = item.icon;
           const active = item.id === activeTab;
@@ -209,8 +232,8 @@ export default function WorkbenchSidebar({
               onClick={() => onActiveTabChange(item.id)}
               aria-pressed={active}
               title={item.label}
-              className={`relative flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 transition-colors ${
-                active ? 'bg-accent/15 text-scholar-50' : 'text-scholar-400 hover:bg-scholar-800/70 hover:text-scholar-200'
+              className={`relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 transition-colors ${
+                active ? 'bg-accent/12 text-scholar-50' : 'text-scholar-300 hover:bg-scholar-800/70 hover:text-scholar-100'
               }`}
             >
               <span className="relative">
@@ -223,7 +246,7 @@ export default function WorkbenchSidebar({
                   </span>
                 )}
               </span>
-              <span className={`text-[10px] leading-tight truncate max-w-full ${active ? 'text-scholar-100' : ''}`}>{item.label}</span>
+              <span className={`text-xs leading-tight truncate max-w-full ${active ? 'text-scholar-100 font-medium' : ''}`}>{item.label}</span>
             </button>
           );
         })}
@@ -417,6 +440,7 @@ export default function WorkbenchSidebar({
           <span className="text-[10px] leading-tight">更新</span>
         </button>
       </div>
+      <div className="flex items-center justify-between px-4 pb-3 text-[10px] text-scholar-400"><span data-i18n-skip="true">HPClaw · v{appVersion}</span><LanguageToggle /></div>
     </aside>
   );
 }

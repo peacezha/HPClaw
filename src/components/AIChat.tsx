@@ -1787,7 +1787,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   return (
     <div className={`relative h-full flex flex-col bg-scholar-900 ${workspaceLayout ? 'hpclaw-chat-workspace' : 'border-r border-scholar-700'}`}>
       {/* 主工作台使用轻量标题栏；旧侧栏模式仍保留原标签导航。 */}
-      <div className={`border-b border-scholar-700 bg-scholar-900 flex items-center justify-between gap-2 shrink-0 ${workspaceLayout ? 'h-14 px-5' : 'px-2 py-2'}`}>
+      <div className={`hpclaw-chat-header border-b border-scholar-700 bg-scholar-900 flex items-center justify-between gap-2 shrink-0 ${workspaceLayout ? 'min-h-16 px-6 py-3' : 'px-2 py-2'}`}>
         {workspaceLayout ? (
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1796,7 +1796,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               )}
               <h1 className="truncate text-sm font-semibold text-scholar-50">{activeTab === 'skills' ? '技能库' : 'AI 工作台'}</h1>
             </div>
-            {activeTab === 'chat' && <p className="mt-0.5 text-[10px] text-scholar-500">对话、文件与流程保持在同一个任务上下文中</p>}
+            {activeTab === 'chat' && <p className="hpclaw-header-description mt-0.5 text-[10px] text-scholar-400">对话、文件与流程保持在同一个任务上下文中</p>}
           </div>
         ) : (
         <div className="flex bg-scholar-800 rounded-lg p-0.5 gap-0.5 min-w-0 overflow-x-auto shrink">
@@ -1970,7 +1970,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
         />
       ) : !isAiSetup ? (
         /* AI Setup */
-        <div className="flex-1 overflow-y-auto px-6 py-10">
+         <div className="hpclaw-setup flex-1 overflow-y-auto px-6 py-10">
           <div className="mx-auto max-w-2xl">
           <div className="mb-6 text-center">
             <span className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-accent/10 text-accent">
@@ -1998,6 +1998,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               onBaseUrlChange={setAiBaseUrl}
               apiKeyRequired
             />
+            <details className="hpclaw-advanced-settings"><summary className="cursor-pointer py-2 text-xs font-medium text-scholar-300">高级执行设置</summary><div className="pt-3">
             <AgentSettingsFields
               engine={agentEngine}
               onEngineChange={setAgentEngine}
@@ -2012,6 +2013,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               onMaxCommandsChange={setAgentMaxCommands}
               onMaxStepsChange={setAgentMaxSteps}
             />
+            </div></details>
             <button type="submit" className="btn-primary w-full">保存设置</button>
           </form>
           </div>
@@ -2048,11 +2050,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               </div>
             )}
             {!loadingConversationId && messages.length === 0 && !isAiLoading && (
-              <div className="flex flex-col items-center justify-center h-full text-scholar-400 text-xs gap-3 px-4 pb-10">
-                <span className="mb-1 flex h-12 w-12 items-center justify-center rounded-lg bg-accent/10 text-accent"><Bot className="w-6 h-6" /></span>
-                <p className="text-lg text-scholar-100 font-semibold">今天想完成什么任务？</p>
-                <p className="text-center max-w-lg text-sm leading-6">可以先讨论方案，也可以选择左侧文件或流程；需要计算时，HPClaw 会调用后台计算资源。</p>
-                <div className="grid grid-cols-2 gap-2 w-full max-w-2xl mt-3">
+              <div className="hpclaw-welcome flex flex-col justify-center min-h-full text-scholar-400 text-xs gap-3 px-2 py-8">
+                <span className="hpclaw-eyebrow text-accent" data-i18n-skip="true">FROM QUESTION TO EVIDENCE</span>
+                <p className="hpclaw-welcome-title text-scholar-50 font-semibold">今天想完成什么任务？</p>
+                <p className="max-w-lg text-sm leading-7">可以先讨论方案，也可以选择左侧文件或流程；需要计算时，HPClaw 会调用后台计算资源。</p>
+                <div className="hpclaw-starter-grid grid grid-cols-2 gap-3 w-full mt-6">
                   {['对当前目录的 FASTQ 文件做质控分析',
                     '查看计算资源作业状态并分析资源使用',
                     '用 BLAST 搜索同源序列',
@@ -2064,8 +2066,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                             setInputValue(t(s));
                             requestAnimationFrame(() => autoResizeChatInput());
                           }}
-                      className="text-left px-3.5 py-3 bg-scholar-950/45 hover:bg-scholar-800 border border-scholar-700 rounded-lg text-scholar-300 hover:text-scholar-100 transition-colors"
-                    >{t(s)}</button>
+                      className="hpclaw-starter-card text-left px-4 py-4 bg-scholar-950/45 border border-scholar-700 rounded-xl text-scholar-200 transition-colors"
+                    ><span className="mb-4 flex items-center justify-between text-accent"><span className="font-mono text-[10px] opacity-70">0{i + 1}</span>{i === 1 || i === 4 ? <Cpu className="h-4 w-4" /> : i === 0 ? <FileText className="h-4 w-4" /> : <GitBranch className="h-4 w-4" />}</span><span className="text-xs leading-6">{t(s)}</span></button>
                   ))}
                 </div>
               </div>

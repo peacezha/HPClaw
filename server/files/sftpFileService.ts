@@ -28,7 +28,7 @@ interface SftpCallbacks {
   unlink(remotePath: string, callback: (error?: Error) => void): void;
   rmdir(remotePath: string, callback: (error?: Error) => void): void;
   chmod(remotePath: string, mode: number, callback: (error?: Error) => void): void;
-  createReadStream(remotePath: string, options: { end: number }): ReadableType;
+  createReadStream(remotePath: string, options?: { end: number }): ReadableType;
   createWriteStream(remotePath: string): Writable;
 }
 
@@ -86,6 +86,10 @@ export class SftpFileService {
     const safePath = assertSafeRemotePath(remotePath);
     const attrs = await this.readStat(safePath);
     return this.toEntry(safePath, attrs);
+  }
+
+  openReadStream(remotePath: string): ReadableType {
+    return this.callbacks.createReadStream(assertSafeRemotePath(remotePath));
   }
 
   async mkdir(remotePath: string): Promise<void> {
@@ -216,8 +220,8 @@ export class SftpFileService {
     const options: PreviewReadOptions = legacy
       ? { mode: 'binary', maxBytes: maxBytesOrOptions }
       : maxBytesOrOptions;
-    if (!Number.isInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 50 * 1024 * 1024) {
-      throw new Error('preview limit must be between 1 byte and 50 MiB');
+    if (!Number.isInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 256 * 1024 * 1024) {
+      throw new Error('preview limit must be between 1 byte and 256 MiB');
     }
     if (!['binary', 'text', 'head'].includes(options.mode)) {
       throw new Error('preview mode must be binary, text, or head');
