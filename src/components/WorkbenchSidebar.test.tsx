@@ -5,9 +5,6 @@ import WorkbenchSidebar, { type WorkbenchSidebarTab } from './WorkbenchSidebar';
 import { listWorkflows } from '../features/workflows/api';
 import type { Workflow } from '@/shared/workflow';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
-// The language switch is tested with its real provider in src/i18n; this
-// suite isolates sidebar navigation and does not mutate translated DOM.
-vi.mock('../i18n', () => ({ LanguageToggle: () => <button>EN</button> }));
 
 vi.mock('../features/workflows/api', () => ({
   listWorkflows: vi.fn(async () => []),
@@ -69,6 +66,15 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 describe('WorkbenchSidebar 主导航', () => {
+  it('保留 0.4.39 的紧凑四列导航、侧栏尺寸和简单品牌', () => {
+    const { container } = render(<WorkbenchSidebar {...makeProps()} />);
+    expect(container.querySelector('aside')).toHaveClass('w-[288px]', 'max-w-[34vw]', 'min-w-[232px]');
+    expect(screen.getByRole('navigation', { name: '主导航' })).toHaveClass('grid-cols-4');
+    expect(screen.getByRole('button', { name: '对话' })).toHaveClass('flex-col');
+    expect(screen.queryByText('RESEARCH WORKSPACE')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '收起导航' })).not.toBeInTheDocument();
+  });
+
   it('渲染品牌与横排四个主导航（数据资源在底部工具行），当前项高亮，计算资源带已连接数徽标', () => {
     render(<WorkbenchSidebar {...makeProps()} />);
     expect(screen.getByText('HPClaw')).toBeInTheDocument();

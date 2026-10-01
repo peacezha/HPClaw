@@ -4,6 +4,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import WebPanelDrawer, { type WebPanelRequest } from './WebPanelDrawer';
 
 beforeEach(() => {
+  window.localStorage.clear();
   vi.stubGlobal('fetch', vi.fn());
 });
 
@@ -25,6 +26,21 @@ function renderDrawer(panels: WebPanelRequest[], activeIndex = 0) {
 }
 
 describe('WebPanelDrawer', () => {
+  it('uses the classic 600px opaque panel even if the redesigned width was saved', () => {
+    window.localStorage.setItem('hpclaw_web_panel_width', '760');
+    renderDrawer([{ url: 'https://example.com' }]);
+    const drawer = screen.getByTestId('web-panel-drawer');
+    expect(drawer.style.width).toBe('600px');
+    expect(drawer.style.maxWidth).toBe('92vw');
+    expect(drawer).toHaveClass('bg-scholar-900');
+    expect(drawer).not.toHaveClass('backdrop-blur-xl');
+    fireEvent.click(screen.getByRole('button', { name: '全屏预览' }));
+    expect(drawer.style.width).toBe('100vw');
+    expect(drawer.style.maxWidth).toBe('100vw');
+    fireEvent.click(screen.getByRole('button', { name: '退出全屏预览' }));
+    expect(drawer.style.width).toBe('600px');
+  });
+
   it('renders nothing when there are no tabs', () => {
     const { container } = renderDrawer([]);
     expect(container.firstChild).toBeNull();

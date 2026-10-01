@@ -41,7 +41,7 @@ export default function HtmlReportFrame({ path, sessionId, workspace, title = '�
   if (local && workspace) query.set('workspace', workspace);
   const src = `${local ? '/api/local/files' : '/api/files'}/html/document?${query}`;
   return <div className="flex h-full min-h-0 flex-1 flex-col" data-testid="html-report-frame">
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-scholar-700 px-3 py-2 text-[11px] text-scholar-300">
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-scholar-700/60 px-2.5 py-1 text-[10px] text-scholar-500 shrink-0">
       <span>隔离预览 · {local ? '本地资源' : '集群资源'} · 流式加载{report ? ` · ${(report.metadata.size / 1024 / 1024).toFixed(1)} MiB` : ''}</span>
       <div className="flex flex-wrap gap-3">
         <button type="button" className="text-accent hover:underline" onClick={() => setNetwork(!network)}>{network ? '禁止外部资源' : '允许外部资源'}</button>

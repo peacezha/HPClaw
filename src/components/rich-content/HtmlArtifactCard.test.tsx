@@ -30,6 +30,15 @@ afterEach(() => {
 });
 
 describe('HtmlArtifactCard', () => {
+  it('keeps the classic compact card and initial height while allowing manual resizing', () => {
+    render(<HtmlArtifactCard html="<html><body>report</body></html>" />);
+    expect(screen.getByTestId('html-artifact-card')).toHaveClass('rounded-lg', 'bg-scholar-900/60');
+    fireEvent.click(screen.getByRole('button', { name: '展开网页预览' }));
+    const preview = screen.getByTestId('html-artifact-iframe').parentElement!;
+    expect(preview.style.height).toBe('384px');
+    expect(preview.style.resize).toBe('vertical');
+  });
+
   it('stays collapsed by default and does not fetch the file', () => {
     render(<HtmlArtifactCard path="/home/u/run/report.html" sessionId={SESSION} />);
 

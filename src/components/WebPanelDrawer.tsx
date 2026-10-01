@@ -1,5 +1,5 @@
 // 侧边网页栏：AI 答复里的 http(s) 链接用 <webview> 内嵌；集群远程 HTML
-// （report.html 等）经 /api/files/read 取回后用沙箱 iframe srcDoc 渲染。
+// （report.html 等）经专用流式接口取回后用沙箱 iframe 渲染。
 // 支持多标签：新页面追加为标签，内容常驻（切换不重载），全部关闭后面板隐藏。
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -40,11 +40,12 @@ export default function WebPanelDrawer({ panels, activeIndex, onSelectTab, onClo
   const resizeCleanup = useRef<(() => void) | null>(null);
   useEffect(() => () => resizeCleanup.current?.(), []);
   const [panelWidth, setPanelWidth] = useState(() => {
-    const stored = Number(window.localStorage.getItem('hpclaw_web_panel_width'));
-    return Number.isFinite(stored) && stored >= 440 ? stored : 760;
+    // Classic layout starts at v0.4.39's 600px; do not inherit the redesigned width.
+    const stored = Number(window.localStorage.getItem('hpclaw_web_panel_width_classic'));
+    return Number.isFinite(stored) && stored >= 440 ? stored : 600;
   });
   useEffect(() => {
-    window.localStorage.setItem('hpclaw_web_panel_width', String(Math.round(panelWidth)));
+    window.localStorage.setItem('hpclaw_web_panel_width_classic', String(Math.round(panelWidth)));
   }, [panelWidth]);
 
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -82,8 +83,8 @@ export default function WebPanelDrawer({ panels, activeIndex, onSelectTab, onClo
           animate={{ x: 0 }}
           exit={{ x: '100%' }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          style={{ width: maximized ? '100vw' : `${panelWidth}px`, maxWidth: '100vw' }}
-          className="hpclaw-web-drawer fixed inset-y-0 right-0 z-40 flex flex-col bg-scholar-900/95 border-l border-scholar-700 shadow-2xl shadow-black/50 backdrop-blur-xl"
+          style={{ width: maximized ? '100vw' : `${panelWidth}px`, maxWidth: maximized ? '100vw' : '92vw' }}
+          className="fixed inset-y-0 right-0 z-40 flex flex-col bg-scholar-900 border-l border-scholar-700 shadow-2xl shadow-black/50"
           data-testid="web-panel-drawer"
         >
           {!maximized && (
@@ -251,7 +252,7 @@ function WebViewContent({ url }: { url: string }) {
   );
 }
 
-/** 集群远程 HTML：取回内容后走 buildSafeHtmlPreviewDocument 的 CSP 沙箱渲染。
+/** 集群/本地 HTML：专用接口流式传输，保留 CSP 沙箱渲染。
  *  默认启用脚本——这是用户自己的结果网页，交互图表需要 JS；CSP 仍禁外部网络，可手动关闭。 */
 function RemoteHtmlContent({ panel }: { panel: WebPanelRequest }) {
   if (!panel.remotePath) return <LoadError detail="未提供报告路径" onRetry={() => {}} />;
