@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
