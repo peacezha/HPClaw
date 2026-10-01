@@ -1,12 +1,15 @@
 import type {
   PaperWorkflowQuestion,
+  PaperParameterEvidence,
+  PaperRawDataRecord,
+  PaperReproducibilityAudit,
   PaperToolLink,
   Workflow,
   WorkflowPaperImport,
   WorkflowStep,
 } from './workflowTypes';
 
-export const PAPER_IMPORTER_VERSION = 'paper-agent-v2';
+export const PAPER_IMPORTER_VERSION = 'paper-agent-v3';
 
 export interface PaperContextSummary {
   originalChars: number;
@@ -14,6 +17,7 @@ export interface PaperContextSummary {
   truncated: boolean;
   selectionMode: 'methods' | 'fulltext-fallback';
   methodSections: string[];
+  dataSections?: string[];
 }
 
 export interface PaperExtractionMeta {
@@ -22,6 +26,8 @@ export interface PaperExtractionMeta {
   excludedBranches: string[];
   unresolvedQuestions: PaperWorkflowQuestion[];
   toolLinks: PaperToolLink[];
+  rawData: PaperRawDataRecord[];
+  parameterEvidence: PaperParameterEvidence[];
   warnings: string[];
 }
 
@@ -75,14 +81,87 @@ export function sanitizePaperExtractionMeta(value: unknown): PaperExtractionMeta
       .filter(item => item.canonicalName)
       .slice(0, 50)
     : [];
+  const rawData = Array.isArray(raw.rawData)
+    ? raw.rawData
+      .filter(item => item && typeof item === 'object')
+      .map((item: any, index): PaperRawDataRecord => {
+        const record: PaperRawDataRecord = {
+          id: String(item.id || `D${index + 1}`).trim().slice(0, 50),
+          runAccessions: cleanStrings(item.runAccessions, 100, 100),
+          files: cleanStrings(item.files, 100, 500),
+          urls: cleanStrings(item.urls, 100, 1000),
+          checksums: cleanStrings(item.checksums, 100, 200),
+          evidence: String(item.evidence || item.sentence || '').trim().slice(0, 1000),
+        };
+        for (const key of ['repository', 'projectAccession', 'sampleAccession', 'sampleName', 'condition', 'replicate', 'assay', 'layout'] as const) {
+          const field = String(item[key] || '').trim();
+          if (field) record[key] = field.slice(0, 300);
+        }
+        return record;
+      })
+      .filter(item => item.evidence || item.projectAccession || item.sampleAccession || item.runAccessions.length || item.files.length)
+      .slice(0, 500)
+    : [];
+  const parameterEvidence = Array.isArray(raw.parameterEvidence)
+    ? raw.parameterEvidence
+      .filter(item => item && typeof item === 'object')
+      .map((item: any, index): PaperParameterEvidence => ({
+        id: String(item.id || `P${index + 1}`).trim().slice(0, 50),
+        name: String(item.name || '').trim().slice(0, 200),
+        value: String(item.value || '').trim().slice(0, 300),
+        ...(item.appliesTo ? { appliesTo: String(item.appliesTo).trim().slice(0, 300) } : {}),
+        evidence: String(item.evidence || item.sentence || '').trim().slice(0, 1000),
+        covered: item.covered === true,
+      }))
+      .filter(item => item.name && item.value)
+      .slice(0, 500)
+    : [];
   return {
     primaryPath: String(raw.primaryPath || '').trim().slice(0, 500),
     methodSections: cleanStrings(raw.methodSections, 30, 200),
     excludedBranches: cleanStrings(raw.excludedBranches, 30, 500),
     unresolvedQuestions: questions,
     toolLinks,
+    rawData,
+    parameterEvidence,
     warnings: cleanStrings(raw.warnings, 30, 500),
   };
+}
+
+function hasStableDataLocator(item: PaperRawDataRecord): boolean {
+  // 项目 accession 只能定位整个研究，不能证明某个样本对应哪个原始文件。
+  return Boolean(item.sampleAccession || item.runAccessions.length || item.files.length || item.urls.length);
+}
+
+export function evaluatePaperReproducibility(
+  workflow: Pick<Workflow, 'steps'>,
+  extraction: PaperExtractionMeta,
+): PaperReproducibilityAudit {
+  const rawData = extraction.rawData;
+  const locatable = rawData.filter(hasStableDataLocator);
+  const mapped = rawData.filter(item => hasStableDataLocator(item) && Boolean(item.sampleName || item.sampleAccession));
+  const rawDataStatus: PaperReproducibilityAudit['rawDataStatus'] = rawData.length === 0
+    ? 'missing'
+    : locatable.length === rawData.length && mapped.length === rawData.length
+      ? 'complete'
+      : 'partial';
+  const coveredParams = extraction.parameterEvidence.filter(item => item.covered).length;
+  const parameterStatus: PaperReproducibilityAudit['parameterStatus'] = extraction.parameterEvidence.length === 0
+    ? 'missing'
+    : coveredParams === extraction.parameterEvidence.length
+      ? 'complete'
+      : 'partial';
+  const hasAcquisitionStep = workflow.steps.some(step =>
+    /(?:prefetch|fasterq-dump|fastq-dump|enaDataGet|ascp|aspera|wget|curl|download|下载|获取原始数据|raw[_-]?data[_-]?manifest)/i
+      .test(`${step.title}\n${step.command}`),
+  );
+  const missing: string[] = [];
+  if (rawDataStatus === 'missing') missing.push('未从正文/数据可用性章节提取原始数据仓库、accession 或文件来源');
+  if (rawDataStatus === 'partial') missing.push('原始数据记录缺少稳定 accession/文件定位或样本映射');
+  if (rawData.length > 0 && !hasAcquisitionStep) missing.push('流程缺少按 accession/文件清单获取原始数据并生成 manifest 的步骤');
+  if (parameterStatus === 'missing') missing.push('未形成论文参数—流程参数的逐条证据表');
+  if (parameterStatus === 'partial') missing.push(`${extraction.parameterEvidence.length - coveredParams} 个论文参数尚未进入流程或明确排除`);
+  return { rawDataStatus, parameterStatus, hasAcquisitionStep, missing };
 }
 
 function placeholderNames(workflow: Pick<Workflow, 'steps' | 'manifest'>): string[] {
@@ -149,11 +228,14 @@ export function evaluatePaperWorkflow(
   const references = manifest?.references ?? [];
   const versionedSoftware = software.filter(item => /\d/.test(item.module || '')).length;
   const resourceBase = computeSteps.length && software.length === 0 ? 0 : Math.min(55, software.length * 18);
+  const reproducibility = evaluatePaperReproducibility(workflow, extraction);
+  const dataResourceScore = reproducibility.rawDataStatus === 'complete' ? 15 : reproducibility.rawDataStatus === 'partial' ? 7 : 0;
   const resources = clampScore(
     resourceBase
-    + Math.min(20, references.length * 10)
-    + (manifest?.inputHint ? 15 : 0)
-    + (software.length ? (versionedSoftware / software.length) * 10 : 0),
+    + Math.min(15, references.length * 8)
+    + (manifest?.inputHint ? 10 : 0)
+    + (software.length ? (versionedSoftware / software.length) * 5 : 0)
+    + dataResourceScore,
   );
 
   const qcSteps = steps.filter(step => step.agent?.kind === 'qc').length;
@@ -182,6 +264,7 @@ export function evaluatePaperWorkflow(
   const blockingQuestions = extraction.unresolvedQuestions.filter(question => question.blocking);
   if (blockingQuestions.length > 0) blockers.push(`${blockingQuestions.length} 个关键信息需要用户确认`);
   if (undeclared.length > 0) blockers.push(`命令中有未声明参数：${undeclared.join('、')}`);
+  blockers.push(...reproducibility.missing);
   if (supportedSteps < totalSteps) warnings.push(`${totalSteps - supportedSteps} 个步骤缺少中高可信度的章节证据`);
   if (software.length === 0 && computeSteps.length > 0) warnings.push('没有形成软件环境清单');
   const unmatchedTools = extraction.toolLinks.filter(link => link.status === 'paper_only' || link.status === 'code_only');

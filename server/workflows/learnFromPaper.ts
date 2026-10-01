@@ -5,6 +5,7 @@ import { generateText, parsePartialJson } from 'ai';
 import { buildModel } from '../ai/agentRunner';
 import type { AIProfile } from '../ai/types';
 import type { PaperContextSummary } from './paperWorkflowQuality';
+import type { PaperParameterEvidence, PaperRawDataRecord } from './workflowTypes';
 
 const MAX_FETCH_TEXT = 240_000;
 const MAX_MODEL_TEXT = 70_000;
@@ -34,7 +35,9 @@ export function stripHtmlToText(html: string): string {
 }
 
 const METHOD_HEADING = /^(?:\d+(?:\.\d+)*[.)]?\s*)?(?:materials?\s+(?:and|&)\s+methods?|methods?|experimental\s+procedures?|methodology|bioinformatics(?:\s+analysis)?|computational\s+(?:methods?|analysis)|data\s+(?:processing|analysis)|statistical\s+analysis|implementation|workflow|pipeline)(?:\s*[:：].*)?$/i;
-const MAJOR_HEADING = /^(?:\d+(?:\.\d+)*[.)]?\s*)?(?:abstract|introduction|background|materials?\s+(?:and|&)\s+methods?|methods?|results?|discussion|conclusions?|references|acknowledg(?:e)?ments?|supplementary\s+(?:information|materials?|methods?))(?:\s*[:：].*)?$/i;
+const DATA_HEADING = /^(?:\d+(?:\.\d+)*[.)]?\s*)?(?:data|code|data\s+and\s+code|code\s+and\s+data|resource)\s+(?:availability|access)(?:\s+statement)?(?:\s*[:：].*)?$/i;
+const MAJOR_HEADING = /^(?:\d+(?:\.\d+)*[.)]?\s*)?(?:abstract|introduction|background|materials?\s+(?:and|&)\s+methods?|methods?|results?|discussion|conclusions?|references|acknowledg(?:e)?ments?|supplementary\s+(?:information|materials?|methods?)|(?:data|code|data\s+and\s+code|code\s+and\s+data|resource)\s+(?:availability|access)(?:\s+statement)?)(?:\s*[:：].*)?$/i;
+const DATA_EVIDENCE = /\b(?:GSE\d+|GSM\d+|SRP\d+|SRR\d+|SRS\d+|PRJNA\d+|PRJEB\d+|ERP\d+|ERR\d+|ERS\d+|DRP\d+|DRR\d+|DRA\d+|E-MTAB-\d+|E-GEOD-\d+)\b|\b(?:GEO|SRA|ENA|BioProject|ArrayExpress|dbGaP|Zenodo|Figshare|Dryad)\b/i;
 
 export interface PreparedPaperContext extends PaperContextSummary {
   text: string;
@@ -66,8 +69,11 @@ export function preparePaperContext(input: string): PreparedPaperContext {
     if (line.length <= 140 && MAJOR_HEADING.test(line)) headings.push({ index, title: line });
   });
   const methodHeadings = headings.filter(heading => METHOD_HEADING.test(heading.title));
+  const dataHeadings = headings.filter(heading => DATA_HEADING.test(heading.title));
   const methodSections: string[] = [];
+  const dataSections: string[] = dataHeadings.map(heading => heading.title.slice(0, 200));
   const chunks: string[] = [];
+  const dataChunks: string[] = [];
 
   if (methodHeadings.length > 0) {
     chunks.push(lines.slice(0, Math.min(methodHeadings[0].index, 80)).join('\n').slice(0, 8_000));
@@ -80,15 +86,32 @@ export function preparePaperContext(input: string): PreparedPaperContext {
         chunks.push(chunk);
       }
     }
-    const availability = lines
-      .filter(line => /github\.com|code availability|data availability|source code|software availability/i.test(line))
-      .slice(0, 30)
-      .join('\n');
-    if (availability) chunks.push(`Code and data availability\n${availability}`);
+    for (const heading of dataHeadings) {
+      const next = headings.find(candidate => candidate.index > heading.index);
+      const end = next?.index ?? Math.min(lines.length, heading.index + 250);
+      const chunk = lines.slice(heading.index, end).join('\n').slice(0, 15_000);
+      if (chunk.length >= 20) {
+        dataChunks.push(chunk);
+      }
+    }
+    const evidenceWindows = new Set<string>();
+    lines.forEach((line, index) => {
+      if (DATA_EVIDENCE.test(line) || /github\.com|source code|software availability/i.test(line)) {
+        evidenceWindows.add(lines
+          .slice(Math.max(0, index - 2), Math.min(lines.length, index + 3))
+          .map(candidate => candidate.slice(0, 1_000))
+          .join('\n'));
+      }
+    });
+    const availability = [...evidenceWindows].slice(0, 40).join('\n---\n');
+    if (availability) dataChunks.push(`Raw data, code and accession evidence\n${availability}`);
   }
 
   const selected = methodHeadings.length > 0
-    ? [...new Set(chunks)].join('\n\n').slice(0, MAX_MODEL_TEXT)
+    // accession 常在论文末尾；在字符预算中置于 Methods 之前，避免多段 Methods
+    // 把 Data Availability 挤出模型上下文，同时仍至少保留约 50k 方法文本。
+    ? [chunks[0], [...new Set(dataChunks)].join('\n\n').slice(0, 20_000), ...chunks.slice(1)]
+      .filter(Boolean).join('\n\n').slice(0, MAX_MODEL_TEXT)
     : original.slice(0, MAX_MODEL_TEXT);
   return {
     text: selected,
@@ -97,6 +120,7 @@ export function preparePaperContext(input: string): PreparedPaperContext {
     truncated: raw.length > MAX_MODEL_TEXT,
     selectionMode: methodHeadings.length > 0 ? 'methods' : 'fulltext-fallback',
     methodSections: [...new Set(methodSections)],
+    dataSections: [...new Set(dataSections)],
   };
 }
 
@@ -202,6 +226,8 @@ JSON 格式：
     "excludedBranches":["未纳入主流程的对照方法、替代软件、敏感性分析或补充实验及原因"],
     "unresolvedQuestions":[{"question":"保存/运行前需要用户确认的问题","blocking":true,"affectsSteps":[2]}],
     "toolLinks":[{"canonicalName":"标准工具名","paperMention":"论文中的原写法","codeMention":"代码中的命令/进程写法","paperSection":"章节","codePath":"仓库相对文件","status":"matched|paper_only|code_only|unverified","knowledgeBase":"仅有明确 KB 对应时填写"}],
+    "rawData":[{"id":"D1","repository":"GEO/SRA/ENA 等","projectAccession":"研究/项目 accession","sampleAccession":"样本 accession","runAccessions":["run accession"],"sampleName":"论文样本名","condition":"实验组/条件","replicate":"重复编号","assay":"测序类型","layout":"PE/SE","files":["原始文件名"],"urls":["原文明确 URL"],"checksums":["原文明确 checksum"],"evidence":"逐字证据句"}],
+    "parameterEvidence":[{"id":"P1","name":"参数名","value":"原文值","appliesTo":"工具/步骤","evidence":"逐字证据句","covered":true}],
     "warnings":["正文或仓库之间的不一致、可能缺页等"]
   }
 }
@@ -212,6 +238,9 @@ JSON 格式：
 2. 步骤按数据依赖排列，不限制为 5-10 步；每步必须有可监控的 inputs、outputs 和来源。不要把整篇 Methods 压成一个步骤，也不要为凑数量拆空步骤。
 3. 论文/仓库明确给出的软件版本、参数、阈值和参考数据库版本才可写默认值。没有依据时留空、required=true 或 requiresReview=true，并加入 unresolvedQuestions；严禁写“推测版本”或虚构 QC 阈值。
 3.1 若输入附有「证据清单」（两段式提取的第一段产物）：参数的 defaultValue、QC 阈值、软件版本只能取自清单条目，并在 help/notes 里写明对应证据编号（如 E3）；清单中有值而你没纳入流程的条目，必须逐条出现在 excludedBranches 或 unresolvedQuestions 里说明去向，禁止静默丢弃。
+3.2 必须逐条提取原始数据：仓库、study/project/sample/run accession、样本名、条件、重复、测序类型/单双端、原始文件名/URL/checksum。禁止猜测缺失映射；缺任一关键映射时加入 blocking unresolvedQuestions。
+3.3 只要正文给出公共原始数据，主流程第一段必须包含数据获取与 manifest 生成步骤：按明确 accession/文件清单下载，输出 raw_data_manifest.tsv（样本、条件、重复、accession、文件、checksum）并校验。可以生成标准下载命令，但绝不能发明 accession、文件名或 checksum；缺失信息用 REVIEW_REQUIRED 阻断。
+3.4 parameterEvidence 必须覆盖证据清单中每个参数/阈值；covered=true 仅限该值已进入 params、命令、QC gate 或在 excludedBranches 明确解释。不得静默丢参数。
 4. 仓库代码存在时，命令和文件依赖以仓库为事实来源，论文用于解释方法；若二者冲突，加入 warnings，不要自行选一个后隐瞒冲突。
    先分别列出论文工具名和代码中的命令/进程名，再填写 toolLinks；没有对应关系时必须保留 paper_only/code_only，不得为了看起来完整而强行配对。
 5. 只有论文或仓库足以恢复 CLI 时才写可运行命令。只有软件名但无命令时写“# REVIEW_REQUIRED: 论文只说明使用 X，未给出完整 CLI”，confidence=low、requiresReview=true，禁止按常识补造参数。
@@ -232,6 +261,12 @@ export interface EvidenceInventory {
   inputs: Array<{ id: string; what: string; sentence: string }>;
   references: Array<{ id: string; name: string; version?: string; sentence: string }>;
   stepsMentioned: Array<{ id: string; what: string; sentence: string }>;
+  datasets: Array<{
+    id: string; repository?: string; projectAccession?: string; sampleAccession?: string;
+    runAccessions?: string[]; sampleName?: string; condition?: string; replicate?: string;
+    assay?: string; layout?: string; files?: string[]; urls?: string[]; checksums?: string[];
+    sentence: string;
+  }>;
 }
 
 const EVIDENCE_SYSTEM_PROMPT = `你是论文方法证据提取器。任务：把论文方法学文本中所有可执行的计算分析证据逐条列出，供下游构建分析流程时取值。只输出一个 JSON 对象，不要解释。
@@ -244,13 +279,15 @@ JSON 格式：
   "inputs": [{"id":"I1","what":"输入数据形态（如双端 FASTQ、BAM、样本表）","sentence":"原文出处句"}],
   "references": [{"id":"R1","name":"参考基因组/数据库名","version":"版本或 release（只有原文明确写出才填）","sentence":"原文出处句"}],
   "stepsMentioned": [{"id":"S1","what":"原文提到的分析步骤（一句话）","sentence":"原文出处句"}]
+  ,"datasets": [{"id":"D1","repository":"GEO/SRA/ENA 等","projectAccession":"研究 accession","sampleAccession":"样本 accession","runAccessions":["运行 accession"],"sampleName":"论文样本名","condition":"组别/处理","replicate":"重复编号","assay":"测序类型","layout":"PE/SE","files":["原始文件名"],"urls":["明确 URL"],"checksums":["明确 checksum"],"sentence":"包含数据编号或映射的原文句"}]
 }
 
 硬性规则：
 1. 宁多勿漏：原文明确给出数值/版本/选项的参数、阈值必须全部列出；这是下游的唯一取值来源。
 2. sentence 字段必须逐字摘自原文（英文照抄英文），禁止改写、禁止拼凑。
 3. 原文没给值的参数不要列（没有默认值可列）；湿实验操作不列。
-4. 只输出 JSON。`;
+4. datasets 必须从 Data Availability、补充表和方法正文提取 study/project/sample/run accession，并尽可能恢复 sample ↔ condition ↔ replicate ↔ raw file 的逐条映射；缺失字段留空，不得猜测。
+5. 只输出 JSON。`;
 
 /** 第一段：把论文方法上下文提取为证据清单（带逐字出处句） */
 export async function extractEvidenceInventory(
@@ -275,9 +312,70 @@ export async function extractEvidenceInventory(
     inventory: {
       tools: list(value.tools), parameters: list(value.parameters), thresholds: list(value.thresholds),
       inputs: list(value.inputs), references: list(value.references), stepsMentioned: list(value.stepsMentioned),
+      datasets: list(value.datasets),
     } as EvidenceInventory,
     raw: text,
   };
+}
+
+const strings = (value: unknown, limit = 100): string[] => Array.isArray(value)
+  ? value.map(item => String(item ?? '').trim()).filter(Boolean).slice(0, limit)
+  : [];
+
+/** 把第一段证据清单确定性写入最终审计，避免第二个模型漏掉 accession 或改写证据。 */
+export function rawDataFromEvidence(evidence: EvidenceInventory | null | undefined): PaperRawDataRecord[] {
+  return (evidence?.datasets ?? []).map((item, index) => {
+    const record: PaperRawDataRecord = {
+      id: String(item.id || `D${index + 1}`).slice(0, 50),
+      runAccessions: strings(item.runAccessions),
+      files: strings(item.files),
+      urls: strings(item.urls),
+      checksums: strings(item.checksums),
+      evidence: String(item.sentence || '').trim().slice(0, 1000),
+    };
+    for (const key of ['repository', 'projectAccession', 'sampleAccession', 'sampleName', 'condition', 'replicate', 'assay', 'layout'] as const) {
+      const value = String(item[key] || '').trim();
+      if (value) record[key] = value.slice(0, 300);
+    }
+    return record;
+  }).filter(item => item.evidence || item.projectAccession || item.sampleAccession || item.runAccessions.length || item.files.length).slice(0, 500);
+}
+
+export function parameterEvidenceFromInventory(
+  evidence: EvidenceInventory | null | undefined,
+  workflowValue: unknown,
+): PaperParameterEvidence[] {
+  const entries = [
+    ...(evidence?.parameters ?? []).map(item => ({ ...item, evidence: item.sentence })),
+    ...(evidence?.thresholds ?? []).map(item => ({ id: item.id, name: item.metric, value: item.value, appliesTo: 'QC', evidence: item.sentence })),
+    ...(evidence?.tools ?? []).filter(item => item.version).map(item => ({ id: item.id, name: `${item.name} version`, value: item.version!, appliesTo: item.name, evidence: item.sentence })),
+    ...(evidence?.references ?? []).filter(item => item.version).map(item => ({ id: item.id, name: `${item.name} version`, value: item.version!, appliesTo: 'reference', evidence: item.sentence })),
+  ];
+  return markParameterEvidenceCoverage(entries.map(item => ({
+      id: String(item.id || '').slice(0, 50),
+      name: String(item.name || '').slice(0, 200),
+      value: String(item.value || '').slice(0, 300),
+      ...(item.appliesTo ? { appliesTo: String(item.appliesTo).slice(0, 300) } : {}),
+      evidence: String(item.evidence || '').slice(0, 1000),
+      covered: false,
+    })).filter(item => item.name && item.value).slice(0, 500), workflowValue);
+}
+
+/** 版本/参数必须“名称和数值”同时出现在草稿中，避免常见数字造成假覆盖。 */
+export function markParameterEvidenceCoverage(
+  rows: PaperParameterEvidence[],
+  workflowValue: unknown,
+): PaperParameterEvidence[] {
+  const workflowText = JSON.stringify(workflowValue || {}).toLowerCase().replace(/[-_\s]/g, '');
+  return rows.map(item => {
+    const token = item.value.toLowerCase().replace(/[-_\s]/g, '');
+    const nameToken = item.name.toLowerCase().replace(/[-_\s]/g, '').replace(/version$/, '');
+    return {
+      ...item,
+      covered: token.length > 0 && workflowText.includes(token)
+        && (nameToken.length < 3 || workflowText.includes(nameToken)),
+    };
+  });
 }
 
 // ── 确定性参数覆盖审计：文中明确出现的参数/版本/阈值，草稿里是否真的纳入 ──────

@@ -204,6 +204,63 @@ describe('lightweight workflow execution mode', () => {
 });
 
 describe('runAgent ask_user handling', () => {
+  it('keeps formal RUN tools out of a general cluster conversation', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        expect(Object.keys(options.tools)).not.toContain('get_workflow_run');
+        expect(Object.keys(options.tools)).not.toContain('get_workflow_step');
+        expect(Object.keys(options.tools)).not.toContain('update_workflow_run');
+        expect(Object.keys(options.tools)).toContain('run_command');
+        yield { type: 'text-delta', text: '普通分析目录不会被误当成正式 RUN。' };
+      })(),
+    }));
+
+    await runAgent(
+      { sid: 'session-1', run: vi.fn(), profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' } },
+      {
+        onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(),
+        onAsk: vi.fn(), onDone: vi.fn(), onErr: vi.fn(), sig: () => undefined,
+      },
+      [{ role: 'user', content: '检查 /public/home/u/project' }],
+    );
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops repeated read-only diagnosis with a precise stagnation reason instead of the old three-continuation error', async () => {
+    let round = 0;
+    mockStreamText.mockImplementation((options: any) => {
+      const current = round++;
+      return {
+        fullStream: (async function* () {
+          await options.tools.run_command.execute({ command: `sed -n '${current + 1}p' reference.sh` });
+          yield { type: 'text-delta', text: `第 ${current + 1} 轮只检查。` };
+        })(),
+      };
+    });
+    const visible: string[] = [];
+    await runAgent(
+      {
+        sid: 'session-1', run: vi.fn().mockResolvedValue('reference line'),
+        resumePlan: {
+          goal: '生成并提交质控脚本', createdAt: 1, updatedAt: 1,
+          steps: [{ id: '7', title: '生成并提交 06_valuation.lsf', verification: '看到作业号及结果文件', status: 'running' }],
+        },
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+      },
+      {
+        onText: text => visible.push(text), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(),
+        onStep: vi.fn(), onAsk: vi.fn(), onDone: vi.fn(), onErr: vi.fn(), sig: () => undefined,
+      },
+      [{ role: 'user', content: '继续执行，不要只检查' }],
+    );
+
+    expect(mockStreamText).toHaveBeenCalledTimes(3);
+    expect(mockStreamText.mock.calls[1][0].messages.at(-1).content).toContain('先用已有证据作结论');
+    expect(mockStreamText.mock.calls[2][0].messages.at(-1).content).toContain('强制推进');
+    expect(visible.join('')).toContain('连续 3 个执行阶段只有只读诊断');
+    expect(visible.join('')).not.toContain('Agent 已自动续跑 3 次');
+  });
+
   it('finishes the turn as an ask when ask_user is called without provider aborting the stream', async () => {
     mockStreamText.mockImplementation((options: any) => ({
       fullStream: (async function* () {

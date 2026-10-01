@@ -75,6 +75,7 @@ export async function learnFromPaper(
   context: {
     selectedChars: number;
     methodSections: string[];
+    dataSections?: string[];
     selectionMode: 'methods' | 'fulltext-fallback';
     truncated: boolean;
   };
@@ -92,7 +93,7 @@ export async function learnFromPaper(
     repoFiles: data.repoFiles || [],
     softwareCheck: data.softwareCheck || [],
     paperImport: data.paperImport,
-    context: data.context || { selectedChars: 0, methodSections: [], selectionMode: 'fulltext-fallback', truncated: false },
+    context: data.context || { selectedChars: 0, methodSections: [], dataSections: [], selectionMode: 'fulltext-fallback', truncated: false },
   };
 }
 

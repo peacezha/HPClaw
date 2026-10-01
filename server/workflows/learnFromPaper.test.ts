@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   biocondaCandidates, extractJsonObject, findRepoUrls, normalizeDoi, pickWorkflowFiles,
-  parseWorkflowJson, preparePaperContext, stripHtmlToText,
+  parameterEvidenceFromInventory, parseWorkflowJson, preparePaperContext, rawDataFromEvidence, stripHtmlToText,
 } from './learnFromPaper';
 
 describe('normalizeDoi', () => {
@@ -49,13 +49,45 @@ describe('preparePaperContext 方法章节优先', () => {
     expect(prepared.methodSections).toContain('Methods');
     expect(prepared.text).toContain('fastp 0.23');
     expect(prepared.text).toContain('github.com/org/pipeline');
+    expect(prepared.dataSections).toContain('Code Availability');
     expect(prepared.text.length).toBeLessThan(text.length);
+  });
+
+  it('保留 Data Availability 全段以及 accession 上下文', () => {
+    const text = `Title\nMethods\nReads were aligned with STAR 2.7.10.\nResults\nResult text.\nData Availability\nRaw reads are deposited in NCBI SRA under PRJNA123456. Sample A control replicate 1 is SRR111; sample B treated replicate 1 is SRR222.\nReferences\nRef`;
+    const prepared = preparePaperContext(text);
+    expect(prepared.dataSections).toContain('Data Availability');
+    expect(prepared.text).toContain('PRJNA123456');
+    expect(prepared.text).toContain('SRR111');
   });
 
   it('找不到章节标题时明确使用全文兜底', () => {
     const prepared = preparePaperContext('A short unstructured description '.repeat(100));
     expect(prepared.selectionMode).toBe('fulltext-fallback');
     expect(prepared.methodSections).toEqual([]);
+  });
+});
+
+describe('文献复现证据', () => {
+  const evidence = {
+    tools: [], thresholds: [{ id: 'Q1', metric: 'MAPQ', value: '30', sentence: 'Reads with MAPQ 30 were retained.' }],
+    parameters: [{ id: 'P1', name: '--threads', value: '8', appliesTo: 'STAR', sentence: 'STAR was run with --threads 8.' }],
+    inputs: [], references: [], stepsMentioned: [],
+    datasets: [{ id: 'D1', repository: 'SRA', projectAccession: 'PRJNA123', sampleAccession: 'SRS1', runAccessions: ['SRR1'], sampleName: 'control_1', condition: 'control', replicate: '1', layout: 'PE', files: ['SRR1_1.fastq.gz', 'SRR1_2.fastq.gz'], sentence: 'Control replicate 1 (SRS1; SRR1) is paired-end.' }],
+  };
+
+  it('保留 accession、样本条件与原始文件映射', () => {
+    expect(rawDataFromEvidence(evidence)[0]).toMatchObject({
+      projectAccession: 'PRJNA123', sampleAccession: 'SRS1', runAccessions: ['SRR1'],
+      sampleName: 'control_1', condition: 'control', replicate: '1', layout: 'PE',
+    });
+  });
+
+  it('逐条标记论文参数是否真正进入草稿', () => {
+    const rows = parameterEvidenceFromInventory(evidence, { command: 'STAR --threads 8; samtools view -q 30', notes: 'MAPQ 30' });
+    expect(rows).toHaveLength(2);
+    expect(rows.every(item => item.covered)).toBe(true);
+    expect(parameterEvidenceFromInventory(evidence, { command: 'STAR' }).every(item => !item.covered)).toBe(true);
   });
 });
 

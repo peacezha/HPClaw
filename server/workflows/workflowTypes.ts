@@ -67,6 +67,39 @@ export interface PaperWorkflowQuality {
   totalSteps: number;
 }
 
+export interface PaperRawDataRecord {
+  id: string;
+  repository?: string;
+  projectAccession?: string;
+  sampleAccession?: string;
+  runAccessions: string[];
+  sampleName?: string;
+  condition?: string;
+  replicate?: string;
+  assay?: string;
+  layout?: string;
+  files: string[];
+  urls: string[];
+  checksums: string[];
+  evidence: string;
+}
+
+export interface PaperParameterEvidence {
+  id: string;
+  name: string;
+  value: string;
+  appliesTo?: string;
+  evidence: string;
+  covered: boolean;
+}
+
+export interface PaperReproducibilityAudit {
+  rawDataStatus: 'complete' | 'partial' | 'missing';
+  parameterStatus: 'complete' | 'partial' | 'missing';
+  hasAcquisitionStep: boolean;
+  missing: string[];
+}
+
 export interface WorkflowPaperImport {
   importerVersion: string;
   sourceLabel: string;
@@ -78,6 +111,9 @@ export interface WorkflowPaperImport {
   excludedBranches: string[];
   unresolvedQuestions: PaperWorkflowQuestion[];
   toolLinks: PaperToolLink[];
+  rawData?: PaperRawDataRecord[];
+  parameterEvidence?: PaperParameterEvidence[];
+  reproducibility?: PaperReproducibilityAudit;
   quality: PaperWorkflowQuality;
   reviewedAt?: number;
 }

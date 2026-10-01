@@ -435,11 +435,17 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       ).toString();
       const doc = await pdfjs.getDocument({ data: bytes }).promise;
       const parts: string[] = [];
-      const maxPages = Math.min(doc.numPages, 50);
-      for (let p = 1; p <= maxPages; p++) {
+      // 数据/代码可用性通常在论文末页。先取首页与末 10 页，再补前 45 页，
+      // 避免长论文在字符上限前永远读不到 accession 与原始文件说明。
+      const pageNumbers = [...new Set([
+        ...Array.from({ length: Math.min(3, doc.numPages) }, (_value, index) => index + 1),
+        ...Array.from({ length: Math.min(10, doc.numPages) }, (_value, index) => doc.numPages - Math.min(10, doc.numPages) + index + 1),
+        ...Array.from({ length: Math.min(45, doc.numPages) }, (_value, index) => index + 1),
+      ])];
+      for (const p of pageNumbers) {
         const page = await doc.getPage(p);
         const content = await page.getTextContent();
-        parts.push(content.items.map((it: any) => `${it.str}${it.hasEOL ? '\n' : ' '}`).join(''));
+        parts.push(`[Page ${p}]\n${content.items.map((it: any) => `${it.str}${it.hasEOL ? '\n' : ' '}`).join('')}`);
         if (parts.join('\n').length > 220_000) break;
       }
       const paperText = parts.join('\n');
@@ -602,6 +608,25 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             </div>
             <p className="text-scholar-400">来源：{paperAudit.sourceLabel}{paperAudit.doi ? ` · DOI ${paperAudit.doi}` : ''}</p>
             {paperAudit.primaryPath && <p className="text-scholar-300">主路径：{paperAudit.primaryPath}</p>}
+            {paperAudit.reproducibility && (
+              <div className="grid grid-cols-3 gap-1 text-center text-[9px]">
+                <div className="rounded bg-scholar-950/80 px-1 py-1 text-scholar-400">
+                  <span className={paperAudit.reproducibility.rawDataStatus === 'complete' ? 'block text-emerald-500' : 'block text-amber-500'}>
+                    {paperAudit.reproducibility.rawDataStatus === 'complete' ? '完整' : paperAudit.reproducibility.rawDataStatus === 'partial' ? '部分' : '缺失'}
+                  </span>原始数据映射
+                </div>
+                <div className="rounded bg-scholar-950/80 px-1 py-1 text-scholar-400">
+                  <span className={paperAudit.reproducibility.parameterStatus === 'complete' ? 'block text-emerald-500' : 'block text-amber-500'}>
+                    {paperAudit.reproducibility.parameterStatus === 'complete' ? '完整' : paperAudit.reproducibility.parameterStatus === 'partial' ? '部分' : '缺失'}
+                  </span>参数证据
+                </div>
+                <div className="rounded bg-scholar-950/80 px-1 py-1 text-scholar-400">
+                  <span className={paperAudit.reproducibility.hasAcquisitionStep ? 'block text-emerald-500' : 'block text-red-500'}>
+                    {paperAudit.reproducibility.hasAcquisitionStep ? '已有' : '缺失'}
+                  </span>数据获取步骤
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-5 gap-1 text-center text-[9px]">
               {([
                 ['证据', paperAudit.quality.dimensions.evidence], ['可执行', paperAudit.quality.dimensions.executability],
@@ -627,6 +652,35 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                 ))}
               </div>
             )}
+            {(paperAudit.rawData?.length ?? 0) > 0 && (
+              <details open>
+                <summary className="text-scholar-300 font-medium cursor-pointer">原始数据与样本映射（{paperAudit.rawData!.length}）</summary>
+                <div className="mt-1 space-y-1 max-h-48 overflow-y-auto">
+                  {paperAudit.rawData!.map((item, index) => (
+                    <div key={`${item.id}-${index}`} className="rounded bg-scholar-950/70 px-1.5 py-1 text-scholar-300">
+                      <p><span className="text-accent/90">{item.id}</span> {item.sampleName || item.sampleAccession || '未标明样本'}{item.condition ? ` · ${item.condition}` : ''}{item.replicate ? ` · 重复 ${item.replicate}` : ''}</p>
+                      <p className="text-scholar-400 break-all">{[item.repository, item.projectAccession, item.sampleAccession, ...item.runAccessions, ...item.files].filter(Boolean).join(' · ') || '缺少 accession/原始文件定位'}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {(paperAudit.parameterEvidence?.length ?? 0) > 0 && (
+              <details>
+                <summary className="text-scholar-300 font-medium cursor-pointer">
+                  论文参数证据（{paperAudit.parameterEvidence!.filter(item => item.covered).length}/{paperAudit.parameterEvidence!.length} 已纳入）
+                </summary>
+                <div className="mt-1 space-y-1 max-h-48 overflow-y-auto">
+                  {paperAudit.parameterEvidence!.map((item, index) => (
+                    <div key={`${item.id}-${index}`} className="flex gap-1.5 rounded bg-scholar-950/70 px-1.5 py-1">
+                      <span className={item.covered ? 'text-emerald-500' : 'text-red-500'}>{item.covered ? '已纳入' : '未纳入'}</span>
+                      <span className="text-scholar-200">{item.name} = {item.value}</span>
+                      {item.appliesTo && <span className="text-scholar-500 ml-auto">{item.appliesTo}</span>}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
             {paperAudit.toolLinks.length > 0 && (
               <div>
                 <p className="text-scholar-300 font-medium">论文 ↔ 代码工具对照（CoPaLink 思路）</p>
@@ -651,7 +705,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             )}
             <label className="flex items-start gap-1.5 rounded border border-amber-400/20 p-1.5 text-scholar-200 cursor-pointer">
               <input type="checkbox" checked={paperReviewConfirmed} onChange={event => setPaperReviewConfirmed(event.target.checked)} className="mt-0.5" />
-              我已检查论文证据、未匹配工具和待确认问题；保存的是可继续修改的流程草稿，不把缺失信息当成论文事实。
+              我已检查论文证据、原始数据/样本映射、参数覆盖、未匹配工具和待确认问题；保存的是可继续修改的流程草稿，不把缺失信息当成论文事实。
             </label>
           </div>
         )}

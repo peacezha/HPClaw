@@ -121,11 +121,42 @@ const MAX_SAME_COMMAND_REPEATS = 2;
 // repeat work. Eight guarded continuations give a multi-step workflow enough room
 // to finish while still failing closed to waiting_user on runaway loops.
 const MAX_FORMAL_WORKFLOW_CONTINUATIONS = 8;
-const MAX_GENERAL_AGENT_CONTINUATIONS = 3;
+// 普通 Agent 允许较长任务继续推进；真正的无进展循环由下方的“连续只读诊断”
+// 检测器提前截断。旧版固定 3 轮会把仍在正常推进的任务误判成暂停。
+const MAX_GENERAL_AGENT_CONTINUATIONS = 8;
+const MAX_GENERAL_DIAGNOSTIC_ONLY_ROUNDS = 3;
 const WORKFLOW_MAX_MODEL_STEPS_PER_TURN = 200;
 const FORMAL_WORKFLOW_STOP_STATUSES = new Set([
   'blocked_env', 'waiting_user', 'waiting_jobs', 'done', 'failed', 'cancelled', 'unknown',
 ]);
+
+function planProgressSignature(plan: AgentExecutionPlan | null): string {
+  if (!plan) return '';
+  // evidence 会被每条只读命令自动追加，不能把“又 cat 了一次”误当成计划推进。
+  return JSON.stringify(plan.steps.map(step => ({
+    id: step.id,
+    status: step.status,
+    summary: step.summary || '',
+  })));
+}
+
+function compactPlanForContinuation(plan: AgentExecutionPlan): string {
+  const active = plan.steps.find(step => ['running', 'waiting', 'failed'].includes(step.status))
+    ?? plan.steps.find(step => step.status === 'pending');
+  const compact = {
+    goal: plan.goal,
+    steps: plan.steps.map(step => ({
+      id: step.id,
+      title: step.title,
+      status: step.status,
+      verification: step.verification,
+      summary: step.summary || '',
+      evidenceCount: step.evidence?.length || 0,
+    })),
+    activeRecentEvidence: (active?.evidence || []).slice(-6),
+  };
+  return JSON.stringify(compact).slice(0, 8_000);
+}
 
 export interface AgentRuntimeConfig {
   planningPolicy: 'auto' | 'always';
@@ -1786,6 +1817,24 @@ export async function runAgent(
       }),
     };
 
+    // 普通对话不能看到正式 RUN 专用工具。此前 general agent 会在任意分析目录上
+    // 误调用 get_workflow_run，得到“非法流程运行目录”后反复检查；正式流程上下文
+    // 才拥有 get/update_workflow_run 与 get_workflow_step。
+    const generalAgentTools = {
+      set_plan: agentTools.set_plan,
+      reset_plan: agentTools.reset_plan,
+      update_plan_step: agentTools.update_plan_step,
+      run_command: agentTools.run_command,
+      ask_user: agentTools.ask_user,
+      search_skills: agentTools.search_skills,
+      search_public_resources: agentTools.search_public_resources,
+      search_web: agentTools.search_web,
+      read_web_page: agentTools.read_web_page,
+      search_web_apis: agentTools.search_web_apis,
+      call_web_api: agentTools.call_web_api,
+      save_skill: agentTools.save_skill,
+      get_workflow: agentTools.get_workflow,
+    };
     const selectedTools = workflowInspection ? {
       run_command: agentTools.run_command,
       get_workflow_run: agentTools.get_workflow_run,
@@ -1810,7 +1859,7 @@ export async function runAgent(
       search_skills: agentTools.search_skills,
       search_web_apis: agentTools.search_web_apis,
       call_web_api: agentTools.call_web_api,
-    } : agentTools;
+    } : generalAgentTools;
     // RUN 仍是权威状态，但保留最近几轮意图，避免“还要多久/其他节点呢”之类
     // 追问脱离语境后被误解为重新执行当前步骤。
     const baseConversationMsgs = formalWorkflow ? conversationMsgs.slice(-6) : [...conversationMsgs];
@@ -1824,10 +1873,14 @@ export async function runAgent(
     let prevRunSignature = '';
     let stagnantRounds = 0;
     let roundStartCommandCount = 0;
+    let generalDiagnosticOnlyRounds = 0;
 
     while (true) {
       const remainingModelSteps = Math.max(1, runtimeConfig.maxSteps - totalModelSteps);
       const roundEvidenceStart = workflowCommandEvidence.length;
+      const generalRoundStartCommands = executedCommandCount;
+      const generalRoundStartMutations = successfulMutationCommands.size;
+      const generalRoundPlanSignature = planProgressSignature(planState.get());
       let roundText = '';
       // 正式流程的命令预算按续跑轮重置：每轮最多 maxCommands 条命令，
       // 跨轮总量由 maxSteps 与 MAX_FORMAL_WORKFLOW_CONTINUATIONS 兜底。
@@ -1894,14 +1947,25 @@ export async function runAgent(
 
       if (!workflowExecutor) {
         if (!planState.hasPlan() || planState.isComplete()) break;
+        const currentPlan = planState.get()!;
+        const commandsThisRound = executedCommandCount - generalRoundStartCommands;
+        const mutationSucceeded = successfulMutationCommands.size > generalRoundStartMutations;
+        const planAdvanced = planProgressSignature(currentPlan) !== generalRoundPlanSignature;
+        if (mutationSucceeded || planAdvanced) generalDiagnosticOnlyRounds = 0;
+        else generalDiagnosticOnlyRounds += 1;
+
+        const diagnosticLoop = generalDiagnosticOnlyRounds >= MAX_GENERAL_DIAGNOSTIC_ONLY_ROUNDS;
         const continuationExhausted = generalContinuationCount >= MAX_GENERAL_AGENT_CONTINUATIONS
           || totalModelSteps >= runtimeConfig.maxSteps;
-        if (continuationExhausted) {
+        if (diagnosticLoop || continuationExhausted) {
           const active = planState.activeStep();
+          const pauseReason = diagnosticLoop
+            ? `连续 ${generalDiagnosticOnlyRounds} 个执行阶段只有只读诊断或文字汇报，没有写入、提交或计划状态推进；为避免重复检查已暂停。`
+            : `本轮执行阶段已达到安全上限（${generalContinuationCount + 1} 个阶段），计划仍未完成。`;
           if (active) {
             try {
               const pausedPlan = planState.update(active.id, 'waiting', {
-                summary: 'Agent 达到本轮自动续跑安全上限，等待后续恢复。',
+                summary: pauseReason,
                 evidence: active.evidence,
               });
               cb.onPlanUpdate?.(pausedPlan, active.id);
@@ -1909,7 +1973,7 @@ export async function runAgent(
           }
           const plan = planState.get()!;
           const unfinished = plan.steps.filter(step => step.status !== 'done' && step.status !== 'skipped');
-          const pauseText = `\n\nAgent 已自动续跑 ${generalContinuationCount} 次，但计划仍未完成，现已明确暂停而不是误报完成：${unfinished.map(step => `${step.id}.${step.title}(${step.status})`).join('、')}。可在同一对话中继续，系统会从保存的计划恢复。`;
+          const pauseText = `\n\n${pauseReason} 未完成步骤：${unfinished.map(step => `${step.id}.${step.title}(${step.status})`).join('、')}。可在同一对话中继续，系统会从保存的计划恢复。`;
           fullText += pauseText;
           cb.onText(pauseText);
           break;
@@ -1917,17 +1981,24 @@ export async function runAgent(
 
         generalContinuationCount += 1;
         const plan = planState.get()!;
+        const decisiveInstruction = generalDiagnosticOnlyRounds >= 2
+          ? '\n\n【强制推进】连续两轮没有实质进展。禁止继续宽泛使用 cat/ls/find/grep/sed/head/tail 收集同类信息；除非新的执行动作失败，否则本轮必须执行一个直接推进当前步骤的动作（写脚本、修改文件、提交作业或更新计划状态），并验证结果。'
+          : generalDiagnosticOnlyRounds === 1
+            ? '\n\n本轮尚无实质推进。先用已有证据作结论，然后执行一个能够推进当前步骤的具体动作，不要扩大只读排查范围。'
+            : '';
         console.warn(
-          '[Agent] unfinished plan attempted early finish; auto-continuing goal=%s continuation=%d',
+          '[Agent] unfinished plan attempted early finish; continuing goal=%s continuation=%d diagnosticOnly=%d commands=%d',
           plan.goal,
           generalContinuationCount,
+          generalDiagnosticOnlyRounds,
+          commandsThisRound,
         );
         workingConversationMsgs = [
           ...baseConversationMsgs.slice(-8),
           ...(roundText.trim() ? [{ role: 'assistant' as const, content: roundText.trim().slice(-2000) }] : []),
           {
             role: 'user',
-            content: `【服务端自动续跑校验 ${generalContinuationCount}】你刚才在权威计划尚未完成时提前结束。不要重复已经有证据的命令，也不要只做进度汇报。\n\n当前权威计划：\n${JSON.stringify(plan)}\n\n请从 running/waiting/failed/pending 的第一个未完成步骤继续，执行必要工具并验证真实结果。只有全部步骤 done/skipped、调用 ask_user、提交后台作业，或安全门明确暂停后才能结束。`,
+            content: `【服务端计划推进校验 ${generalContinuationCount}】权威计划尚未完成。不要重复已有证据，也不要只做进度汇报。\n\n当前权威计划（压缩视图）：\n${compactPlanForContinuation(plan)}${decisiveInstruction}\n\n请从 running/waiting/failed/pending 的第一个未完成步骤继续，执行必要工具并验证真实结果。只有全部步骤 done/skipped、调用 ask_user、提交后台作业，或安全门明确暂停后才能结束。`,
           },
         ];
         continue;

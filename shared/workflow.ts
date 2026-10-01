@@ -74,6 +74,39 @@ export interface PaperWorkflowQuality {
   totalSteps: number;
 }
 
+export interface PaperRawDataRecord {
+  id: string;
+  repository?: string;
+  projectAccession?: string;
+  sampleAccession?: string;
+  runAccessions: string[];
+  sampleName?: string;
+  condition?: string;
+  replicate?: string;
+  assay?: string;
+  layout?: string;
+  files: string[];
+  urls: string[];
+  checksums: string[];
+  evidence: string;
+}
+
+export interface PaperParameterEvidence {
+  id: string;
+  name: string;
+  value: string;
+  appliesTo?: string;
+  evidence: string;
+  covered: boolean;
+}
+
+export interface PaperReproducibilityAudit {
+  rawDataStatus: 'complete' | 'partial' | 'missing';
+  parameterStatus: 'complete' | 'partial' | 'missing';
+  hasAcquisitionStep: boolean;
+  missing: string[];
+}
+
 /** 文献导入的可追溯信息与确定性质量报告；随流程保存，避免导入提示关闭后丢失。 */
 export interface WorkflowPaperImport {
   importerVersion: string;
@@ -87,6 +120,12 @@ export interface WorkflowPaperImport {
   unresolvedQuestions: PaperWorkflowQuestion[];
   /** CoPaLink 风格的论文工具—代码工具跨来源对照，未匹配项必须显式保留。 */
   toolLinks: PaperToolLink[];
+  /** 原始数据仓库、accession、样本/条件/重复与文件的逐条映射。 */
+  rawData?: PaperRawDataRecord[];
+  /** 论文明确参数及其是否已进入流程草稿。 */
+  parameterEvidence?: PaperParameterEvidence[];
+  /** 能否按当前草稿直接取得数据并复现的确定性审计。 */
+  reproducibility?: PaperReproducibilityAudit;
   quality: PaperWorkflowQuality;
   /** 用户已在编辑器查看并确认过缺口；不代表论文没有缺失信息。 */
   reviewedAt?: number;

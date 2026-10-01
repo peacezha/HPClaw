@@ -33,12 +33,12 @@ const READ_ONLY_COMMANDS = new Set([
   'hostname', 'date', 'env', 'printenv', 'uname', 'id', 'groups', 'grep', 'egrep',
   'fgrep', 'awk', 'cut', 'sort', 'uniq', 'tr', 'paste', 'column', 'realpath',
   'readlink', 'md5sum', 'sha1sum', 'sha256sum', 'diff', 'cmp', 'comm', 'test', '[',
-  'echo', 'printf', 'true', 'false',
+  'echo', 'printf', 'sed', 'cd', 'export', 'true', 'false',
 ]);
 
 const WRITE_COMMANDS = new Set([
   'mkdir', 'touch', 'cp', 'mv', 'install', 'tee', 'chmod', 'chown', 'chgrp',
-  'sed', 'perl', 'python', 'python3', 'rscript', 'tar', 'gzip', 'gunzip', 'bgzip',
+  'perl', 'python', 'python3', 'rscript', 'tar', 'gzip', 'gunzip', 'bgzip',
 ]);
 
 const JOB_COMMANDS = new Set(['bsub', 'bmod', 'bstop', 'bresume', 'brequeue']);
@@ -81,7 +81,7 @@ export function classifyCommandRisk(command: string): CommandRisk {
   // Shell redirection changes state, except the common stderr-to-/dev/null probe.
   const withoutDevNullProbe = normalized.replace(/\d*>\s*\/dev\/null/g, '');
   if (/(^|[^<])>{1,2}[^>]/.test(withoutDevNullProbe) || /<<-?\s*['"]?\w+/.test(normalized)) return 'write';
-  if (/\b(sed|perl)\s+[^\n]*\s-i(?:\s|$)/i.test(normalized)) return 'write';
+  if (/\b(?:sed|perl)\b[^\n]*\s-i(?:\s|$)/i.test(normalized)) return 'write';
   if (words.some(word => WRITE_COMMANDS.has(word))) return 'write';
   if (words.length > 0 && words.every(word => READ_ONLY_COMMANDS.has(word))) return 'read';
   return 'unknown';

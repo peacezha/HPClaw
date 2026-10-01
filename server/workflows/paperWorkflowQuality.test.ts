@@ -26,6 +26,7 @@ describe('evaluatePaperWorkflow', () => {
       confidence: 'high' as const, inputs: ['input'], outputs: ['output'], template: true, requiresReview: false,
     };
     const steps: WorkflowStep[] = [
+      { title: '获取原始数据并生成 manifest', command: 'prefetch SRR111 && fasterq-dump SRR111 && printf "sample\taccession\\nA\tSRR111\\n" > raw_data_manifest.tsv', agent: { ...baseAgent, kind: 'compute', outputs: ['raw_data_manifest.tsv', 'SRR111.fastq'] } },
       { title: '比对', command: '#BSUB -J align\nSTAR --readFilesIn {{INPUT}}', params: [{ name: 'INPUT', label: 'FASTQ', required: true }], agent: { ...baseAgent, kind: 'compute' } },
       { title: 'QC', command: '读取 STAR Log.final.out 并核对 >80%', agent: { ...baseAgent, kind: 'qc' } },
       { title: '报告', command: '汇总真实输出生成报告', agent: { ...baseAgent, kind: 'report' } },
@@ -33,6 +34,8 @@ describe('evaluatePaperWorkflow', () => {
     const extraction = sanitizePaperExtractionMeta({
       primaryPath: 'STAR 主路径', methodSections: ['Methods'],
       toolLinks: [{ canonicalName: 'STAR', paperMention: 'STAR', codeMention: 'STAR', status: 'matched' }],
+      rawData: [{ id: 'D1', repository: 'SRA', projectAccession: 'PRJNA123', runAccessions: ['SRR111'], sampleName: 'A', condition: 'control', replicate: '1', files: [], urls: [], checksums: [], evidence: 'Raw reads are in SRA under PRJNA123; A is SRR111.' }],
+      parameterEvidence: [{ id: 'P1', name: 'STAR version', value: '2.7.10', appliesTo: 'STAR', evidence: 'STAR 2.7.10 was used.', covered: true }],
     });
     const quality = evaluatePaperWorkflow({
       params: [{ name: 'INDEX', label: 'STAR 索引', required: true }], steps,

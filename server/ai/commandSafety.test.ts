@@ -43,6 +43,9 @@ describe('isDangerousCommand', () => {
   it('keeps diagnostic command chains read-only when echo or printf only label output', () => {
     expect(classifyCommandRisk('bjobs 75598506; echo "---"; bjobs -l 75598506 | head -80')).toBe('read');
     expect(classifyCommandRisk("pwd && printf '%s\\n' status && ls -la")).toBe('read');
+    expect(classifyCommandRisk("cd /project && ls align | sed -n '1,60p' && cat meta/run.meta")).toBe('read');
+    expect(classifyCommandRisk("export PATH=/opt/bin:$PATH && which awk && awk --version | head -1")).toBe('read');
+    expect(classifyCommandRisk("sed -i 's/a/b/' run.sh")).toBe('write');
     expect(classifyCommandRisk('echo ok > result.txt')).toBe('write');
   });
 

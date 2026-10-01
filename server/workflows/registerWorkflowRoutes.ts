@@ -8,10 +8,11 @@ import { sanitizeManifest } from './flowManifest';
 import {
   auditParameterCoverage, checkToolsInBioconda, extractEvidenceInventory, extractJsonObject,
   fetchPaperTextByDoi, fetchRepoCodeExcerpt, findRepoUrls, learnWorkflowFromText, normalizeDoi,
-  parseWorkflowJson, preparePaperContext, repairWorkflowJsonWithModel, reviseWorkflowDraftWithFeedback,
+  markParameterEvidenceCoverage, parameterEvidenceFromInventory, parseWorkflowJson, preparePaperContext, rawDataFromEvidence,
+  repairWorkflowJsonWithModel, reviseWorkflowDraftWithFeedback,
 } from './learnFromPaper';
 import {
-  evaluatePaperWorkflow, PAPER_IMPORTER_VERSION, sanitizePaperExtractionMeta,
+  evaluatePaperReproducibility, evaluatePaperWorkflow, PAPER_IMPORTER_VERSION, sanitizePaperExtractionMeta,
 } from './paperWorkflowQuality';
 import {
   deleteLearnDraft, getLearnDraft, listLearnDrafts, saveLearnDraft, updateLearnDraft,
@@ -142,6 +143,10 @@ export function sanitizePaperImport(value: unknown): WorkflowPaperImport | undef
       .filter(item => item.canonicalName)
       .slice(0, 50) as WorkflowPaperImport['toolLinks']
     : [];
+  const extractionExtras = sanitizePaperExtractionMeta({
+    rawData: raw.rawData,
+    parameterEvidence: raw.parameterEvidence,
+  });
   const paperImport: WorkflowPaperImport = {
     importerVersion: String(raw.importerVersion || PAPER_IMPORTER_VERSION).slice(0, 50),
     sourceLabel: String(raw.sourceLabel || '文献导入').trim().slice(0, 300),
@@ -149,6 +154,8 @@ export function sanitizePaperImport(value: unknown): WorkflowPaperImport | undef
     excludedBranches: shortList(raw.excludedBranches),
     unresolvedQuestions,
     toolLinks,
+    rawData: extractionExtras.rawData,
+    parameterEvidence: extractionExtras.parameterEvidence,
     quality: {
       score: boundedScore(quality.score),
       readiness,
@@ -170,6 +177,15 @@ export function sanitizePaperImport(value: unknown): WorkflowPaperImport | undef
   const repoFiles = shortList(raw.repoFiles, 30, 500);
   if (repoFiles.length) paperImport.repoFiles = repoFiles;
   if (raw.primaryPath) paperImport.primaryPath = String(raw.primaryPath).trim().slice(0, 500);
+  if (raw.reproducibility && typeof raw.reproducibility === 'object') {
+    const repro = raw.reproducibility as any;
+    paperImport.reproducibility = {
+      rawDataStatus: ['complete', 'partial', 'missing'].includes(String(repro.rawDataStatus)) ? repro.rawDataStatus : 'missing',
+      parameterStatus: ['complete', 'partial', 'missing'].includes(String(repro.parameterStatus)) ? repro.parameterStatus : 'missing',
+      hasAcquisitionStep: repro.hasAcquisitionStep === true,
+      missing: shortList(repro.missing, 30, 500),
+    };
+  }
   const reviewedAt = Number(raw.reviewedAt);
   if (Number.isFinite(reviewedAt) && reviewedAt > 0) paperImport.reviewedAt = reviewedAt;
   return paperImport;
@@ -473,6 +489,13 @@ export function registerWorkflowRoutes(app: Express): void {
       if (!parsed) return sendError(res, 502, 'AI 返回内容不完整，系统自动修复后仍无法解析；请缩短论文文本或重试');
       const workflowRaw = parsed.workflow && typeof parsed.workflow === 'object' ? parsed.workflow : parsed;
       const extraction = sanitizePaperExtractionMeta(parsed.extraction);
+      if (evidence) {
+        const evidenceRawData = rawDataFromEvidence(evidence);
+        const evidenceParameters = parameterEvidenceFromInventory(evidence, workflowRaw);
+        if (evidenceRawData.length > 0) extraction.rawData = evidenceRawData;
+        if (evidenceParameters.length > 0) extraction.parameterEvidence = evidenceParameters;
+      }
+      extraction.parameterEvidence = markParameterEvidenceCoverage(extraction.parameterEvidence, workflowRaw);
       if (parseResult.truncated || parseResult.mode === 'partial-repair') {
         extraction.warnings.push('AI 返回的 JSON 曾被截断，系统已自动闭合并恢复可解析结构；请重点复核最后几个步骤是否完整');
       } else if (parseResult.mode === 'common-repair') {
@@ -500,7 +523,7 @@ export function registerWorkflowRoutes(app: Express): void {
       }
 
       // 确定性参数覆盖审计：原文明确出现的 CLI 选项/版本/阈值，草稿是否真的纳入。
-      // 漏项进 warnings + unresolvedQuestions（不阻断），编辑器审计卡如实展示。
+      // 漏项属于复现阻断项：不能把论文明确写出的参数静默丢掉后仍宣称可运行。
       const coverage = auditParameterCoverage(context.text, workflowRaw);
       if (coverage.missing.length > 0) {
         extraction.warnings.push(
@@ -511,7 +534,7 @@ export function registerWorkflowRoutes(app: Express): void {
         for (const item of coverage.missing.slice(0, 5)) {
           extraction.unresolvedQuestions.push({
             question: `原文给出了「${item.token}」（${item.kind}）但草稿未使用：${item.sentence.slice(0, 120)}`,
-            blocking: false,
+            blocking: true,
           });
         }
       }
@@ -531,6 +554,7 @@ export function registerWorkflowRoutes(app: Express): void {
         if (hit?.hit) link.knowledgeBase = `Bioconda:${hit.hit}`;
       }
       const quality = evaluatePaperWorkflow(draft, extraction, context, source);
+      const reproducibility = evaluatePaperReproducibility(draft, extraction);
       const paperImport: WorkflowPaperImport = {
         importerVersion: PAPER_IMPORTER_VERSION,
         sourceLabel: source,
@@ -541,6 +565,9 @@ export function registerWorkflowRoutes(app: Express): void {
         excludedBranches: extraction.excludedBranches,
         unresolvedQuestions: extraction.unresolvedQuestions,
         toolLinks: extraction.toolLinks,
+        rawData: extraction.rawData,
+        parameterEvidence: extraction.parameterEvidence,
+        reproducibility,
         quality,
       };
       draft.paperImport = paperImport;
@@ -581,10 +608,12 @@ export function registerWorkflowRoutes(app: Express): void {
           parameters: evidence.parameters.length,
           thresholds: evidence.thresholds.length,
           references: evidence.references.length,
+          datasets: evidence.datasets.length,
         } : null,
         context: {
           selectedChars: context.selectedChars,
           methodSections: context.methodSections,
+          dataSections: context.dataSections,
           selectionMode: context.selectionMode,
           truncated: context.truncated,
         },
@@ -670,7 +699,15 @@ export function registerWorkflowRoutes(app: Express): void {
         excludedBranches: entry.draft.paperImport?.excludedBranches,
         unresolvedQuestions: entry.draft.paperImport?.unresolvedQuestions,
         toolLinks: entry.draft.paperImport?.toolLinks,
+        rawData: entry.draft.paperImport?.rawData,
+        parameterEvidence: entry.draft.paperImport?.parameterEvidence,
       });
+      if (extraction.rawData.length === 0 && entry.draft.paperImport?.rawData) {
+        extraction.rawData = entry.draft.paperImport.rawData;
+      }
+      if (extraction.parameterEvidence.length === 0 && entry.draft.paperImport?.parameterEvidence) {
+        extraction.parameterEvidence = entry.draft.paperImport.parameterEvidence;
+      }
       if (parseResult.truncated || parseResult.mode === 'partial-repair') {
         extraction.warnings.push('AI 修订返回的 JSON 曾被截断，系统已自动闭合；请重点复核末尾步骤');
       }
@@ -686,6 +723,7 @@ export function registerWorkflowRoutes(app: Express): void {
       const manifest = sanitizeManifest(workflowRaw.manifest);
       if (manifest) revised.manifest = manifest;
       else if (entry.draft.manifest) revised.manifest = entry.draft.manifest;
+      extraction.parameterEvidence = markParameterEvidenceCoverage(extraction.parameterEvidence, revised);
 
       const paperContextSummary = {
         originalChars: entry.paperContext?.length || 0,
@@ -695,6 +733,7 @@ export function registerWorkflowRoutes(app: Express): void {
         methodSections: extraction.methodSections,
       };
       const quality = evaluatePaperWorkflow(revised, extraction, paperContextSummary, entry.sourceLabel);
+      const reproducibility = evaluatePaperReproducibility(revised, extraction);
       revised.paperImport = {
         importerVersion: PAPER_IMPORTER_VERSION,
         sourceLabel: entry.sourceLabel,
@@ -705,6 +744,9 @@ export function registerWorkflowRoutes(app: Express): void {
         excludedBranches: extraction.excludedBranches,
         unresolvedQuestions: extraction.unresolvedQuestions,
         toolLinks: extraction.toolLinks,
+        rawData: extraction.rawData,
+        parameterEvidence: extraction.parameterEvidence,
+        reproducibility,
         quality,
       };
 
