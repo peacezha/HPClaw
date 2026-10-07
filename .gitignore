@@ -74,3 +74,14 @@ tmp/
 # 本地打包中间目录（版本各异，体积大）
 release-*/
 tmp/
+
+# Vendored runtime assets must survive a clean checkout. These are installed
+# library distributions, not this project's build output or conversation data.
+!vendor/**/dist/
+!vendor/**/dist/**
+!vendor/**/build/
+!vendor/**/build/**
+!vendor/**/conversations/
+!vendor/**/conversations/**
+# node-pty uses the matching per-platform prebuild, not a local Windows build.
+vendor/dsh/node_modules/node-pty/build/
