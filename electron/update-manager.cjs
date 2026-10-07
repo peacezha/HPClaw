@@ -100,7 +100,7 @@ function createUpdateManager(options) {
     bytesPerSecond: 0,
     transferred: 0,
     total: 0,
-    message: supported ? '可以检查更新' : '在线更新仅在 Windows 安装版中可用',
+    message: supported ? '可以检查更新' : platform === 'darwin' ? '此 Mac 版本请从 GitHub Releases 下载更新；自动更新需要 Apple 签名' : '在线更新仅在 Windows 安装版中可用',
     updateUrl: settings.updateUrl,
     autoCheck: settings.autoCheck,
     // 标准版内置 GitHub Releases 源，开箱即可检查更新；

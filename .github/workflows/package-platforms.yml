@@ -1,0 +1,98 @@
+name: Package v0.4.41 for Mac and Linux Web
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Add verified artifacts to the existing v0.4.41 release
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: hpclaw-v041-platforms
+  cancel-in-progress: false
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx --maxWorkers 1 --minWorkers 1
+      - run: npm run prepare:platform
+      - run: npm run electron:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - run: node scripts/smoke-macos.mjs
+      - name: Record build source
+        run: node -e "require('fs').writeFileSync('release-mac-${{ matrix.arch }}/HPClaw-0.4.41-platforms-mac-${{ matrix.arch }}.json',JSON.stringify({version:'0.4.41',arch:process.arch,sourceCommit:process.env.GITHUB_SHA,appleSigned:false},null,2))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: |
+            release-mac-${{ matrix.arch }}/*.dmg
+            release-mac-${{ matrix.arch }}/*.zip
+            release-mac-${{ matrix.arch }}/*.json
+          if-no-files-found: error
+          compression-level: 0
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx --maxWorkers 1 --minWorkers 1
+      - run: npm run prepare:platform
+      - run: npm run build:web
+      - run: node scripts/smoke-web.mjs
+      - name: Verify deployment container
+        run: |
+          cd release-web/HPClaw-0.4.41-web-linux-x64
+          docker compose up -d --build --wait --wait-timeout 120
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3003/api/app-info)" = 401
+          docker compose down
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-linux-x64
+          path: |
+            release-web/*.tar.gz
+            release-web/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+  publish:
+    needs: [mac, web]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+      - uses: actions/download-artifact@v4
+        with:
+          path: platform-artifacts
+          merge-multiple: true
+      - run: node scripts/publish-platform-assets.mjs platform-artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

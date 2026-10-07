@@ -5,6 +5,8 @@ import WebPanelDrawer, { type WebPanelRequest } from './WebPanelDrawer';
 
 beforeEach(() => {
   window.localStorage.clear();
+  // This suite retains desktop coverage; browser mode is tested explicitly below.
+  vi.stubGlobal('hpclawDesktop', {});
   vi.stubGlobal('fetch', vi.fn());
 });
 
@@ -26,6 +28,16 @@ function renderDrawer(panels: WebPanelRequest[], activeIndex = 0) {
 }
 
 describe('WebPanelDrawer', () => {
+  it('uses a sandboxed iframe with an external fallback in an ordinary browser', () => {
+    vi.stubGlobal('hpclawDesktop', undefined);
+    renderDrawer([{ url: 'https://example.com/report' }]);
+    expect(document.querySelector('webview')).toBeNull();
+    const iframe = screen.getByTestId('webpanel-browser-iframe');
+    expect(iframe).toHaveAttribute('src', 'https://example.com/report');
+    expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(screen.getByRole('link', { name: '新标签页打开' })).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('uses the classic 600px opaque panel even if the redesigned width was saved', () => {
     window.localStorage.setItem('hpclaw_web_panel_width', '760');
     renderDrawer([{ url: 'https://example.com' }]);

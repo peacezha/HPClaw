@@ -4,7 +4,7 @@ const { Readable } = require('node:stream');
 function assertSafeLocalPath(input) {
   if (!input || !input.trim()) throw new Error('path is required');
   if (input.includes('\0')) throw new Error('path contains a null byte');
-  const normalized = path.win32.normalize(input);
+  const normalized = path.normalize(input);
   if (normalized.startsWith('\\\\.\\') || normalized.startsWith('\\\\?\\')) {
     throw new Error('local device paths are not allowed');
   }
@@ -55,7 +55,7 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
     const dir = await fs.opendir(safePath);
     const entries = [];
     for await (const entry of dir) {
-      const fullPath = path.win32.join(safePath, entry.name);
+      const fullPath = path.join(safePath, entry.name);
       let stat;
       try {
         stat = await fs.stat(fullPath);
@@ -77,7 +77,7 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
     const safePath = assertSafeLocalPath(targetPath);
     const s = await fs.stat(safePath);
     return {
-      name: path.win32.basename(safePath),
+      name: path.basename(safePath),
       path: safePath,
       kind: s.isDirectory() ? 'directory' : s.isSymbolicLink() ? 'symlink' : 'file',
       size: s.size,
@@ -122,7 +122,7 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
         continue; // 无权限等错误跳过
       }
       for (const entry of entries) {
-        const fullPath = path.win32.join(dir, entry.name);
+        const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           dirs.push(fullPath);
           pending.push(fullPath);
@@ -156,14 +156,14 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
   }
 
   async function uniqueCopyDestination(sourcePath, targetDirectory, directory) {
-    const sourceName = path.win32.basename(sourcePath);
-    const parsed = path.win32.parse(sourceName);
+    const sourceName = path.basename(sourcePath);
+    const parsed = path.parse(sourceName);
     for (let index = 0; index < 10_000; index += 1) {
       const suffix = index === 0 ? '' : index === 1 ? ' - 副本' : ` - 副本 (${index})`;
       const candidateName = directory
         ? `${sourceName}${suffix}`
         : `${parsed.name}${suffix}${parsed.ext}`;
-      const candidate = assertSafeLocalPath(path.win32.join(targetDirectory, candidateName));
+      const candidate = assertSafeLocalPath(path.join(targetDirectory, candidateName));
       if (!await pathExists(candidate)) return candidate;
     }
     throw new Error(`unable to allocate a copy name for ${sourceName}`);
@@ -182,12 +182,10 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
       const safeSource = assertSafeLocalPath(sourcePath);
       const sourceStat = await fs.lstat(safeSource);
       const sourceIsDirectory = sourceStat.isDirectory();
-      const normalizedSource = safeSource.replace(/[\\/]+$/, '').toLocaleLowerCase();
-      const normalizedTarget = safeTargetDirectory.replace(/[\\/]+$/, '').toLocaleLowerCase();
-      if (sourceIsDirectory && (
-        normalizedTarget === normalizedSource
-        || normalizedTarget.startsWith(`${normalizedSource}\\`)
-      )) {
+      const relativeTarget = path.relative(path.resolve(safeSource), path.resolve(safeTargetDirectory));
+      if (sourceIsDirectory && (relativeTarget === '' || (
+        relativeTarget !== '..' && !relativeTarget.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeTarget)
+      ))) {
         throw new Error('cannot copy a directory into itself');
       }
       const destination = await uniqueCopyDestination(
@@ -304,7 +302,7 @@ function createLocalFileService({ fs, shell: _shell } = {}) {
         const dir = await fs.opendir(dirPath);
         for await (const entry of dir) {
           if (signal && signal.aborted) return;
-          const fullPath = path.win32.join(dirPath, entry.name);
+          const fullPath = path.join(dirPath, entry.name);
           if (entry.name.toLowerCase().includes(queryLower)) {
             let statEntry;
             try {

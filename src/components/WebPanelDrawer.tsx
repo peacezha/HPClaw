@@ -207,6 +207,27 @@ function WebPanelContent({ panel }: { panel: WebPanelRequest }) {
 
 /** http(s) 外链：Electron <webview> 内嵌（partition 隔离会话，不影响主窗口登录态） */
 function WebViewContent({ url }: { url: string }) {
+  return window.hpclawDesktop
+    ? <DesktopWebViewContent url={url} />
+    : <BrowserWebContent url={url} />;
+}
+
+/** Browsers have no Electron webview. Some sites forbid frames; keep an explicit external-open fallback. */
+function BrowserWebContent({ url }: { url: string }) {
+  const [revision, setRevision] = useState(0);
+  return <div className="flex-1 min-h-0 flex flex-col bg-white">
+    <div className="flex items-center justify-between gap-2 px-3 py-1 bg-scholar-900 text-[10px] text-scholar-500">
+      <span>部分网站禁止内嵌显示；空白时请在新标签页打开。</span>
+      <div className="flex gap-3 shrink-0">
+        <button type="button" className="text-accent hover:underline" onClick={() => setRevision(value => value + 1)}>重新加载</button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">新标签页打开</a>
+      </div>
+    </div>
+    <iframe key={revision} title="网页浏览" src={url} sandbox="allow-scripts allow-forms allow-popups" referrerPolicy="no-referrer" className="flex-1 min-h-0 w-full border-0" data-testid="webpanel-browser-iframe" />
+  </div>;
+}
+
+function DesktopWebViewContent({ url }: { url: string }) {
   const webviewRef = useRef<HTMLElement | null>(null);
   const [state, setState] = useState<LoadState>('loading');
 

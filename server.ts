@@ -111,6 +111,7 @@ import { BoundedSessionStore } from './server/boundedSessionStore';
 import { buildDshConversationKey, normalizeConversationContextKey } from './server/dsh/conversationScope';
 import { isCompetitionRestrictedApiPath, normalizeHpclawEdition } from './shared/edition';
 import { buildReconnectCredentials } from './server/cluster/reconnectCredentials';
+import { createWebAccess, readWebAccessConfig } from './server/webAccess';
 import { JobSubmissionGuard } from './server/ai/jobSubmissionGuard';
 
 // ── Environment & constants ─────────────────────────────────────────
@@ -119,6 +120,8 @@ const PORT = Number(process.env.PORT || 3003);
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const DESKTOP_TOKEN = process.env.HPCLAW_DESKTOP_TOKEN;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'hpclaw-dev-secret-change-in-production';
+const webAccessConfig = readWebAccessConfig();
+const webAccess = createWebAccess(webAccessConfig, getBridgeToken);
 const APP_EDITION = normalizeHpclawEdition(process.env.HPCLAW_EDITION);
 const IS_COMPETITION_EDITION = APP_EDITION === 'competition';
 
@@ -574,10 +577,13 @@ async function createSession(
 // ── Express app ─────────────────────────────────────────────────────
 
 const app = express();
+// Only a minimal liveness probe is public; application APIs remain behind web authentication.
+app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
   path: '/socket.io',
-  cors: { origin: '*' },
+  cors: { origin: webAccessConfig.enabled ? webAccessConfig.origin || false : '*' },
+  allowRequest: (req, callback) => callback(null, !webAccessConfig.enabled || webAccess.originAllowed(req.headers.origin)),
 });
 
 const WORKFLOW_RUN_UPDATED_EVENT = 'workflow:run-updated';
@@ -599,13 +605,16 @@ const sessionMiddleware = session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false,
+    secure: webAccessConfig.enabled && process.env.HPCLAW_WEB_COOKIE_SECURE === '1',
     httpOnly: true,
+    sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 });
 
+if (webAccessConfig.enabled && process.env.HPCLAW_TRUST_PROXY === '1') app.set('trust proxy', 1);
 app.use(sessionMiddleware);
+app.use(webAccess.middleware);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -2377,6 +2386,13 @@ io.use((socket, next) => {
   sessionMiddleware(socket.request as any, {} as any, next as any);
 });
 
+io.use((socket, next) => {
+  if (webAccessConfig.enabled && !webAccess.authorized(socket.request as any)) {
+    return next(new Error('HPClaw web authentication required'));
+  }
+  next();
+});
+
 io.on('connection', (socket) => {
   const sessionId = resolveSocketSessionId(
     (socket.request as any).session?.sshSessionId,
@@ -2526,13 +2542,33 @@ function launchQQBot(): boolean {
   return true;
 }
 
-httpServer.listen(PORT, '127.0.0.1', () => {
-  console.log(`[HPClaw] Server listening on http://127.0.0.1:${PORT}`);
+httpServer.listen(PORT, webAccessConfig.host, () => {
+  console.log(`[HPClaw] Server listening on http://${webAccessConfig.host}:${PORT}`);
   initBridgeState(PORT);
   initJobAgentBindings(DATA_ROOT);
   ensureDemoConversationSeed().catch(err => console.error('[DemoSeed] 写入示例对话失败:', err?.message || err));
   launchQQBot();
 });
+
+if (webAccessConfig.enabled) {
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    qqBotInstance?.stop();
+    stopSidecar();
+    for (const [sessionId, active] of sessions) {
+      jobWatcher.stop(sessionId);
+      active.cluster.close();
+    }
+    sessions.clear();
+    io.close();
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
 
 // Electron 主进程崩溃时，后台不得成为长期占端口的孤儿进程。
 // 这不会影响 `npm run dev`（开发模式没有 HPCLAW_PARENT_PID）。

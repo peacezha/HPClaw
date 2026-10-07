@@ -10,6 +10,8 @@
 
 > 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
 
+Mac（Apple 芯片 / Intel）与 Linux 网页部署包：见 [安装和简单命令部署说明](docs/MAC_WEB_DEPLOYMENT.md)。平台扩展包由 GitHub 的原生平台工作流构建，通过测试后添加到 v0.4.41 Release；Windows 安装包保持不变。
+
 ## 快速上手
 
 1. 启动 HPClaw，输入集群地址、端口、用户名和密码（首次连接需确认主机指纹）；
