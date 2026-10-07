@@ -75,6 +75,7 @@ export function createPublicGateway(options: GatewayOptions) {
   if (origin.protocol !== 'https:' && !['127.0.0.1', 'localhost'].includes(origin.hostname)
     && process.env.HPCLAW_INSECURE_INTERNAL_HTTP !== '1') throw new Error('公共网页须使用 HTTPS；受控内网测试才可明确启用 HTTP');
   const visitors = new Map<string, Visitor>();
+  const reportAccess = new Map<string, { worker: PrivateWorker; visitor: Visitor; rootToken: string; expires: number }>();
   const attempts = new Map<string, { count: number; since: number }>();
   let reserved = 0;
   const app = express();
@@ -124,6 +125,17 @@ export function createPublicGateway(options: GatewayOptions) {
   });
   const proxy = (req: express.Request, res: express.Response, worker: PrivateWorker) => {
     const headers: any = upstreamHeaders(req, worker);
+    headers['x-hpclaw-report-access'] = '';
+    if (req.method === 'GET' && new URL(req.originalUrl, origin).pathname === '/api/files/html/document') {
+      const visitor = visitorFor(req)!;
+      const remotePath = new URL(req.originalUrl, origin).searchParams.get('path');
+      if (remotePath?.startsWith('/')) {
+        const access = crypto.randomBytes(32).toString('hex');
+        if (reportAccess.size >= 2048) reportAccess.delete(reportAccess.keys().next().value!);
+        reportAccess.set(access, { worker, visitor, rootToken: Buffer.from(path.posix.dirname(path.posix.normalize(remotePath))).toString('base64url'), expires: Date.now() + 30 * 60000 });
+        headers['x-hpclaw-report-access'] = access;
+      }
+    }
     let payload: string | undefined;
     if (req.is('application/json') && req.body !== undefined) {
       payload = JSON.stringify(req.body);
@@ -208,6 +220,16 @@ export function createPublicGateway(options: GatewayOptions) {
       res.status(400).json({ success: false, error: error instanceof Error ? error.message : '集群登录失败' });
     } finally { if (visitor && ownsLogin) visitor.loggingIn = false; }
   });
+  // Opaque sandbox frames cannot send Strict cookies. Only GET assets in the authorized directory accept a short-lived capability.
+  app.get('/api/public/report-assets/:access/*', (req, res) => {
+    const access = reportAccess.get(req.params.access);
+    if (!access || access.expires < Date.now() || access.visitor.workers.get(access.worker.sessionId!) !== access.worker) return res.sendStatus(401);
+    const relative = String(req.params[0] || '');
+    const segments = relative.replace(/\\/g, '/').split('/');
+    if (segments.some(part => part.startsWith('.') || ['hpclaw_web', 'hpclaw_conversations', 'hpclaw_skills'].includes(part))) return res.sendStatus(403);
+    req.originalUrl = `/api/files/html-assets/${access.worker.sessionId}/${access.rootToken}/${relative.split('/').map(encodeURIComponent).join('/')}`;
+    proxy(req, res, access.worker);
+  });
   app.use('/api', (req, res, next) => {
     const worker = targetFor(req);
     if (!worker) return res.status(401).json({ error: '请先登录自己的集群；目标会话无效或不属于当前访客' });
@@ -259,12 +281,13 @@ export function createPublicGateway(options: GatewayOptions) {
       reserved -= workers.length; visitors.delete(id); void Promise.all(workers.map(worker => worker.stop()));
     }
     for (const [ip, rate] of attempts) if (Date.now() - rate.since > 60000) attempts.delete(ip);
+    for (const [token, access] of reportAccess) if (access.expires < Date.now() || !access.visitor.workers.has(access.worker.sessionId!)) reportAccess.delete(token);
   }, 30000);
   sweep.unref();
   const close = async () => {
     clearInterval(sweep);
     await Promise.all([...visitors.values()].flatMap(visitor => [...visitor.workers.values(), ...(visitor.pending ? [visitor.pending] : [])]).map(worker => worker.stop()));
-    visitors.clear(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    visitors.clear(); reportAccess.clear(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
   };
   return { app, server, close };
 }

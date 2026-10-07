@@ -54,7 +54,12 @@ try {
     Cookie: alice.cookie, 'X-SSH-Session-Id': alice.sid, 'Content-Type': 'application/octet-stream' }, body: report });
   assert(upload.ok, 'Browser upload streams to real SFTP');
   assert.equal(await (await request(alice, '/api/files/download?path=' + encodeURIComponent(remotePath))).text(), report);
-  assert((await (await request(alice, '/api/files/html/document?path=' + encodeURIComponent(remotePath) + '&sessionId=' + alice.sid)).text()).includes('HPCLAW_PUBLIC_REMOTE_REPORT'));
+  const document = await (await request(alice, '/api/files/html/document?path=' + encodeURIComponent(remotePath) + '&sessionId=' + alice.sid)).text();
+  assert(document.includes('HPCLAW_PUBLIC_REMOTE_REPORT'));
+  const reportAssets = document.match(/\/api\/public\/report-assets\/[a-f0-9]{64}\//)?.[0];
+  assert(reportAssets, 'Sandbox report gets an opaque-origin read-only resource capability');
+  assert.equal(await (await fetch(base + reportAssets + 'report.html')).text(), report, 'Report assets load even without session cookie');
+  assert.equal((await fetch(base + reportAssets + 'hpclaw_web/state.json')).status, 403);
   const socket = io(base, { transports: ['websocket'], auth: { sessionId: alice.sid }, query: { hpclawCluster: alice.sid },
     extraHeaders: { Cookie: alice.cookie }, reconnection: false, timeout: 10000 });
   try {

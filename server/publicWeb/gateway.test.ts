@@ -17,7 +17,7 @@ async function setup() {
       const token = `private-${id}`;
       app.use((req, res, next) => req.get('X-HPClaw-Worker') === token ? next() : res.sendStatus(403));
       app.post('/api/login', (_req, res) => res.json({ success: true, sessionId: id, home: `/home/${id}` }));
-      app.all('/api/*', (req, res) => res.json({ worker: id, url: req.originalUrl, body: req.body }));
+      app.all('/api/*', (req, res) => res.json({ worker: id, url: req.originalUrl, body: req.body, reportAccess: req.get('X-HPClaw-Report-Access'), host: req.get('host') }));
       app.all('/socket.io/*', (_req, res) => res.send(id));
       const server = createServer(app); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const worker = { identity, sessionId: id, port: (server.address() as any).port, token,
@@ -77,6 +77,19 @@ describe('public cluster portal boundaries', () => {
   it('refuses public plaintext deployments by default', () => {
     expect(() => createPublicGateway({ root: '.', origin: 'http://example.org' })).toThrow('HTTPS');
     expect(() => createPublicGateway({ root: '.', origin: 'https://example.org/path' })).toThrow('origin');
+  });
+  it('authorizes opaque report assets with a scoped token, denies private files and revokes on logout', async () => {
+    const { base, login } = await setup(); const a = await login('alice');
+    const document = await fetch(base + '/api/files/html/document?path=/home/alice/reports/report.html', { headers: { Cookie: a.cookie } });
+    const { reportAccess, host } = await document.json();
+    expect(reportAccess).toMatch(/^[a-f0-9]{64}$/); expect(host).toBe('127.0.0.1:3003');
+    const prefix = base + '/api/public/report-assets/' + reportAccess + '/';
+    const asset = await fetch(prefix + 'data/chart.json');
+    expect(asset.status).toBe(200); expect((await asset.json()).url).toContain('/data/chart.json');
+    for (const privatePath of ['.ssh/id_rsa', 'hpclaw_web/state.json', '%2e%2e%2foutside.json']) expect((await fetch(prefix + privatePath)).status).toBe(403);
+    expect((await fetch(base + '/api/jobs?reportAccess=' + reportAccess)).status).toBe(401);
+    await fetch(base + '/api/logout', { method: 'POST', headers: { Cookie: a.cookie } });
+    expect((await fetch(prefix + 'data/chart.json')).status).toBe(401);
   });
   it('blocks loopback, metadata, mapped IPv6 and mixed DNS answers; pins approved SSH', async () => {
     for (const ip of ['127.0.0.1', '0.0.0.0', '169.254.169.254', '::1', '::ffff:7f00:1', '64:ff9b::7f00:1']) expect(classifyAddress(ip)).toBe('blocked');
