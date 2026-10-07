@@ -1,4 +1,5 @@
 import { desktopSecrets } from './desktopSecrets';
+import { isPublicWeb, getPublicCluster } from './publicWeb';
 
 export type AIProvider = 'gemini' | 'openai' | 'deepseek' | 'grok' | 'moonshot' | 'custom-openai';
 
@@ -41,6 +42,7 @@ const LEGACY_KEYS = ['ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url'];
 // 一致性：仅本模块写这些 key，saveAIProfile 时同步缓存；另监听已有的
 // hpclaw-ai-profile-change 事件兜底，不引入跨窗口 storage 事件复杂度。
 let profileCache: AIProfile | null = null;
+const publicProfiles = new Map<string, AIProfile>();
 
 if (typeof window !== 'undefined') {
   window.addEventListener('hpclaw-ai-profile-change', (event) => {
@@ -108,6 +110,7 @@ function clearPlaintextStorage(): void {
  * 浏览器开发模式（无桌面通道）为 no-op，loadAIProfile 继续走 localStorage。
  */
 export async function hydrateAIProfile(): Promise<void> {
+  if (isPublicWeb()) { clearPlaintextStorage(); profileCache = normalizeAIProfile(); return; }
   const desktop = desktopSecrets();
   if (!desktop) return;
   try {
@@ -129,15 +132,20 @@ export async function hydrateAIProfile(): Promise<void> {
   }
 }
 
-export function loadAIProfile(): AIProfile {
+export function loadAIProfile(sessionId = getPublicCluster()): AIProfile {
+  if (isPublicWeb()) return sessionId ? publicProfiles.get(sessionId) || normalizeAIProfile() : normalizeAIProfile();
   if (profileCache) return profileCache;
   // legacy key 派生的结果同样缓存——未命中时连读 4 次正是要消除的开销
-  profileCache = loadFromLocalStorage();
+  profileCache = isPublicWeb() ? normalizeAIProfile() : loadFromLocalStorage();
   return profileCache;
 }
 
-export function saveAIProfile(profile: AIProfileInput): AIProfile {
+export function saveAIProfile(profile: AIProfileInput, sessionId = getPublicCluster()): AIProfile {
   const normalized = normalizeAIProfile(profile);
+  if (isPublicWeb()) {
+    if (sessionId) publicProfiles.set(sessionId, normalized);
+    return normalized;
+  }
   profileCache = normalized; // 本模块写入即同步缓存
   const desktop = desktopSecrets();
   if (desktop) {
@@ -149,7 +157,7 @@ export function saveAIProfile(profile: AIProfileInput): AIProfile {
         console.warn('[aiProfile] 加密存储写入失败，回退 localStorage:', err);
         writeToLocalStorage(normalized);
       });
-  } else {
+  } else if (!isPublicWeb()) {
     writeToLocalStorage(normalized);
   }
   window.dispatchEvent(new CustomEvent('hpclaw-ai-profile-change', { detail: normalized }));

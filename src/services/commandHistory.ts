@@ -1,6 +1,7 @@
 // 命令历史补全：记录用户在终端执行的命令，按 频率×新近度 排序提供补全。
 // 这是预测下一条命令最强的信号（fish-shell 风格）。
 
+import { isPublicWeb, readPublicPreference, savePublicPreference } from './publicWeb';
 export interface HistoryEntry {
   cmd: string;
   count: number;
@@ -17,6 +18,9 @@ const MAX_SUGGEST = 3;
 let cache: HistoryEntry[] | null = null;
 
 function load(): HistoryEntry[] {
+  if (isPublicWeb()) {
+    try { const value = JSON.parse(readPublicPreference(STORAGE_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; }
+  }
   if (cache) return cache;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -36,6 +40,7 @@ function load(): HistoryEntry[] {
 function save(entries: HistoryEntry[]): void {
   // 缓存与写入存储的内容保持一致（截断到 MAX_ENTRIES）
   const truncated = entries.slice(0, MAX_ENTRIES);
+  if (isPublicWeb()) { void savePublicPreference(STORAGE_KEY, JSON.stringify(truncated)); return; }
   cache = truncated;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(truncated));
@@ -123,6 +128,7 @@ export function searchHistory(input: string, limit = MAX_SUGGEST): HistorySugges
 
 /** 清空历史（设置/隐私场景备用） */
 export function clearHistory(): void {
+  if (isPublicWeb()) { void savePublicPreference(STORAGE_KEY, '[]'); return; }
   cache = null; // 失效缓存，下次 load 重新读存储
   try {
     localStorage.removeItem(STORAGE_KEY);

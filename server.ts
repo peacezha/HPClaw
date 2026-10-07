@@ -5,6 +5,8 @@ import { Server as SocketIOServer, type Socket } from 'socket.io';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { assertSafeRemoteMutation } from './server/files/pathSafety';
 
 import {
   ClusterSession,
@@ -68,6 +70,7 @@ import { readWorkflowRun, updateWorkflowRun, writeWorkflowRun } from './server/w
 import { importLegacyWorkflowRunIndex, readIndexedWorkflowRuns } from './server/workflows/workflowRunIndex';
 import {
   addFormalWorkflowContinuations,
+  initFormalWorkflowContinuations,
   listPendingFormalWorkflowContinuations,
   markFormalWorkflowJobFinished,
   markFormalWorkflowResuming,
@@ -101,7 +104,7 @@ import {
 import { stopSidecar } from './server/dsh/dshSidecar';
 import { normalizeWorkspace } from './server/dsh/workspace';
 import { maybeResumeAgent } from './server/dsh/dshJobResumer';
-import { getBinding, initJobAgentBindings, markResumed } from './server/dsh/jobAgentBindings';
+import { getBinding, initJobAgentBindings, markResumed, rebindClusterJobs } from './server/dsh/jobAgentBindings';
 import { maybeResumeLegacyAgent } from './server/ai/legacyJobResumer';
 import { registerLegacyJobBindings } from './server/ai/legacyJobBindings';
 import { createJobEventHandler } from './server/notifications/jobEventHandler';
@@ -113,6 +116,9 @@ import { isCompetitionRestrictedApiPath, normalizeHpclawEdition } from './shared
 import { buildReconnectCredentials } from './server/cluster/reconnectCredentials';
 import { createWebAccess, readWebAccessConfig } from './server/webAccess';
 import { JobSubmissionGuard } from './server/ai/jobSubmissionGuard';
+import { PUBLIC_WORKER, workerAuthentication } from './server/publicWeb/policy';
+import { ClusterWebState } from './server/publicWeb/clusterState';
+import { installPublicFetch } from './server/publicWeb/egress';
 
 // ── Environment & constants ─────────────────────────────────────────
 
@@ -124,6 +130,8 @@ const webAccessConfig = readWebAccessConfig();
 const webAccess = createWebAccess(webAccessConfig, getBridgeToken);
 const APP_EDITION = normalizeHpclawEdition(process.env.HPCLAW_EDITION);
 const IS_COMPETITION_EDITION = APP_EDITION === 'competition';
+const publicState = PUBLIC_WORKER ? new ClusterWebState(DATA_ROOT) : undefined;
+if (PUBLIC_WORKER) installPublicFetch();
 
 const USER_SKILLS_DIR = ensureDir(dataPath('skills'));
 // 单例是刻意的：前台 Agent、正式流程续跑、legacy 续跑与 dsh 桥必须共享同一提交账本。
@@ -613,10 +621,25 @@ const sessionMiddleware = session({
 });
 
 if (webAccessConfig.enabled && process.env.HPCLAW_TRUST_PROXY === '1') app.set('trust proxy', 1);
+if (PUBLIC_WORKER) app.set('trust proxy', 'loopback');
 app.use(sessionMiddleware);
+app.use(workerAuthentication);
 app.use(webAccess.middleware);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+// Private working files are just a cache. A successful mutation ACK requires a remote commit.
+app.use((req, res, next) => {
+  if (!publicState) return next();
+  const json = res.json.bind(res);
+  res.json = ((body: unknown) => {
+    void publicState.flush().then(() => json(body), () => {
+      if (!res.headersSent) res.status(503);
+      json({ success: false, error: '集群持久保存失败，操作尚未确认；请检查连接或重新登录，未回退到服务器共享存储' });
+    });
+    return res;
+  }) as typeof res.json;
+  next();
+});
 
 // 竞赛版保留完整流程能力，仅移除 dsh。服务端同时拒绝 dsh 桥接
 // API，避免旧页面缓存、插件或手工请求绕过产品边界。
@@ -638,7 +661,8 @@ app.get('/api/app-info', (_req, res) => {
       filePreview: true,
       nativeAgent: true,
       workflowDevelopment: true,
-      dsh: !IS_COMPETITION_EDITION,
+      dsh: !IS_COMPETITION_EDITION && !PUBLIC_WORKER,
+      localWorkspace: !PUBLIC_WORKER,
     },
   });
 });
@@ -678,6 +702,18 @@ async function handleLogin(
   // 此前这里从未接线，导致"测试通知能收到、真实作业完成不通知"。
   const s = getSession(result.sessionId);
   if (s) {
+    if (publicState) {
+      try {
+        await publicState.attach(new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)), s.home, s.cluster.exec.bind(s.cluster));
+        initJobAgentBindings(DATA_ROOT);
+        initFormalWorkflowContinuations(DATA_ROOT);
+        rebindClusterJobs(result.sessionId, `${credentials.username}@${credentials.host}:${credentials.port}`);
+      } catch {
+        s.cluster.close(); sessions.delete(result.sessionId);
+        res.status(503).json({ success: false, error: '集群用户目录无法读取或持久保存网页数据；请检查权限，未建立网页会话' });
+        return;
+      }
+    }
     // 登录后探测一次该账号所在集群的调度器并打标签（后续不再重复查询）；
     // 探测失败按 none 处理，不阻塞登录。
     try {
@@ -711,6 +747,10 @@ app.post('/api/login', async (req, res) => {
   const { host, port, username, password, verificationCode, expectedFingerprint } = req.body || {};
   if (!host || !port || !username || !password) {
     res.status(400).json({ success: false, error: '缺少登录信息' });
+    return;
+  }
+  if (PUBLIC_WORKER && (host !== process.env.HPCLAW_PUBLIC_SSH_HOST || sessions.size > 0)) {
+    res.status(403).json({ success: false, error: '该隔离服务只能连接分配的集群；新连接请从网页登录入口建立' });
     return;
   }
   await handleLogin(req, res, {
@@ -1086,7 +1126,8 @@ type AnyConversationStore = Pick<LocalConversationStore, 'list' | 'get' | 'save'
 function conversationScopeKey(req: Request): string {
   const raw = (req.body?.scopeKey ?? req.query.scope ?? req.headers['x-ssh-session-id'] ?? '') as string;
   const value = String(raw).trim();
-  if (!value || value.length > 200 || /[\r\n\0]/.test(value)) return 'local-workbench';
+  if (!value || value.length > 200 || /[\r\n\0]/.test(value)) return PUBLIC_WORKER
+    ? String((req.session as any)?.sshSessionId || req.get('X-SSH-Session-Id') || '') : 'local-workbench';
   return value;
 }
 
@@ -1099,7 +1140,7 @@ function conversationScopeKey(req: Request): string {
  */
 function conversationStoreFor(req: Request): AnyConversationStore | null {
   const scope = conversationScopeKey(req);
-  if (scope === 'local-workbench') return localConversationStore;
+  if (scope === 'local-workbench') return PUBLIC_WORKER ? null : localConversationStore;
   const sessionId = hasSession(scope) ? scope : undefined;
   const s = sessionId ? getSession(sessionId) : undefined;
   if (!s) return null;
@@ -1179,12 +1220,12 @@ app.get('/api/conversations', async (req, res) => {
   }
   try {
     let conversations = await store.list();
-    if (conversations.length === 0 && (!scope || scope === 'local-workbench')) {
+    if (!PUBLIC_WORKER && conversations.length === 0 && (!scope || scope === 'local-workbench')) {
       // 仅本地工作台保留旧版本"首次连接旧集群导入远程记录"的迁移行为
       await importClusterConversations(req);
       conversations = await store.list();
     }
-    if (scope === 'local-workbench' || !scope) {
+    if (!PUBLIC_WORKER && (scope === 'local-workbench' || !scope)) {
       conversations = filterConversationsByScope(conversations, 'local-workbench');
     }
     res.json({ success: true, conversations });
@@ -1338,6 +1379,61 @@ app.post('/api/ai-profile', (req, res) => {
   }
 });
 
+app.get('/api/public/profile', (_req, res) => {
+  if (!PUBLIC_WORKER) { res.sendStatus(404); return; }
+  let preferences = {};
+  try { preferences = JSON.parse(fs.readFileSync(dataPath('browser-preferences.json'), 'utf8')); } catch {}
+  res.json({ profile: loadServerAiProfile() || null, preferences });
+});
+
+app.put('/api/public/preferences', (req, res) => {
+  if (!PUBLIC_WORKER) { res.sendStatus(404); return; }
+  const { key, value } = req.body || {};
+  if (typeof key !== 'string' || !/^(?:hpclaw_agent_settings|hpclaw-confirm-mode|hpclaw_cmd_history|hpclaw_workflow_(?:run_config|habits)_v1:[\w.-]{1,180})$/.test(key)
+    || typeof value !== 'string' || Buffer.byteLength(value) > 256 * 1024) {
+    res.status(400).json({ error: '无效的网页偏好设置' }); return;
+  }
+  let preferences: Record<string, string> = {};
+  try { preferences = JSON.parse(fs.readFileSync(dataPath('browser-preferences.json'), 'utf8')); } catch {}
+  preferences[key] = value;
+  fs.writeFileSync(dataPath('browser-preferences.json'), JSON.stringify(preferences), { mode: 0o600 });
+  res.json({ success: true });
+});
+
+app.get('/api/public/session', (req, res) => {
+  const s = PUBLIC_WORKER && getSession(req.get('X-SSH-Session-Id'));
+  if (!s) { res.sendStatus(401); return; }
+  res.json({ home: s.home });
+});
+
+app.post('/api/public/upload', async (req, res) => {
+  if (!PUBLIC_WORKER) { res.sendStatus(404); return; }
+  const s = getSession(req.get('X-SSH-Session-Id'));
+  if (!s) { res.sendStatus(401); return; }
+  let temporary: string | undefined;
+  try {
+    const destination = assertSafeRemoteMutation(String(req.query.path || ''), s.home);
+    const sftp = s.cluster.getSftp();
+    const service = new SftpFileService(sftp, s.home, s.cluster.exec.bind(s.cluster));
+    const exists = await service.stat(destination).then(() => true, error => {
+      if (error.code === 2 || error.code === 'ENOENT') return false; throw error;
+    });
+    if (exists && req.query.replace !== '1') { res.status(409).json({ error: '集群已存在该文件；需要明确确认替换' }); return; }
+    temporary = `${destination}.hpclaw-upload-${createSessionId()}`;
+    await pipeline(req, sftp.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
+    const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+    await s.cluster.exec(`mv ${req.query.replace === '1' ? '-f' : '-n'} -- ${quote(temporary)} ${quote(destination)}`, 15000);
+    const remains = await service.stat(temporary).then(() => true, () => false);
+    if (remains) throw new Error('上传期间目标文件被其他会话创建，未覆盖；请重新检查');
+    temporary = undefined;
+    res.json({ success: true, path: destination });
+  } catch (error) {
+    if (!res.destroyed) res.status(400).json({ success: false, error: error instanceof Error ? error.message : '上传失败' });
+  } finally {
+    if (temporary) await new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)).remove(temporary, false).catch(() => {});
+  }
+});
+
 // 非流式 AI 网关：一次性补全 / 终端命令自动补全 / 选中输出分析。
 // 补全只读集群快照缓存（不远程采集），路径建议零延迟。
 registerGatewayRoutes(app, {
@@ -1352,6 +1448,10 @@ registerGatewayRoutes(app, {
 });
 
 app.post('/api/ai/stream', async (req, res) => {
+  if (PUBLIC_WORKER && !getSession(req.get('X-SSH-Session-Id'))) {
+    res.status(401).json({ error: '请先连接自己的集群，公共网页没有本地执行模式' });
+    return;
+  }
   const profile = profileFromBody(req.body);
   if (!profile.apiKey) {
     res.status(400).json({ error: 'Missing API Key' });
@@ -1420,11 +1520,16 @@ app.post('/api/ai/stream', async (req, res) => {
   };
   res.once('close', onResponseClose);
 
-  const send = (event: any) => {
+  let deferredPublicDone: any;
+  const deliver = (event: any) => {
     pushRunEvent(activeRun, event);
     if (!res.writableEnded && !res.destroyed) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     }
+  };
+  const send = (event: any) => {
+    if (PUBLIC_WORKER && event?.type === 'done') { deferredPublicDone = event; return; }
+    deliver(event);
   };
   console.log(
     '[AI:%s] request start mode=%s provider=%s model=%s session=%s',
@@ -1473,7 +1578,7 @@ app.post('/api/ai/stream', async (req, res) => {
         messages: rawMessages,
       } as ConversationWithMemory);
       if (requestedConversationId) {
-        const persisted = await localConversationStore.get(requestedConversationId);
+        const persisted = await (PUBLIC_WORKER ? conversationStoreFor(req)?.get(requestedConversationId) : localConversationStore.get(requestedConversationId));
         if (persisted) {
           persistedConversationMemory = mergeConversationMemory({
             ...persisted,
@@ -1537,11 +1642,11 @@ app.post('/api/ai/stream', async (req, res) => {
     // 引擎不可用（dsh 未安装/启动失败）时返回 'fallback'，落回内置引擎。
     let handledByDsh = false;
     const dshDecision = selectDshEngine({
-      envEngine: IS_COMPETITION_EDITION ? 'legacy' : process.env.HPCLAW_AI_ENGINE,
+      envEngine: IS_COMPETITION_EDITION || PUBLIC_WORKER ? 'legacy' : process.env.HPCLAW_AI_ENGINE,
       mode,
       hasWorkflowRunContext: Boolean(workflowRunContext),
       provider: profile.provider,
-      requestedEngine: req.body?.agentConfig?.engine,
+      requestedEngine: PUBLIC_WORKER ? 'native' : req.body?.agentConfig?.engine,
     });
     if (dshDecision.engine === 'legacy') {
       send({
@@ -1866,6 +1971,7 @@ app.post('/api/ai/stream', async (req, res) => {
           if (workflowRunContext) return;
           try {
             registerLegacyJobBindings(sessionId, jobIds, {
+              connectionKey: `${s.info.username}@${s.info.host}:${s.info.port}`,
               conversationKey: agentConversationKey,
               conversationId: agentConversationId,
               confirmationPolicy: agentConfirmationPolicy,
@@ -2038,6 +2144,10 @@ app.post('/api/ai/stream', async (req, res) => {
     send({ type: 'error', error: err.message || String(err) });
   } finally {
     clearTimeout(requestWatchdog);
+    if (publicState) {
+      try { await publicState.flush(); if (terminalEvent === 'done' && deferredPublicDone) deliver(deferredPublicDone); }
+      catch { terminalEvent = 'error'; deliver({ type: 'error', error: '任务执行已结束，但集群设置/恢复信息保存失败；请检查集群连接，不能视为已完整保存', requestId: aiRequestId }); }
+    }
     clearInterval(heartbeat);
     res.off('close', onResponseClose);
     if (!res.writableEnded && !res.destroyed) res.end();
@@ -2387,6 +2497,9 @@ io.use((socket, next) => {
 });
 
 io.use((socket, next) => {
+  if (PUBLIC_WORKER && socket.handshake.headers['x-hpclaw-worker'] !== process.env.HPCLAW_PUBLIC_WORKER_TOKEN) {
+    return next(new Error('Forbidden'));
+  }
   if (webAccessConfig.enabled && !webAccess.authorized(socket.request as any)) {
     return next(new Error('HPClaw web authentication required'));
   }
@@ -2544,17 +2657,22 @@ function launchQQBot(): boolean {
 
 httpServer.listen(PORT, webAccessConfig.host, () => {
   console.log(`[HPClaw] Server listening on http://${webAccessConfig.host}:${PORT}`);
-  initBridgeState(PORT);
+  if (!PUBLIC_WORKER) initBridgeState(PORT);
   initJobAgentBindings(DATA_ROOT);
-  ensureDemoConversationSeed().catch(err => console.error('[DemoSeed] 写入示例对话失败:', err?.message || err));
-  launchQQBot();
+  if (!PUBLIC_WORKER) {
+    ensureDemoConversationSeed().catch(err => console.error('[DemoSeed] 写入示例对话失败:', err?.message || err));
+    launchQQBot();
+  } else {
+    process.send?.({ type: 'public-worker-ready', port: (httpServer.address() as any).port });
+  }
 });
 
-if (webAccessConfig.enabled) {
+if (webAccessConfig.enabled || PUBLIC_WORKER) {
   let shuttingDown = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (publicState) await Promise.race([publicState.flush().catch(() => {}), new Promise(resolve => setTimeout(resolve, 2000))]);
     qqBotInstance?.stop();
     stopSidecar();
     for (const [sessionId, active] of sessions) {
@@ -2568,6 +2686,11 @@ if (webAccessConfig.enabled) {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+if (publicState) {
+  const persistence = setInterval(() => void publicState.flush().catch(() => {}), 5000);
+  persistence.unref();
 }
 
 // Electron 主进程崩溃时，后台不得成为长期占端口的孤儿进程。

@@ -36,7 +36,9 @@ import {
   type WorkflowRunConversationSeed,
 } from './features/workflows/runConversation';
 import { useI18n } from './i18n';
-import { loadAIProfile } from './services/aiProfile';
+import { loadAIProfile, saveAIProfile } from './services/aiProfile';
+import { isPublicWeb, setPublicCluster, hydratePublicPreferences } from './services/publicWeb';
+import PublicClusterFiles from './components/PublicClusterFiles';
 import { useJobNotificationCenter } from './hooks/useJobNotificationCenter';
 import {
   getStoredFingerprint,
@@ -104,9 +106,11 @@ interface TabCallbacks {
 export default function App() {
   const { isEnglish, t } = useI18n();
   // ─── 多集群标签页 ─────────────────────────────────────────────
-  const [tabs, setTabs] = useState<ClusterTab[]>(() => [createLocalWorkbenchTab()]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(LOCAL_WORKBENCH_ID);
-  const [addingCluster, setAddingCluster] = useState(false);
+  const publicWeb = isPublicWeb();
+  const [tabs, setTabs] = useState<ClusterTab[]>(() => publicWeb ? [] : [createLocalWorkbenchTab()]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(publicWeb ? null : LOCAL_WORKBENCH_ID);
+  const [addingCluster, setAddingCluster] = useState(publicWeb);
+  setPublicCluster(publicWeb ? activeTabId : undefined);
   // 对话按计算目标隔离：本地工作台与每个集群各自持有自己的对话，
   // 切换目标即切换到该目标的对话（本地任务与集群任务不再共用上下文）。
   const activeTab = tabs.find(t => t.sessionId === activeTabId) ?? tabs.find(t => t.kind === 'local') ?? null;
@@ -184,6 +188,11 @@ export default function App() {
   // ─── 主题（白天/黑夜）───
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     localStorage.getItem('hpclaw_theme') === 'light' ? 'light' : 'dark');
+  useEffect(() => {
+    const notify = (event: Event) => window.alert((event as CustomEvent).detail || '集群设置保存失败，请重新登录后重试');
+    window.addEventListener('hpclaw-persistence-error', notify);
+    return () => window.removeEventListener('hpclaw-persistence-error', notify);
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : '';
     localStorage.setItem('hpclaw_theme', theme);
@@ -425,6 +434,16 @@ export default function App() {
         ),
       });
       if (ok && data.success) {
+        if (publicWeb) {
+          setPublicCluster(data.sessionId);
+          try {
+            const response = await fetch('/api/public/profile', { headers: { 'X-SSH-Session-Id': data.sessionId } });
+            const saved = await response.json();
+            if (!response.ok) throw new Error(saved.error || '集群设置加载失败');
+            saveAIProfile(saved.profile || {}, data.sessionId);
+            hydratePublicPreferences(data.sessionId, saved.preferences);
+          } catch (error) { window.alert(`集群已连接，但设置加载失败：${error instanceof Error ? error.message : '网络错误'}。请重新连接后恢复设置。`); }
+        }
         if (trustedFingerprint) storeTrustedFingerprint(info, trustedFingerprint);
         const tab: ClusterTab = {
           kind: 'cluster',
@@ -747,7 +766,7 @@ export default function App() {
   const endpointsKey = tabs.map(t => `${t.sessionId}\t${t.connInfo.username}\t${t.connInfo.host}\t${t.home}`).join('\n');
   const endpoints = useMemo<EndpointOption[]>(
     () => [
-      { id: 'local', label: '本地' },
+      ...(!publicWeb ? [{ id: 'local', label: '本地' }] : []),
       ...tabs.filter(t => t.kind === 'cluster').map(t => ({
         id: t.sessionId,
         label: `${t.connInfo.username}@${t.connInfo.host}`,
@@ -768,7 +787,7 @@ export default function App() {
   }));
   const activeComputeLabel = activeClusterTab
     ? `${activeClusterTab.connInfo.username}@${activeClusterTab.connInfo.host}`
-    : '本地 AI · 未使用计算资源';
+    : publicWeb ? '请登录自己的集群' : '本地 AI · 未使用计算资源';
   const connectedComputeCount = computeTargets.filter(target => target.kind === 'cluster').length;
   const conversationTab = activeTab;
   // 对话在哪个计算目标上打开，就在哪里执行：本地工作台 = 本地模式，集群 = 该集群
@@ -828,6 +847,13 @@ export default function App() {
       />
 
       <main className="flex-1 min-w-0 h-full relative overflow-hidden bg-scholar-900">
+          {publicWeb && !conversationTab && (
+            <div className="h-full flex flex-col items-center justify-center gap-4 p-6 text-center">
+              <h1 className="text-xl text-scholar-100">连接你的集群，开始分析</h1>
+              <p className="text-sm text-scholar-400">使用自己的集群账号和 AI API Key。对话与私人流程保存在你的集群用户目录。</p>
+              <button className="btn-primary" onClick={() => setAddingCluster(true)}>登录集群</button>
+            </div>
+          )}
           {/* 全局对话常驻挂载；切换计算目标、流程或打开算力后台都不会中断。 */}
           {conversationTab && chatCallbacks && (
             <div
@@ -1018,7 +1044,7 @@ export default function App() {
 
       {/* ── File Transfer Workspace (overlay)：常驻挂载，关闭只是隐藏 ──
           关闭后传输在后台继续，面板路径/队列/编辑会话全部保留；左右面板各自可切换端点 ── */}
-      <Suspense fallback={fileTransferOpen ? <div className="fixed inset-0 z-30 bg-scholar-950/80 flex items-center justify-center text-scholar-400 text-sm">加载中…</div> : null}>
+      {!publicWeb && <Suspense fallback={fileTransferOpen ? <div className="fixed inset-0 z-30 bg-scholar-950/80 flex items-center justify-center text-scholar-400 text-sm">加载中…</div> : null}>
         <MemoFileTransferWorkspace
           sessionId={activeClusterTab?.sessionId ?? null}
           connectionState={activeClusterTab ? 'connected' : 'disconnected'}
@@ -1031,9 +1057,15 @@ export default function App() {
           endpoints={endpoints}
           openLocation={fileTransferLocation}
         />
-      </Suspense>
+      </Suspense>}
 
       {/* ── 添加集群（登录弹窗，不影响已有会话）── */}
+      {publicWeb && fileTransferOpen && activeClusterTab && <PublicClusterFiles
+        key={`${activeClusterTab.sessionId}:${fileTransferLocation?.requestId || ''}`}
+        sessionId={activeClusterTab.sessionId} home={activeClusterTab.home}
+        initialPath={fileTransferLocation?.path} onClose={handleCloseFileTransfer}
+        pick={pathPick ? { kind: pathPick.kind, onConfirm: finishPathPick } : undefined}
+      />}
       <AnimatePresence>
         {addingCluster && (
           <motion.div

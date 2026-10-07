@@ -7,6 +7,7 @@ import {
   MIN_AGENT_STEPS,
 } from '../../shared/agentLimits';
 
+import { isPublicWeb, readPublicPreference, savePublicPreference } from './publicWeb';
 export type AgentPlanningPolicy = 'auto' | 'always';
 export type AgentConfirmationPolicy = 'never' | 'dangerous' | 'state_changes' | 'every_command';
 export type AgentPathPolicy = 'full_access' | 'scoped';
@@ -41,7 +42,7 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
 
 export function loadAgentSettings(): AgentSettings {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    const stored = JSON.parse((isPublicWeb() ? readPublicPreference(STORAGE_KEY) : localStorage.getItem(STORAGE_KEY)) || '{}');
     const migrated = stored && typeof stored === 'object' ? { ...stored } : {};
     // 旧版没有暴露 maxSteps 设置，并会把默认值 50 写进 localStorage。
     // 只迁移这个不可配置的旧默认值；新版中用户主动选择的 50 会保留。
@@ -65,6 +66,8 @@ export function loadAgentSettings(): AgentSettings {
 
 export function saveAgentSettings(value: unknown): AgentSettings {
   const normalized = normalizeAgentSettings(value);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, ...normalized }));
+  const valueToSave = JSON.stringify({ version: STORAGE_VERSION, ...normalized });
+  if (isPublicWeb()) savePublicPreference(STORAGE_KEY, valueToSave);
+  else localStorage.setItem(STORAGE_KEY, valueToSave);
   return normalized;
 }

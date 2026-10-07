@@ -2,6 +2,8 @@
 // 登录界面下拉切换。桌面端走 safeStorage 加密的 profile-store（secrets 加密落盘），
 // 浏览器开发模式退化为 localStorage（明文，仅开发用）。
 
+import { isPublicWeb } from './publicWeb';
+
 export interface LoginProfile {
   id: string; // `${host}:${port}:${username}`
   name: string; // 显示名，如 user@login.example.edu
@@ -49,6 +51,7 @@ function desktopProfiles(): any | null {
 }
 
 function readLocal(): LocalProfileRecord[] {
+  if (isPublicWeb()) return [];
   try {
     const parsed = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
     return Array.isArray(parsed) ? parsed : [];
@@ -58,6 +61,7 @@ function readLocal(): LocalProfileRecord[] {
 }
 
 function writeLocal(records: LocalProfileRecord[]): void {
+  if (isPublicWeb()) return;
   try {
     localStorage.setItem(LS_KEY, JSON.stringify(records));
   } catch { /* localStorage unavailable */ }

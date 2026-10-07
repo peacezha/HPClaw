@@ -15,6 +15,7 @@ export interface JobAgentBindingProfile {
 }
 
 export interface JobAgentBinding {
+  connectionKey?: string;
   jobId: string;
   sshSessionId: string;
   conversationKey: string;
@@ -33,6 +34,7 @@ export interface JobAgentBinding {
 
 /** addBindings 的上下文字段（jobId/submittedAt/resumeCount 由存储层管理）。 */
 export interface JobBindingContext {
+  connectionKey?: string;
   sshSessionId: string;
   conversationKey: string;
   dshSessionId: string;
@@ -133,6 +135,7 @@ export function addBindings(jobIds: string[], ctx: JobBindingContext): number {
     const existing = list.find(b => b.jobId === jobId && b.sshSessionId === ctx.sshSessionId);
     if (existing) {
       existing.conversationKey = ctx.conversationKey;
+      existing.connectionKey = ctx.connectionKey;
       existing.dshSessionId = ctx.dshSessionId;
       existing.engine = ctx.engine;
       existing.conversationId = ctx.conversationId;
@@ -176,4 +179,15 @@ export function removeBinding(jobId: string, sshSessionId: string): boolean {
 
 export function listBindings(): JobAgentBinding[] {
   return [...load()];
+}
+
+/** Public workers restore only this authenticated cluster account, never old browser session IDs. */
+export function rebindClusterJobs(sessionId: string, connectionKey: string): void {
+  const list = load();
+  let changed = false;
+  for (const binding of list) {
+    if (binding.connectionKey !== connectionKey || binding.sshSessionId === sessionId) continue;
+    binding.sshSessionId = sessionId; changed = true;
+  }
+  if (changed) persist();
 }

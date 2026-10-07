@@ -1,3 +1,4 @@
+import { isPublicWeb, readPublicPreference, savePublicPreference } from '../../services/publicWeb';
 export interface WorkflowHabitSample {
   params: Record<string, string>;
   stepParams: Record<number, Record<string, string>>;
@@ -46,7 +47,7 @@ function sanitizeSample(sample: WorkflowHabitSample): WorkflowHabitSample {
 
 function read(workflowId: string): StoredHabits {
   try {
-    const parsed = JSON.parse(localStorage.getItem(`${PREFIX}${workflowId}`) || '{}') as Partial<StoredHabits>;
+    const parsed = JSON.parse((isPublicWeb() ? readPublicPreference(`${PREFIX}${workflowId}`) : localStorage.getItem(`${PREFIX}${workflowId}`)) || '{}') as Partial<StoredHabits>;
     return {
       version: 1,
       samples: Array.isArray(parsed.samples) ? parsed.samples.map(sanitizeSample).slice(-MAX_SAMPLES) : [],
@@ -59,7 +60,9 @@ function read(workflowId: string): StoredHabits {
 export function recordWorkflowHabit(workflowId: string, sample: WorkflowHabitSample): number {
   const stored = read(workflowId);
   const samples = [...stored.samples, sanitizeSample(sample)].slice(-MAX_SAMPLES);
-  localStorage.setItem(`${PREFIX}${workflowId}`, JSON.stringify({ version: 1, samples }));
+  const value = JSON.stringify({ version: 1, samples });
+  if (isPublicWeb()) void savePublicPreference(`${PREFIX}${workflowId}`, value);
+  else localStorage.setItem(`${PREFIX}${workflowId}`, value);
   return samples.length;
 }
 

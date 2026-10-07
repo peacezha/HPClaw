@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { desktopSecrets } from "./desktopSecrets";
+import { isPublicWeb } from './publicWeb';
 
 const TOTP_SECRET_STORAGE_KEY = "hpclaw_totp_secret";
 const TOTP_REMEMBER_KEY = "hpclaw_remember_me";
@@ -149,6 +150,7 @@ export async function generateTOTP(secret: string, period = 30): Promise<string>
 let totpSecretCache: string | null = null;
 
 export function getStoredSecret(): string {
+  if (isPublicWeb()) return '';
   if (totpSecretCache !== null) return totpSecretCache;
   try {
     const stored = localStorage.getItem(TOTP_SECRET_STORAGE_KEY);
@@ -158,6 +160,7 @@ export function getStoredSecret(): string {
 }
 
 export function storeSecret(secret: string): void {
+  if (isPublicWeb()) return;
   const desktop = desktopSecrets();
   if (desktop) {
     totpSecretCache = secret;
@@ -176,6 +179,7 @@ export function storeSecret(secret: string): void {
 
 // ——— Remember-me state ———
 export function getRememberMe(): boolean {
+  if (isPublicWeb()) return false;
   try {
     return localStorage.getItem(TOTP_REMEMBER_KEY) === "1";
   } catch {
@@ -184,6 +188,7 @@ export function getRememberMe(): boolean {
 }
 
 export function setRememberMe(remember: boolean): void {
+  if (isPublicWeb()) return;
   try {
     if (remember) {
       localStorage.setItem(TOTP_REMEMBER_KEY, "1");
@@ -200,6 +205,7 @@ const SAVED_PASSWORD_KEY = "hpclaw_saved_password";
 let savedPasswordCache: string | null = null;
 
 export function getSavedPassword(): string {
+  if (isPublicWeb()) return '';
   if (savedPasswordCache !== null) return savedPasswordCache;
   try {
     return localStorage.getItem(SAVED_PASSWORD_KEY) || "";
@@ -209,6 +215,7 @@ export function getSavedPassword(): string {
 }
 
 export function savePassword(password: string): void {
+  if (isPublicWeb()) return;
   const desktop = desktopSecrets();
   if (desktop) {
     savedPasswordCache = password;
@@ -247,6 +254,10 @@ export function clearSavedCredentials(): void {
 
 // ——— 启动水合：桌面端从加密存储读入缓存，并把 localStorage 历史明文搬迁过去 ———
 export async function hydrateTotpStorage(): Promise<void> {
+  if (isPublicWeb()) {
+    for (const key of [TOTP_SECRET_STORAGE_KEY, SAVED_PASSWORD_KEY, TOTP_REMEMBER_KEY]) localStorage.removeItem(key);
+    totpSecretCache = ''; savedPasswordCache = ''; return;
+  }
   const desktop = desktopSecrets();
   if (!desktop) return;
   try {

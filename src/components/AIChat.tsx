@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { isPublicWeb, readPublicPreference, savePublicPreference } from '../services/publicWeb';
 import {
   Bot, Settings, Send, Brain, Loader2, ChevronDown, ChevronRight, Save, Check, FolderOpen, Folder, FolderTree,
   AlertCircle, Wifi, WifiOff, RefreshCw, Search, BookOpen, Library, FileText, X, MessageSquarePlus,
@@ -485,8 +486,8 @@ function AgentSettingsFields({
       <div className="text-xs font-medium text-scholar-200">Agent 执行策略</div>
       <div>
         <label className="block text-xs text-scholar-300 mb-1">智能体引擎</label>
-        {IS_COMPETITION_EDITION ? (
-          <div className={`${fieldClass} text-scholar-300`}>原生智能体（竞赛版固定）</div>
+        {IS_COMPETITION_EDITION || isPublicWeb() ? (
+          <div className={`${fieldClass} text-scholar-300`}>原生智能体{isPublicWeb() ? '（集群执行）' : '（竞赛版固定）'}</div>
         ) : (
           <select value={engine} onChange={e => onEngineChange(e.target.value as AgentEnginePreference)} className={fieldClass}>
             <option value="auto">智能选择（推荐）</option>
@@ -495,7 +496,7 @@ function AgentSettingsFields({
           </select>
         )}
         <p className="mt-1 text-[10px] text-scholar-500">
-          {IS_COMPETITION_EDITION
+          {isPublicWeb() ? '网页端只在当前用户连接的集群上执行命令，不提供部署服务器本地工具。' : IS_COMPETITION_EDITION
             ? '竞赛版仅移除 DSH，固定使用 HPClaw 原生智能体；流程功能完整保留。'
             : 'DSH 当前用于 DeepSeek 普通 Agent 任务；正式流程自动使用原生引擎，以保留断点、证据和作业监控。'}
         </p>
@@ -545,7 +546,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   // AI Config
   // 惰性初始化：localStorage 同步读取 + JSON.parse 仅在挂载时执行一次；
   // 此前每次渲染（含流式每个 token）都重复解析，且 isOpen=false 提前返回在 hooks 之后，所有标签页实例都承担这份开销
-  const [initialProfile] = useState(() => loadAIProfile());
+  const [initialProfile] = useState(() => loadAIProfile(sessionId));
   const [aiProvider, setAiProvider] = useState(initialProfile.provider);
   const [aiApiKey, setAiApiKey] = useState(initialProfile.apiKey);
   const [aiModel, setAiModel] = useState(initialProfile.model);
@@ -635,6 +636,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
   const handleAttachClick = useCallback(() => {
     setAttachmentError('');
+    if (isPublicWeb() && isClusterChat) { attachmentInputRef.current?.click(); return; }
     if (!window.hpclawDesktop?.getPathForFile || !window.hpclawDesktop.localFiles) {
       setAttachmentError(t('附件功能需要桌面端支持，浏览器模式无法获取文件路径'));
       return;
@@ -648,11 +650,27 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
   const handleAttachmentFiles = useCallback(async (files: FileList | null) => {
     const desktop = window.hpclawDesktop;
-    if (!files || files.length === 0 || !desktop?.getPathForFile || !desktop.localFiles) return;
+    if (!files || files.length === 0 || (!isPublicWeb() && (!desktop?.getPathForFile || !desktop.localFiles))) return;
     setAttachmentBusy(true);
     setAttachmentError('');
     try {
       for (const file of Array.from(files)) {
+        if (isPublicWeb() && sessionId) {
+          const state = await fetch('/api/public/session', { headers: { 'X-SSH-Session-Id': sessionId } }).then(response => response.json());
+          const home = state.home;
+          if (!home?.startsWith('/')) throw new Error('无法确定当前集群的用户目录');
+          const directory = `${home.replace(/\/$/, '')}/${CLUSTER_ATTACHMENT_DIR}`;
+          const directoryExists = await fetch(`/api/remote/stat?path=${encodeURIComponent(directory)}`, { headers: { 'X-SSH-Session-Id': sessionId } });
+          if (!directoryExists.ok) await mkdirRemote(sessionId, directory);
+          const remotePath = `${directory}/${uuidv4()}-${file.name}`;
+          const response = await fetch(`/api/public/upload?path=${encodeURIComponent(remotePath)}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-SSH-Session-Id': sessionId }, body: file,
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error(result.error || '附件上传失败');
+          setAttachments(previous => [...previous, { id: uuidv4(), name: file.name, refPath: remotePath }]);
+          continue;
+        }
         const localPath = desktop.getPathForFile(file);
         if (!localPath) throw new Error('empty file path');
         const name = file.name || baseName(localPath) || 'attachment';
@@ -700,17 +718,19 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     if (!profile.apiKey) return;
     void fetch('/api/ai-profile', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(isPublicWeb() && sessionId ? { 'X-SSH-Session-Id': sessionId } : {}) },
       body: JSON.stringify({ profile }),
-    }).catch(() => {});
-  }, []);
+    }).then(async response => {
+      if (isPublicWeb() && !response.ok) throw new Error((await response.json()).error || 'AI 配置未保存到集群');
+    }).catch(error => { if (isPublicWeb()) setErrorMessage(error.message || 'AI 配置未保存到集群'); });
+  }, [sessionId]);
   const persistAiProfile = useCallback(() => {
     const saved = saveAIProfile({
       provider: aiProvider,
       model: aiModel,
       apiKey: aiApiKey,
       baseUrl: aiBaseUrl,
-    });
+    }, sessionId);
     setAiProvider(saved.provider);
     setAiModel(saved.model);
     setAiApiKey(saved.apiKey);
@@ -735,10 +755,10 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
   // 启动时同步一次已有配置，保证服务端（QQ 机器人）开箱即用
   useEffect(() => {
-    const p = loadAIProfile();
+    const p = loadAIProfile(sessionId);
     if (p.apiKey) pushAiProfileToServer(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionId]);
 
   // Streaming state
   const [streamingReasoning, setStreamingReasoning] = useState('');
@@ -778,7 +798,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   // 直到在输入区上方主动取消（此前每轮开头强制重置为 ask，信任等于无效）。
   const CONFIRM_MODE_KEY = 'hpclaw-confirm-mode';
   const [confirmMode, setConfirmMode] = useState<ConfirmMode>(() => {
-    try { return localStorage.getItem(CONFIRM_MODE_KEY) === 'trust_all' ? 'trust_all' : 'ask'; }
+    try { return (isPublicWeb() ? readPublicPreference(CONFIRM_MODE_KEY) : localStorage.getItem(CONFIRM_MODE_KEY)) === 'trust_all' ? 'trust_all' : 'ask'; }
     catch { return 'ask'; }
   });
   // SSE 事件循环读 ref 而不是 state：React 闭包在流式循环运行期间不会更新，
@@ -787,7 +807,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const applyConfirmMode = useCallback((mode: ConfirmMode) => {
     confirmModeRef.current = mode;
     setConfirmMode(mode);
-    try { localStorage.setItem(CONFIRM_MODE_KEY, mode); } catch { /* 隐私模式下忽略 */ }
+    try { if (isPublicWeb()) savePublicPreference(CONFIRM_MODE_KEY, mode); else localStorage.setItem(CONFIRM_MODE_KEY, mode); } catch { /* 隐私模式下忽略 */ }
   }, []);
   const [currentCwd, setCurrentCwd] = useState<string>('');
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
@@ -2301,7 +2321,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               </div>
             )}
             {/* Agent 本地工作区：dsh 引擎本地工具的落点目录 */}
-            {!IS_COMPETITION_EDITION && (
+            {!IS_COMPETITION_EDITION && !isPublicWeb() && (
               <div className="mb-2">
                 {needsAgentWorkspaceHint(sessionId, agentWorkspace) && (
                   <div className="mb-1 text-[10px] text-amber-400">

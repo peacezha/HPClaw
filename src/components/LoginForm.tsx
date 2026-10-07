@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { isPublicWeb } from '../services/publicWeb';
 import { Terminal as TerminalIcon, Loader2, AlertCircle, KeyRound, Eye, EyeOff, ShieldCheck, Settings, Trash2, Users, ChevronDown, Check, X } from "lucide-react";
 import { motion } from "motion/react";
 import {
@@ -33,9 +34,9 @@ interface LoginFormProps {
 
 export default function LoginForm({ onLogin, isLoggingIn, loginError, embedded = false, onCancel }: LoginFormProps) {
  const { t } = useI18n();
- const [host, setHost] = useState(localStorage.getItem("ssh_host") || "");
- const [port, setPort] = useState(localStorage.getItem("ssh_port") || "22");
- const [username, setUsername] = useState(localStorage.getItem("ssh_username") || "");
+ const [host, setHost] = useState(isPublicWeb() ? '' : localStorage.getItem("ssh_host") || "");
+ const [port, setPort] = useState(isPublicWeb() ? '22' : localStorage.getItem("ssh_port") || "22");
+ const [username, setUsername] = useState(isPublicWeb() ? '' : localStorage.getItem("ssh_username") || "");
  const [password, setPassword] = useState("");
  const [verificationCode, setVerificationCode] = useState("");
  const [showPassword, setShowPassword] = useState(false);
@@ -241,9 +242,11 @@ export default function LoginForm({ onLogin, isLoggingIn, loginError, embedded =
  const handleSubmit = async (e: React.FormEvent) => {
  e.preventDefault();
 
+ if (!isPublicWeb()) {
  localStorage.setItem("ssh_host", host);
  localStorage.setItem("ssh_port", port);
  localStorage.setItem("ssh_username", username);
+ }
 
  // Persist or clear remembered credentials
  setRememberMe(rememberMe);
@@ -266,7 +269,7 @@ export default function LoginForm({ onLogin, isLoggingIn, loginError, embedded =
  const err = await onLogin({ host, port, username, password, verificationCode: codeToUse });
  // 登录成功：把凭据（密码+TOTP 种子）同步到服务端内存暂存，
  // 供集群直连互传时自动应答 Password:/Verification code:（不落盘，重启失效）
- if (!err) {
+ if (!err && !isPublicWeb()) {
  void fetch('/api/transfer-credentials', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
@@ -533,10 +536,11 @@ export default function LoginForm({ onLogin, isLoggingIn, loginError, embedded =
  <input
  type="checkbox"
  checked={rememberMe}
+ disabled={isPublicWeb()}
  onChange={(e) => setRememberMeState(e.target.checked)}
  className="w-4 h-4 rounded border-scholar-600 bg-scholar-950 accent-accent focus:ring-2 focus:ring-accent/50"
  />
- {t('Remember credentials')}
+ {isPublicWeb() ? t('公共网页不保存集群密码或 TOTP 秘钥') : t('Remember credentials')}
  </label>
 
  <button

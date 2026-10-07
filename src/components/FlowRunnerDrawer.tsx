@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isPublicWeb, readPublicPreference, savePublicPreference } from '../services/publicWeb';
 import { motion } from 'motion/react';
 import type { Socket } from 'socket.io-client';
 import {
@@ -167,7 +168,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
 
   const loadSavedConfig = useCallback(() => {
     try {
-      const raw = localStorage.getItem(configStorageKey);
+      const raw = isPublicWeb() ? readPublicPreference(configStorageKey) : localStorage.getItem(configStorageKey);
       if (!raw) { setConfigNotice('没有已保存的配置'); return; }
       const saved = JSON.parse(raw);
       setInputs(Array.isArray(saved.inputs) ? saved.inputs.map(String) : []);
@@ -182,10 +183,16 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
     }
   }, [configStorageKey, workflow]);
 
-  const saveCurrentConfig = useCallback(() => {
-    localStorage.setItem(configStorageKey, JSON.stringify({
+  const saveCurrentConfig = useCallback(async () => {
+    const value = JSON.stringify({
       inputs, paramValues, stepValues, refOverrides, skippedSteps, stepCommandOverrides,
-    }));
+    });
+    if (isPublicWeb()) {
+      const saved = await savePublicPreference(configStorageKey, value);
+      setConfigNotice(saved ? '配置已保存到当前集群，可在下次登录时载入' : '保存失败，配置尚未写入集群');
+      return;
+    }
+    localStorage.setItem(configStorageKey, value);
     setConfigNotice('配置已保存，可在下次运行时载入');
   }, [configStorageKey, inputs, paramValues, stepValues, refOverrides, skippedSteps, stepCommandOverrides]);
 

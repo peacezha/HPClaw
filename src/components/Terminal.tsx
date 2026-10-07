@@ -377,7 +377,7 @@ const TerminalComponent = forwardRef<TerminalHandle, Props>(
         xtermRef.current = term;
         fitAddonRef.current = fitAddon;
 
-        const socket = io({ timeout: 60000, auth: { sessionId: sshSessionId } });
+        const socket = io({ timeout: 60000, auth: { sessionId: sshSessionId }, query: { hpclawCluster: sshSessionId } });
         socketRef.current = socket;
         onSocketReady(socket);
 

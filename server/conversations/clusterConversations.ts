@@ -5,6 +5,7 @@
 //   ~/hpclaw_conversations/index.json  摘要索引（列表页只读它，避免逐个拉取全文）
 import path from 'node:path';
 import { SftpFileService } from '../files/sftpFileService';
+import { PUBLIC_WORKER } from '../publicWeb/policy';
 
 export interface ConversationSummary {
   id: string;
@@ -51,6 +52,7 @@ export class ClusterConversationStore {
 
   private async ensureDir(): Promise<void> {
     await this.service.mkdir(this.dir).catch(() => { /* 已存在则忽略 */ });
+    if (PUBLIC_WORKER) await this.service.chmod(this.dir, 0o700);
   }
 
   /** 对话摘要列表（按更新时间倒序）。索引缺失时扫描目录重建。 */
@@ -102,6 +104,7 @@ export class ClusterConversationStore {
   async save(record: ConversationRecordLike): Promise<void> {
     await this.ensureDir();
     await this.service.writeFile(this.filePath(record.id), JSON.stringify(record, null, 2));
+    if (PUBLIC_WORKER) await this.service.chmod(this.filePath(record.id), 0o600);
     const rest = (await this.list()).filter(s => s.id !== record.id);
     await this.writeIndex(
       [toSummary(record), ...rest].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
@@ -117,6 +120,7 @@ export class ClusterConversationStore {
   private async writeIndex(summaries: ConversationSummary[]): Promise<void> {
     await this.ensureDir();
     await this.service.writeFile(path.posix.join(this.dir, INDEX_FILE), JSON.stringify(summaries, null, 2));
+    if (PUBLIC_WORKER) await this.service.chmod(path.posix.join(this.dir, INDEX_FILE), 0o600);
   }
 }
 

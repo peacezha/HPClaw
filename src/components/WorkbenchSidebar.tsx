@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { isPublicWeb } from '../services/publicWeb';
 import {
   Check,
   ChevronDown,
@@ -250,7 +251,7 @@ export default function WorkbenchSidebar({
           <div className="h-full min-h-0 flex flex-col">
             <div className="px-3 py-2 border-b border-scholar-700/60">
               <p className="text-xs font-medium text-scholar-100">计算目标</p>
-              <p className="mt-0.5 text-[10px] leading-4 text-scholar-400">没有计算资源也能用：本地 AI 可完成分析与对话</p>
+              <p className="mt-0.5 text-[10px] leading-4 text-scholar-400">{isPublicWeb() ? '登录自己的集群，对话与分析数据保存在集群账号下' : '没有计算资源也能用：本地 AI 可完成分析与对话'}</p>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
               {computeTargets.map(target => {
@@ -408,14 +409,14 @@ export default function WorkbenchSidebar({
           <Database className="h-3.5 w-3.5" />
           <span className="text-[10px] leading-tight">资源</span>
         </button>
-        <button type="button" onClick={onOpenQQBotSettings} className="btn-ghost !px-1 !py-1.5 flex-col" title="QQ 机器人" aria-label="QQ 机器人">
+        {!isPublicWeb() && <button type="button" onClick={onOpenQQBotSettings} className="btn-ghost !px-1 !py-1.5 flex-col" title="QQ 机器人" aria-label="QQ 机器人">
           <MessageCircle className="h-3.5 w-3.5" />
           <span className="text-[10px] leading-tight">QQ</span>
-        </button>
-        <button type="button" onClick={onOpenUpdateCenter} className="btn-ghost !px-1 !py-1.5 flex-col" title="软件更新" aria-label="软件更新">
+        </button>}
+        {!isPublicWeb() && <button type="button" onClick={onOpenUpdateCenter} className="btn-ghost !px-1 !py-1.5 flex-col" title="软件更新" aria-label="软件更新">
           <RefreshCw className="h-3.5 w-3.5" />
           <span className="text-[10px] leading-tight">更新</span>
-        </button>
+        </button>}
       </div>
     </aside>
   );

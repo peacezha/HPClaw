@@ -26,6 +26,9 @@
   },
   "exclude": [
     "dist",
+    "dist-electron",
+    "release-*",
+    "tmp",
     "node_modules",
     "tmp_skills_repo",
     "**/*.test.ts",

@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { dataPath } from '../paths';
 import { decryptSecret, encryptSecret } from '../secretBox';
+import { resolveClusterAddress } from '../publicWeb/network';
 
 export type NotifyChannel = 'serverchan' | 'pushplus' | 'wecom' | 'feishu' | 'email';
 
@@ -164,9 +165,11 @@ export async function sendNotification(
         const nodemailer = await import('nodemailer');
         const port = config.smtpPort || 465;
         const transporter = nodemailer.default.createTransport({
-          host: config.smtpHost.trim(),
+          host: process.env.HPCLAW_PUBLIC_WORKER === '1'
+            ? await resolveClusterAddress(config.smtpHost.trim(), false) : config.smtpHost.trim(),
           port,
           secure: port === 465,
+          ...(process.env.HPCLAW_PUBLIC_WORKER === '1' ? { requireTLS: true, tls: { servername: config.smtpHost.trim() } } : {}),
           auth: { user: config.smtpUser.trim(), pass: config.smtpPass.trim() },
         });
         await transporter.sendMail({

@@ -1,0 +1,61 @@
+name: Package v0.4.41 public cluster web portal
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Add the new public web package without replacing existing installers
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: hpclaw-public-web-v041
+  cancel-in-progress: false
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run web:build
+      - run: node scripts/build-public-web-package.mjs
+      - name: Install packaged runtime dependencies
+        run: cd release-public-web/HPClaw-0.4.41-public-web-linux-x64 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Create isolated real SSH fixture
+        run: node scripts/setup-public-web-smoke.mjs
+      - name: Verify packaged workers with two real SSH accounts
+        run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-0.4.41-public-web-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-web-linux-x64
+          path: |
+            release-public-web/*.tar.gz
+            release-public-web/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+  publish:
+    needs: web
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-web-linux-x64
+          path: public-web-artifacts
+      - run: node scripts/publish-public-web-assets.mjs public-web-artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
