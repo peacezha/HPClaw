@@ -51,8 +51,9 @@ export function createTerminalKeyHandler({ term, getXterm, getSocket }: Terminal
     // 否则按住 Ctrl 先松 V 时 keyup 会再触发一次粘贴（内容出现两次）
     if (e.type !== 'keydown') return true;
 
-    const isCtrlShiftC = e.ctrlKey && e.shiftKey && e.key === 'C';
-    const isCtrlC = e.ctrlKey && !e.shiftKey && e.key === 'c';
+    const modifier = e.ctrlKey || e.metaKey;
+    const isCtrlShiftC = modifier && e.shiftKey && e.key === 'C';
+    const isCtrlC = modifier && !e.shiftKey && e.key === 'c';
 
     if (isCtrlShiftC || (isCtrlC && term.hasSelection())) {
       const sel = term.getSelection();
@@ -60,10 +61,12 @@ export function createTerminalKeyHandler({ term, getXterm, getSocket }: Terminal
         const desktop = (window as any).hpclawDesktop;
         if (desktop?.clipboard) {
           desktop.clipboard.writeText(sel).catch(() => {});
-        } else {
+        } else if (navigator.clipboard?.writeText) {
           navigator.clipboard.writeText(sel).catch(() => {
             document.execCommand('copy');
           });
+        } else {
+          document.execCommand('copy');
         }
       }
       return false; // Do not send to terminal
@@ -71,10 +74,12 @@ export function createTerminalKeyHandler({ term, getXterm, getSocket }: Terminal
 
     // 粘贴：自定义通道发送 + 阻止浏览器默认粘贴动作（preventDefault），
     // 保证恰好一次——原生路径在 Electron 里不稳定（Ctrl+V 可能无响应或双发）
-    if (e.ctrlKey && e.key.toLowerCase() === 'v') {
+    if (modifier && e.key.toLowerCase() === 'v') {
+      const desktop = (window as any).hpclawDesktop;
+      // HTTP browser deployments cannot use the Clipboard API: leave native paste to xterm.
+      if (!desktop?.clipboard && !navigator.clipboard?.readText) return true;
       e.preventDefault();
       if (e.repeat) return false; // 长按自动重复只触发一次粘贴
-      const desktop = (window as any).hpclawDesktop;
       const readClipboard = desktop?.clipboard
         ? () => desktop.clipboard.readText()
         : () => navigator.clipboard.readText();

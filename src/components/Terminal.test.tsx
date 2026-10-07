@@ -37,6 +37,23 @@ function createKeyHandler(options?: { selection?: string; xtermAvailable?: boole
 const flushPaste = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('createTerminalKeyHandler', () => {
+  it('supports Mac Command+C and Command+V without duplicate paste', async () => {
+    const { handler, term, clipboard } = createKeyHandler({ selection: 'selected' });
+    expect(handler(new KeyboardEvent('keydown', { key: 'c', metaKey: true }))).toBe(false);
+    expect(clipboard.writeText).toHaveBeenCalledWith('selected');
+    expect(handler(new KeyboardEvent('keydown', { key: 'v', metaKey: true }))).toBe(false);
+    expect(handler(new KeyboardEvent('keyup', { key: 'v', metaKey: true }))).toBe(true);
+    await flushPaste();
+    expect(term.paste).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves paste to the browser when an HTTP page has no Clipboard API', () => {
+    const { handler, clipboard } = createKeyHandler();
+    delete (window as any).hpclawDesktop;
+    expect(handler(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }))).toBe(true);
+    expect(clipboard.readText).not.toHaveBeenCalled();
+  });
+
   it('pastes exactly once when both keydown and keyup of Ctrl+V reach the handler', async () => {
     const { handler, term, clipboard } = createKeyHandler();
 

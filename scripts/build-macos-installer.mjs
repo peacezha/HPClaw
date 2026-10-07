@@ -10,7 +10,8 @@ const arch = process.arch;
 if (!['arm64', 'x64'].includes(arch)) throw new Error('Unsupported Mac architecture');
 if (!fs.existsSync(path.join(root, 'vendor/node-runtime/node'))) throw new Error('Run npm run prepare:platform first');
 const files = pkg.build.files.filter(file => !file.includes('node-pty/prebuilds/darwin-'));
-files.push('!vendor/node-runtime/node.exe', '!vendor/dsh/node_modules/node-pty/build/**/*',
+files.push('!vendor/node-runtime/node.exe', '!vendor/**/*.exe', '!vendor/**/*.dll',
+  '!vendor/dsh/node_modules/node-pty/build/**/*', '!vendor/dsh/node_modules/node-pty/third_party/**/*',
   '!vendor/dsh/node_modules/node-pty/prebuilds/win32-*/**/*',
   '!vendor/dsh/node_modules/node-pty/prebuilds/linux-*/**/*',
   `!vendor/dsh/node_modules/node-pty/prebuilds/darwin-${arch === 'arm64' ? 'x64' : 'arm64'}/**/*`,

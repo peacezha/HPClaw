@@ -31,7 +31,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx --maxWorkers 1 --minWorkers 1
+      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
       - run: npm run electron:mac
         env:
@@ -59,7 +59,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx --maxWorkers 1 --minWorkers 1
+      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
       - run: npm run build:web
       - run: node scripts/smoke-web.mjs
