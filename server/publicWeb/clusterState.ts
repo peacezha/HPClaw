@@ -6,7 +6,9 @@ import type { SftpFileService } from '../files/sftpFileService';
 const LIMIT = 16 * 1024 * 1024;
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 const hash = (value?: string) => value === undefined ? '' : crypto.createHash('sha256').update(value).digest('hex');
-const accepted = (name: string) => /^(?:ai-profile\.json|browser-preferences\.json|notify-config\.json|scheduler-config\.json|scheduler-tags\.json|job-events\.json|job-agent-bindings\.json|formal-workflow-continuations\.json|job-submission[^/]*\.json|workflows\/[\w.-]+\.json|skills\/[\w./-]+\.(?:md|json|sh|py|R))$/.test(name)
+const BINARY_PREFIX = 'hpclaw-binary-base64:';
+const binary = (name: string) => /\.(?:png|jpg|jpeg|gif|pdf)$/i.test(name);
+const accepted = (name: string) => /^(?:ai-profile\.json|browser-preferences\.json|notify-config\.json|scheduler-config\.json|scheduler-tags\.json|job-events\.json|job-agent-bindings\.json|formal-workflow-continuations\.json|job-submission[^/]*\.json|workflows\/[\w.-]+\.json|skills\/[^\x00-\x1f\\]+\.(?:md|txt|json|yaml|yml|toml|sh|py|js|ts|R|png|jpg|jpeg|gif|svg|pdf))$/i.test(name)
   && !name.split('/').some(part => !part || part === '.' || part === '..') && !name.includes('.skill-index');
 interface State { version: 1; key: string; files: Record<string, string> }
 
@@ -47,7 +49,13 @@ export class ClusterWebState {
       for (const [name, content] of Object.entries(state.files)) {
         const target = path.join(this.root, name);
         fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(target, content, { mode: 0o600 });
+        let data: string | Buffer = content;
+        if (binary(name)) {
+          if (!content.startsWith(BINARY_PREFIX)) throw new Error('私人技能二进制附件编码无效，不会覆盖集群数据');
+          data = Buffer.from(content.slice(BINARY_PREFIX.length), 'base64');
+          if (data.toString('base64') !== content.slice(BINARY_PREFIX.length)) throw new Error('私人技能附件已损坏');
+        }
+        fs.writeFileSync(target, data, { mode: 0o600 });
       }
       this.baseline = { ...state.files };
     }
@@ -63,7 +71,7 @@ export class ClusterWebState {
         else if (entry.isFile() && accepted(relative)) {
           const target = path.join(dir, entry.name);
           if (fs.statSync(target).size > LIMIT) throw new Error('单个集群设置文件超过 16 MiB');
-          files[relative] = fs.readFileSync(target, 'utf8');
+          files[relative] = binary(relative) ? BINARY_PREFIX + fs.readFileSync(target).toString('base64') : fs.readFileSync(target, 'utf8');
         }
       }
     };

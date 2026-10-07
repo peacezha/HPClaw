@@ -97,5 +97,6 @@ export function getWorkflowHabitSuggestion(workflowId: string): WorkflowHabitSug
 }
 
 export function clearWorkflowHabits(workflowId: string): void {
+  if (isPublicWeb()) { void savePublicPreference(`${PREFIX}${workflowId}`, '{"version":1,"samples":[]}'); return; }
   localStorage.removeItem(`${PREFIX}${workflowId}`);
 }

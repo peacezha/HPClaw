@@ -51,3 +51,14 @@ it('rejects concurrent same-account overwrites and permission failures without c
   const bad = { ...r.service, readPreview: async () => { throw Object.assign(new Error('denied'), { code: 3 }); } };
   await expect(new ClusterWebState(root()).attach(bad, '/home/alice', r.exec)).rejects.toThrow('denied');
 });
+it('restores custom skill YAML and binary assets byte-for-byte from cluster state', async () => {
+  const r = remote(); const local = root(); process.env.HPCLAW_ENCRYPTION_KEY = 'a'.repeat(64);
+  fs.mkdirSync(path.join(local, 'skills', 'private'), { recursive: true });
+  const bytes = Buffer.from([0, 255, 137, 80, 78, 71]);
+  fs.writeFileSync(path.join(local, 'skills/private/figure.png'), bytes);
+  fs.writeFileSync(path.join(local, 'skills/private/settings.yaml'), 'threads: 10\n');
+  const state = new ClusterWebState(local); await state.attach(r.service, '/home/alice', r.exec); await state.flush();
+  const restored = root(); await new ClusterWebState(restored).attach(r.service, '/home/alice', r.exec);
+  expect(fs.readFileSync(path.join(restored, 'skills/private/figure.png'))).toEqual(bytes);
+  expect(fs.readFileSync(path.join(restored, 'skills/private/settings.yaml'), 'utf8')).toBe('threads: 10\n');
+});
