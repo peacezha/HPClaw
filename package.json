@@ -13,7 +13,7 @@
     "build:web": "npm run build && npm run build:electron-server && node scripts/build-web-package.mjs",
     "web:start": "node scripts/start-public-web.mjs",
     "web:private": "node scripts/start-web.mjs",
-    "web:build": "npm run build && npm run build:electron-server",
+    "web:build": "npm run build && node scripts/build-electron-server.mjs --public-web",
     "prepare:platform": "node scripts/prepare-platform-runtime.mjs",
     "electron:mac": "npm run build && npm run build:electron-server && node scripts/build-macos-installer.mjs",
     "electron:dev": "electron .",

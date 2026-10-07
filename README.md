@@ -12,7 +12,7 @@
 
 Mac（Apple 芯片 / Intel）与 Linux 网页部署包：见 [安装和简单命令部署说明](docs/MAC_WEB_DEPLOYMENT.md)。平台扩展包由 GitHub 的原生平台工作流构建，通过测试后添加到 v0.4.41 Release；Windows 安装包保持不变。
 
-面向大众的网页服务请选择 **public-web-linux-x64** 包：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
+面向大众的网页服务请选择 **public-web-linux-x64-node20** 包（Node.js 20.19.5+）：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
 
 ## 快速上手
 

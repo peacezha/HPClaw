@@ -1,4 +1,4 @@
-name: Package v0.4.41 public cluster web portal
+name: Package v0.4.41 public web Node 20 compatibility
 on:
   workflow_dispatch:
     inputs:
@@ -13,21 +13,28 @@ concurrency:
   cancel-in-progress: false
 jobs:
   web:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20.19.5, 22.17.1]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.17.1
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      - run: node --test scripts/check-public-web-runtime.mjs
       - run: npm run web:build
       - run: node scripts/build-public-web-package.mjs
       - name: Install packaged runtime dependencies
-        run: cd release-public-web/HPClaw-0.4.41-public-web-linux-x64 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        run: cd release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Verify actual deployment launcher
+        run: node scripts/smoke-public-web-start.mjs release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20
       - name: Create isolated real SSH fixture
         run: |
           if [ ! -x /usr/sbin/sshd ]; then
@@ -36,8 +43,9 @@ jobs:
           fi
           node scripts/setup-public-web-smoke.mjs
       - name: Verify packaged workers with two real SSH accounts
-        run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-0.4.41-public-web-linux-x64
+        run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20
       - uses: actions/upload-artifact@v4
+        if: matrix.node == '20.19.5'
         with:
           name: public-web-linux-x64
           path: |

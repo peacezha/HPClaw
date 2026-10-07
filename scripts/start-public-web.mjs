@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertPublicWebRuntime } from './public-web-runtime.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('公共网页需要 Node.js 22 或更新版本');
+assertPublicWebRuntime();
 process.env.HPCLAW_APP_ROOT = root;
 const options = new Map([['--url', 'HPCLAW_WEB_ORIGIN'], ['--host', 'HPCLAW_HOST'], ['--port', 'PORT']]);
 for (let index = 2; index < process.argv.length; index += 2) {

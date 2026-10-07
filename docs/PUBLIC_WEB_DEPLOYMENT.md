@@ -4,14 +4,16 @@
 
 ## 最短部署步骤
 
-前提：Linux x64、Node.js 22+ 和 npm；已有网站的 HTTPS 域名/反向代理可继续使用。以下命令不修改其他网站，也不安装系统软件。
+前提：Linux x64、Node.js **20.19.5 或更新正式版**和 npm；已有网站的 HTTPS 域名/反向代理可继续使用。以下命令不修改其他网站，也不安装系统软件。本兼容包支持现有 Node.js 20.19.5，但 Node.js 20 已[结束官方维护](https://nodejs.org/en/about/previous-releases)，长期公网部署建议使用受支持的 LTS。
 
 ```bash
-tar -xzf HPClaw-0.4.41-public-web-linux-x64.tar.gz
-cd HPClaw-0.4.41-public-web-linux-x64
+tar -xzf HPClaw-0.4.41-public-web-linux-x64-node20.tar.gz
+cd HPClaw-0.4.41-public-web-linux-x64-node20
 npm ci --omit=dev --ignore-scripts
 npm start -- --url https://你的实际域名
 ```
+
+请下载名称带 `node20` 的兼容更新包，原先不带此后缀的公共包仍要求 Node.js 22。升级时解压到上述新目录，保留原目录；停掉旧 HPClaw 进程后使用相同域名、端口和环境变量启动新包，并调整服务管理器的工作目录。不迁移或删除集群中的用户数据，也不更改 v0.4.41 界面。仅删除旧包的版本检查不等于完成兼容性升级。
 
 最后一条是前台服务，默认监听 `127.0.0.1:3003`。生产环境请交给现有 systemd、PM2 或服务管理器保持运行；域名须与浏览器实际访问的 origin 一致。域名不是自动申请的，npm 启动也不会自动配置 HTTPS。本机测试可直接 `npm start`，访问 `http://127.0.0.1:3003`。
 
