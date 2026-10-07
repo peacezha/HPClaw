@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { isPublicWeb } from '../services/publicWeb';
 import { MessageSquare, Trash2, Search, Loader2, RefreshCw, X, HardDriveUpload, HardDriveDownload, Check, AlertCircle } from 'lucide-react';
 import { getStoredLocale } from '../i18n';
 
@@ -85,12 +86,13 @@ export default function ConversationList({
   // 本地权威库 + 集群存档双来源合并：集群对话（如 QQ Bot 写入的）此前完全不可见。
   // 远程失败（无会话/网络问题）不影响本地列表；按 id 去重时本地优先。
   const fetchConversations = async () => {
+    if (isPublicWeb() && !sessionId) { setConversations([]); setError(null); setLoading(false); return; }
     setLoading(true);
     setError(null);
     const requestInit: RequestInit = { credentials: 'include' as RequestCredentials, headers: sessionHeaders() };
     const [localResult, clusterResult] = await Promise.allSettled([
       fetch(`/api/conversations?scope=${encodeURIComponent(sessionId || 'local-workbench')}`, requestInit).then(res => res.json()),
-      fetch('/api/conversations/cluster', requestInit).then(res => res.json()),
+      isPublicWeb() ? Promise.resolve({ success: true, conversations: [] }) : fetch('/api/conversations/cluster', requestInit).then(res => res.json()),
     ]);
     try {
       if (localResult.status === 'fulfilled' && localResult.value?.success) {
@@ -116,9 +118,10 @@ export default function ConversationList({
 
   const handleDelete = async (id: string) => {
     try {
-      await fetch(`/api/conversations/${id}`, { method: 'DELETE', credentials: 'include' as RequestCredentials, headers: sessionHeaders() });
+      const response = await fetch(`/api/conversations/${id}`, { method: 'DELETE', credentials: 'include' as RequestCredentials, headers: sessionHeaders() });
+      if (isPublicWeb() && !response.ok) throw new Error((await response.json()).error || '删除失败');
       setConversations(prev => prev.filter(c => c.id !== id));
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); if (isPublicWeb()) setError(e instanceof Error ? e.message : '删除失败'); }
   };
 
   const [importingId, setImportingId] = useState<string | null>(null);
@@ -194,7 +197,7 @@ export default function ConversationList({
                 <button onClick={fetchConversations} className="mt-2 text-accent hover:underline">重试</button>
               </div>
             ) : (
-              <span className="text-scholar-400">{search ? '无匹配对话' : '暂无历史对话'}</span>
+              <span className="text-scholar-400">{isPublicWeb() && !sessionId ? '登录集群后显示个人对话记录' : search ? '无匹配对话' : '暂无历史对话'}</span>
             )}
           </div>
         ) : (
@@ -239,7 +242,7 @@ export default function ConversationList({
                       <HardDriveDownload className="w-3 h-3" />
                     </button>
                   )}
-                  {!remoteOnly && <SyncButton convId={conv.id} convTitle={conv.title} sessionId={sessionId} />}
+                  {!isPublicWeb() && !remoteOnly && <SyncButton convId={conv.id} convTitle={conv.title} sessionId={sessionId} />}
                   {!remoteOnly && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDelete(conv.id); }}

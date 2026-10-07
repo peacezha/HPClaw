@@ -104,8 +104,9 @@ async function extractArchive(archivePath: string, targetDir: string): Promise<n
   await tar.x({
     file: archivePath,
     cwd: targetDir,
-    filter: entryPath => {
+    filter: (entryPath, entry) => {
       assertSafeArchivePath(entryPath);
+      if (process.env.HPCLAW_PUBLIC_WORKER === '1' && !['File', 'Directory'].includes((entry as { type?: string }).type || '')) return false;
       const allowed = isAllowedFile(entryPath);
       if (allowed) count++;
       return allowed;

@@ -1,3 +1,4 @@
+import { isPublicWeb } from '../services/publicWeb';
 import {
   Check,
   ChevronRight,
@@ -73,7 +74,7 @@ export default function ComputeBackendDrawer({
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-scholar-50">算力后台</h2>
               <p className="truncate text-[11px] text-scholar-400">
-                当前目标：{activeTarget?.label || '本地执行'}
+                当前目标：{activeTarget?.label || (isPublicWeb() ? '尚未连接集群' : '本地执行')}
               </p>
             </div>
           </div>

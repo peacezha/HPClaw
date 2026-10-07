@@ -29,7 +29,12 @@ jobs:
       - name: Install packaged runtime dependencies
         run: cd release-public-web/HPClaw-0.4.41-public-web-linux-x64 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Create isolated real SSH fixture
-        run: node scripts/setup-public-web-smoke.mjs
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y openssh-server
+          fi
+          node scripts/setup-public-web-smoke.mjs
       - name: Verify packaged workers with two real SSH accounts
         run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-0.4.41-public-web-linux-x64
       - uses: actions/upload-artifact@v4
