@@ -45,7 +45,7 @@ if (!release.body?.includes(heading)) {
     + '- 解压后运行 `npm ci --omit=dev --ignore-scripts`，再 `npm start -- --url https://你的域名`。公网须配置 HTTPS 反向代理。\n'
     + '- [公共网页部署说明](https://github.com/peacezha/HPClaw/blob/main/docs/PUBLIC_WEB_DEPLOYMENT.md)。旧 web-linux-x64 包是单用户版，不能移除口令后直接公开。\n'
     + '- 保留经典 v0.4.41 界面、多用户隔离与集群数据存储；历史安装包和网页资产不覆盖。本版本另附 Windows/Mac 安装包。Node.js 20 已结束官方维护，长期公网部署建议使用受支持的 LTS。\n';
-  const updated = await fetch(base + '/' + release.id, { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+  const updated = await fetch(base + '/' + release.id, { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body, tag_name: 'v' + version, target_commitish: release.target_commitish }) });
   if (!updated.ok) throw new Error('Release notes update failed: ' + updated.status);
 }
 console.log('Public web assets published:', release.html_url);

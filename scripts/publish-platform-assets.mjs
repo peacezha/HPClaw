@@ -65,7 +65,7 @@ if (!release.body?.includes(heading)) {
     + '- [安装与部署说明](https://github.com/peacezha/HPClaw/blob/main/docs/MAC_WEB_DEPLOYMENT.md)。公网须使用 HTTPS 或 SSH 隧道。\n'
     + '- Windows 安装包和 latest.yml 保持不变；附平台产物 SHA-256 与构建来源。\n';
   const updated = await fetch(`https://api.github.com/repos/${repository}/releases/${release.id}`, {
-    method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
+    method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body, tag_name: tag, target_commitish: release.target_commitish }),
   });
   if (!updated.ok) throw new Error('Release notes update failed: ' + updated.status);
 }

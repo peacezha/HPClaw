@@ -89,7 +89,7 @@ async function main() {
     const patched = await apiJson(`${API}/releases/${release.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: NAME, body }),
+      body: JSON.stringify({ name: NAME, body, tag_name: TAG, target_commitish: release.target_commitish }),
     });
     if (patched.status !== 200) console.warn('warn: 更新 Release 正文失败', patched.status);
   } else {
@@ -148,7 +148,7 @@ async function main() {
   if (release.draft && process.env.HPCLAW_KEEP_RELEASE_DRAFT !== '1') {
     const published = await apiJson(`${API}/releases/${release.id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft: false, make_latest: 'true' }),
+      body: JSON.stringify({ tag_name: TAG, draft: false, make_latest: 'true' }),
     });
     if (published.status !== 200) throw new Error(`Publish release failed: ${published.status}`);
   }
