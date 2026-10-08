@@ -1,0 +1,71 @@
+name: Publish already verified platform artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      mac_run_id:
+        description: Successful Mac build run ID
+        required: true
+        type: string
+      web_run_id:
+        description: Successful public web build run ID
+        required: true
+        type: string
+      source_commit:
+        description: Exact source commit shared by both builds
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: hpclaw-release-assets-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+      - name: Verify build provenance and passed build jobs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAC_RUN: ${{ inputs.mac_run_id }}
+          WEB_RUN: ${{ inputs.web_run_id }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          node --input-type=module <<'NODE'
+          if (!/^[a-f0-9]{40}$/.test(process.env.SOURCE_COMMIT)) throw new Error('Exact source commit required');
+          for (const [id, prefix, count] of [[process.env.MAC_RUN, 'mac (', 2], [process.env.WEB_RUN, 'web (', 2]]) {
+            if (!/^\d+$/.test(id)) throw new Error('Invalid run ID');
+            const base = 'https://api.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + id;
+            const headers = { Authorization: 'Bearer ' + process.env.GH_TOKEN, Accept: 'application/vnd.github+json' };
+            const runResponse = await fetch(base, { headers });
+            const jobsResponse = await fetch(base + '/jobs', { headers });
+            if (!runResponse.ok || !jobsResponse.ok) throw new Error('Build audit unavailable');
+            const run = await runResponse.json();
+            const jobs = (await jobsResponse.json()).jobs.filter(job => job.name.startsWith(prefix));
+            if (run.head_sha !== process.env.SOURCE_COMMIT || run.status !== 'completed'
+              || jobs.length !== count || jobs.some(job => job.conclusion !== 'success')) throw new Error('Build not verified: ' + id);
+          }
+          NODE
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.mac_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: platform-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.web_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: public-web-linux-x64
+          path: public-web-artifacts
+      - name: Upload immutable assets and update notes sequentially
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/publish-platform-assets.mjs platform-artifacts
+          node scripts/publish-public-web-assets.mjs public-web-artifacts
