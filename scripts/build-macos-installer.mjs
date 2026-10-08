@@ -24,13 +24,13 @@ await build({
     directories: { output: `release-mac-${arch}` },
     mac: {
       category: 'public.app-category.productivity',
-      artifactName: 'HPClaw-0.4.41-mac-${arch}.${ext}',
+      artifactName: 'HPClaw-${version}-mac-${arch}.${ext}',
       // An ad-hoc signature preserves Apple Silicon executable integrity, but is not Developer ID / notarization.
       ...(signed ? {} : { identity: '-' }),
       hardenedRuntime: signed,
       notarize: signed && Boolean(process.env.APPLE_API_KEY || process.env.APPLE_ID),
     },
-    dmg: { title: 'HPClaw 0.4.41' },
+    dmg: { title: `HPClaw ${pkg.version}` },
     publish: null,
   },
 });

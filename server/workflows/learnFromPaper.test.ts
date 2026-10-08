@@ -1,8 +1,37 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  biocondaCandidates, extractJsonObject, findRepoUrls, normalizeDoi, pickWorkflowFiles,
+  biocondaCandidates, extractJsonObject, fetchRepoCodeExcerpt, findRepoUrls, normalizeDoi, pickWorkflowFiles,
   parameterEvidenceFromInventory, parseWorkflowJson, preparePaperContext, rawDataFromEvidence, stripHtmlToText,
 } from './learnFromPaper';
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('pinned research code retrieval', () => {
+  it('falls back to exact Git blobs when raw.githubusercontent.com is inaccessible', async () => {
+    const commit = 'a'.repeat(40);
+    const blobSha = 'b'.repeat(40);
+    const fetchMock = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes('raw.githubusercontent.com')) throw new Error('fixture ECONNRESET');
+      if (url.includes('/branches/')) return new Response(JSON.stringify({ commit: { sha: commit } }));
+      if (url.includes('/git/trees/')) return new Response(JSON.stringify({ tree: [
+        { type: 'blob', path: 'code/01_mapping.sh', sha: blobSha, size: 100 },
+        { type: 'blob', path: 'code/02_huge.sh', sha: blobSha, size: 9999999 },
+      ] }));
+      if (url.includes('/git/blobs/')) return new Response(JSON.stringify({
+        encoding: 'base64', size: 40, content: Buffer.from('bwa mem reference reads > mapped.sam').toString('base64'),
+      }));
+      return new Response(JSON.stringify({ default_branch: 'master' }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchRepoCodeExcerpt('https://github.com/example/paper');
+    expect(result?.commit).toBe(commit);
+    expect(result?.files).toEqual(['code/01_mapping.sh']);
+    expect(result?.excerpt).toContain('bwa mem');
+    expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/git/trees/' + commit))).toBe(true);
+    expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/git/blobs/' + blobSha))).toBe(true);
+  });
+});
 
 describe('normalizeDoi', () => {
   it('识别各种 DOI 写法', () => {
@@ -138,6 +167,10 @@ describe('biocondaCandidates 包名规范化', () => {
 });
 
 describe('findRepoUrls 论文中的 GitHub 仓库提取', () => {
+  it('joins the wrapped repository URL used by the DAP paper', () => {
+    expect(findRepoUrls('Scripts: https://github.com/yuyun-zhang/\nhexa_dap].'))
+      .toEqual(['https://github.com/yuyun-zhang/hexa_dap']);
+  });
   it('识别仓库链接并去重、排除深层链接', () => {
     const text = 'Code available at https://github.com/nf-core/rnaseq and https://github.com/nf-core/rnaseq/. ' +
       'See issues https://github.com/nf-core/rnaseq/issues/12 and docs https://github.com/org/repo/wiki/page ' +
@@ -154,6 +187,13 @@ describe('findRepoUrls 论文中的 GitHub 仓库提取', () => {
 });
 
 describe('pickWorkflowFiles 流程代码文件挑选', () => {
+  it('includes numbered shell scripts and R scripts from conventional research repositories', () => {
+    const picked = pickWorkflowFiles(['hexa_dap_code/01_mapping.sh', 'hexa_dap_code/02_motif.sh',
+      'hexa_dap_code/04_TFBS_expansion_get_dist.r', 'README.md', 'tests/test.py']);
+    expect(picked).toContain('hexa_dap_code/01_mapping.sh');
+    expect(picked).toContain('hexa_dap_code/04_TFBS_expansion_get_dist.r');
+    expect(picked).not.toContain('tests/test.py');
+  });
   it('优先 main.nf/Snakefile/workflows，限制数量', () => {
     const paths = [
       'README.md', 'main.nf', 'nextflow.config', 'workflows/rnaseq.nf',
@@ -165,7 +205,7 @@ describe('pickWorkflowFiles 流程代码文件挑选', () => {
     expect(picked).toContain('workflows/rnaseq.nf');
     expect(picked).toContain('modules/local/fastp.nf');
     expect(picked).not.toContain('README.md');
-    expect(picked.length).toBeLessThanOrEqual(8);
+    expect(picked.length).toBeLessThanOrEqual(12);
   });
 
   it('Snakemake 仓库识别 Snakefile 与 .smk', () => {

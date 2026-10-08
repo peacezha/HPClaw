@@ -1,4 +1,4 @@
-name: Package v0.4.41 public web Node 20 compatibility
+name: Package public web Node 20 compatibility
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: hpclaw-public-web-v041
+  group: hpclaw-public-web
   cancel-in-progress: false
 jobs:
   web:
@@ -26,15 +26,17 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: Read package version
+        run: node -e "console.log('HPCLAW_PACKAGE_VERSION=' + require('./package.json').version)" >> "$GITHUB_ENV"
       - run: npm run lint
       - run: npm test
       - run: node --test scripts/check-public-web-runtime.mjs
       - run: npm run web:build
       - run: node scripts/build-public-web-package.mjs
       - name: Install packaged runtime dependencies
-        run: cd release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        run: cd release-public-web/HPClaw-${{ env.HPCLAW_PACKAGE_VERSION }}-public-web-linux-x64-node20 && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Verify actual deployment launcher
-        run: node scripts/smoke-public-web-start.mjs release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20
+        run: node scripts/smoke-public-web-start.mjs release-public-web/HPClaw-${{ env.HPCLAW_PACKAGE_VERSION }}-public-web-linux-x64-node20
       - name: Create isolated real SSH fixture
         run: |
           if [ ! -x /usr/sbin/sshd ]; then
@@ -43,7 +45,7 @@ jobs:
           fi
           node scripts/setup-public-web-smoke.mjs
       - name: Verify packaged workers with two real SSH accounts
-        run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-0.4.41-public-web-linux-x64-node20
+        run: npx tsx scripts/smoke-public-web.ts release-public-web/HPClaw-${{ env.HPCLAW_PACKAGE_VERSION }}-public-web-linux-x64-node20
       - uses: actions/upload-artifact@v4
         if: matrix.node == '20.19.5'
         with:
@@ -56,6 +58,9 @@ jobs:
   publish:
     needs: web
     if: inputs.publish
+    concurrency:
+      group: hpclaw-release-assets-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

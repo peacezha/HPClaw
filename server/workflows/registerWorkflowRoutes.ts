@@ -18,6 +18,7 @@ import {
   deleteLearnDraft, getLearnDraft, listLearnDrafts, saveLearnDraft, updateLearnDraft,
 } from './learnDraftStore';
 import type { Workflow, WorkflowPaperImport, WorkflowParam, WorkflowStep } from './workflowTypes';
+import { hasUsablePaperSteps, recoverPaperWorkflow, scanPaperAnalysis } from './paperLearningRecovery';
 
 function sendError(res: Response, status: number, message: string): void {
   res.status(status).json({ success: false, error: message });
@@ -174,6 +175,7 @@ export function sanitizePaperImport(value: unknown): WorkflowPaperImport | undef
   };
   if (raw.doi) paperImport.doi = String(raw.doi).trim().slice(0, 300);
   if (raw.repoUrl) paperImport.repoUrl = String(raw.repoUrl).trim().slice(0, 500);
+  if (typeof raw.repoCommit === 'string' && /^[a-f0-9]{40}$/.test(raw.repoCommit)) paperImport.repoCommit = raw.repoCommit;
   const repoFiles = shortList(raw.repoFiles, 30, 500);
   if (repoFiles.length) paperImport.repoFiles = repoFiles;
   if (raw.primaryPath) paperImport.primaryPath = String(raw.primaryPath).trim().slice(0, 500);
@@ -404,6 +406,7 @@ export function registerWorkflowRoutes(app: Express): void {
   // 从文献学习流程：DOI 或论文全文文本（PDF 由前端提取）→ LLM 提取为流程草稿
   app.post('/api/workflows/learn', async (req, res) => {
     const learnStartedAt = Date.now();
+    let modelDeadline: AbortSignal | undefined;
     const learnLog = (stage: string) =>
       console.log(`[paper-workflow] learn ${stage} elapsed=${Date.now() - learnStartedAt}ms`);
     try {
@@ -441,9 +444,10 @@ export function registerWorkflowRoutes(app: Express): void {
       if (repoUrls.length > 0) learnLog(`repo ${codeExcerpt ? 'fetched ' + codeExcerpt.repoUrl : 'unavailable'}`);
 
       // 第一段：证据清单（工具/参数/阈值带逐字出处句）。失败不阻断，退化为单段提取。
+      modelDeadline = AbortSignal.timeout(240_000);
       let evidence: Awaited<ReturnType<typeof extractEvidenceInventory>>['inventory'] = null;
       try {
-        const inv = await extractEvidenceInventory(context.text, profile, locale);
+        const inv = await extractEvidenceInventory(context.text, profile, locale, AbortSignal.any([modelDeadline, AbortSignal.timeout(120_000)]));
         evidence = inv.inventory;
         learnLog(`evidence tools=${evidence?.tools.length ?? 'n/a'} params=${evidence?.parameters.length ?? 'n/a'}`);
       } catch (err) {
@@ -452,43 +456,44 @@ export function registerWorkflowRoutes(app: Express): void {
 
       // LLM 提取加总超时：论文学习曾被反馈"第一次没反应"——多半是模型/网络卡住后
       // 前端无限期空等。超时返回明确错误，让用户知道可以重试而不是干等。
-      const llmTimeout = () => new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('AI 提取超时（超过 4 分钟）。这通常是模型服务繁忙或网络不稳；请直接重试，或改用粘贴方法学文本（更短更快）。')), 240_000));
-      const raw = await Promise.race([
-        learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence),
-        llmTimeout(),
-      ]);
+      // The underlying requests are aborted; no dangling Promise.race timer or
+      // separate four-minute allowance for every retry.
+      const raw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence, undefined, modelDeadline);
       learnLog('llm done');
       let parseResult = await parseWorkflowJson(raw);
       let parsed = parseResult.value as any;
-      const hasWorkflowSteps = (value: any) => {
-        const workflow = value?.workflow && typeof value.workflow === 'object' ? value.workflow : value;
-        return Array.isArray(workflow?.steps) && workflow.steps.length > 0;
-      };
-      if (!parsed || !hasWorkflowSteps(parsed)) {
+      const hasWorkflowSteps = hasUsablePaperSteps;
+      if (!parsed) {
         console.warn('[paper-workflow] first JSON parse incomplete mode=%s chars=%d; requesting syntax repair', parseResult.mode, raw.length);
-        const repairedRaw = await repairWorkflowJsonWithModel(raw, profile);
-        parseResult = await parseWorkflowJson(repairedRaw);
-        parsed = parseResult.value as any;
+        try {
+          const repairedRaw = await repairWorkflowJsonWithModel(raw, profile, modelDeadline);
+          parseResult = await parseWorkflowJson(repairedRaw);
+          parsed = parseResult.value as any;
+        } catch (error) { learnLog('syntax recovery failed: ' + (error instanceof Error ? error.message : String(error))); }
       }
       // 证据清单明明找到了分析步骤、模型却交了空 steps（湿实验排除规则被过度执行）：
       // 拿清单拍回去重试一次（v0.4.35 根因修复：学习整体报「未能提取有效步骤」）。
-      if (parsed && !hasWorkflowSteps(parsed) && evidence && evidence.stepsMentioned.length > 0) {
-        learnLog(`empty steps despite ${evidence.stepsMentioned.length} evidence steps; retrying with enforcement`);
-        const retryRaw = await Promise.race([
-          learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence,
-            `证据清单第一段已明确列出 ${evidence.stepsMentioned.length} 个计算分析步骤：${evidence.stepsMentioned.slice(0, 8).map(s => s.what).join('；')}。上次回答 steps 为空是错误的——湿实验操作不进流程，但清单里的计算分析内容必须建成步骤。请重新输出完整 JSON。`),
-          llmTimeout(),
-        ]);
-        const retryParsed = await parseWorkflowJson(retryRaw);
-        if (retryParsed.value && hasWorkflowSteps(retryParsed.value)) {
-          parsed = retryParsed.value;
-          parseResult = retryParsed;
-        }
+      const sourceEvidence = scanPaperAnalysis(context.text);
+      if (!hasWorkflowSteps(parsed) && (evidence?.stepsMentioned.length || sourceEvidence.stepsMentioned.length)) {
+        const recoveryEvidence = evidence?.stepsMentioned.length ? evidence : sourceEvidence;
+        learnLog(`missing executable steps despite ${recoveryEvidence!.stepsMentioned.length} evidence steps; retrying with enforcement`);
+        try {
+          const retryRaw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, recoveryEvidence,
+            '上次回答没有有效的 title + command。原文有计算分析证据，不得误判为只有湿实验。每个分析步骤须保留；缺 CLI 时写 REVIEW_REQUIRED 并标记 requiresReview=true，不得编造命令。',
+            modelDeadline);
+          const retryParsed = await parseWorkflowJson(retryRaw);
+          if (retryParsed.value) {
+            parsed = retryParsed.value;
+            parseResult = retryParsed;
+          }
+        } catch (error) { learnLog('targeted recovery failed: ' + (error instanceof Error ? error.message : String(error))); }
       }
+      const recovered = recoverPaperWorkflow(parsed, evidence, context.text, locale === 'en-US');
+      if (recovered.recovered) { parsed = recovered.value; learnLog('recovered review steps=' + recovered.recovered); }
       if (!parsed) return sendError(res, 502, 'AI 返回内容不完整，系统自动修复后仍无法解析；请缩短论文文本或重试');
       const workflowRaw = parsed.workflow && typeof parsed.workflow === 'object' ? parsed.workflow : parsed;
       const extraction = sanitizePaperExtractionMeta(parsed.extraction);
+      if (!evidence) evidence = sourceEvidence;
       if (evidence) {
         const evidenceRawData = rawDataFromEvidence(evidence);
         const evidenceParameters = parameterEvidenceFromInventory(evidence, workflowRaw);
@@ -519,7 +524,7 @@ export function registerWorkflowRoutes(app: Express): void {
       if (draft.steps.length === 0) {
         // 把模型自己给出的判断告诉用户（如果有），别再只甩一句泛泛的「改贴计算部分」
         const reason = extraction.warnings[0] || extraction.primaryPath || '';
-        return sendError(res, 502, `未能从文本中提取出有效的生信分析步骤${reason ? `（模型说明：${reason.slice(0, 200)}）` : ''}。若片段只含湿实验操作，请改贴数据分析/Methods 的计算部分`);
+        return sendError(res, 422, `当前输入没有可核验的计算分析步骤${reason ? `（提取说明：${reason.slice(0, 200)}）` : ''}。已定位章节：${context.methodSections.join('、') || '未定位'}；可能缺少方法页、补充方法或只有实验操作。请检查 PDF 提取内容，不代表整篇论文没有分析流程。`);
       }
 
       // 确定性参数覆盖审计：原文明确出现的 CLI 选项/版本/阈值，草稿是否真的纳入。
@@ -559,7 +564,7 @@ export function registerWorkflowRoutes(app: Express): void {
         importerVersion: PAPER_IMPORTER_VERSION,
         sourceLabel: source,
         ...(doi ? { doi } : {}),
-        ...(codeExcerpt ? { repoUrl: codeExcerpt.repoUrl, repoFiles: codeExcerpt.files } : {}),
+        ...(codeExcerpt ? { repoUrl: codeExcerpt.repoUrl, repoFiles: codeExcerpt.files, repoCommit: codeExcerpt.commit } : {}),
         ...(extraction.primaryPath ? { primaryPath: extraction.primaryPath } : {}),
         methodSections: extraction.methodSections,
         excludedBranches: extraction.excludedBranches,
@@ -619,7 +624,7 @@ export function registerWorkflowRoutes(app: Express): void {
         },
       });
     } catch (err: any) {
-      sendError(res, 502, err.message || String(err));
+      sendError(res, 502, modelDeadline?.aborted ? 'AI 文献学习超过 4 分钟，已停止模型请求；这是模型响应超时，不代表论文没有计算分析步骤。' : err.message || String(err));
     }
   });
 
@@ -739,6 +744,8 @@ export function registerWorkflowRoutes(app: Express): void {
         sourceLabel: entry.sourceLabel,
         ...(entry.doi ? { doi: entry.doi } : {}),
         ...(entry.repoUrl ? { repoUrl: entry.repoUrl } : {}),
+        ...(entry.draft.paperImport?.repoCommit ? { repoCommit: entry.draft.paperImport.repoCommit } : {}),
+        ...(entry.draft.paperImport?.repoFiles ? { repoFiles: entry.draft.paperImport.repoFiles } : {}),
         ...(extraction.primaryPath ? { primaryPath: extraction.primaryPath } : {}),
         methodSections: extraction.methodSections,
         excludedBranches: extraction.excludedBranches,

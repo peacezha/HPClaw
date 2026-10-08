@@ -1,15 +1,19 @@
-name: Package v0.4.41 for Mac and Linux Web
+name: Package Mac installers
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Add verified artifacts to the existing v0.4.41 release
+        description: Add verified artifacts to the release matching package.json
         type: boolean
         default: true
+      include_private_web:
+        description: Also build the optional single-user private web package
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: hpclaw-v041-platforms
+  group: hpclaw-platforms
   cancel-in-progress: false
 jobs:
   mac:
@@ -30,6 +34,8 @@ jobs:
           node-version: 22.17.1
           cache: npm
       - run: npm ci
+      - name: Read package version
+        run: node -e "console.log('HPCLAW_PACKAGE_VERSION=' + require('./package.json').version)" >> "$GITHUB_ENV"
       - run: npm run lint
       - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
@@ -38,7 +44,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - run: node scripts/smoke-macos.mjs
       - name: Record build source
-        run: node -e "require('fs').writeFileSync('release-mac-${{ matrix.arch }}/HPClaw-0.4.41-platforms-mac-${{ matrix.arch }}.json',JSON.stringify({version:'0.4.41',arch:process.arch,sourceCommit:process.env.GITHUB_SHA,appleSigned:false},null,2))"
+        run: node -e "require('fs').writeFileSync('release-mac-${{ matrix.arch }}/HPClaw-${{ env.HPCLAW_PACKAGE_VERSION }}-platforms-mac-${{ matrix.arch }}.json',JSON.stringify({version:process.env.HPCLAW_PACKAGE_VERSION,arch:process.arch,sourceCommit:process.env.GITHUB_SHA,appleSigned:false},null,2))"
       - uses: actions/upload-artifact@v4
         with:
           name: mac-${{ matrix.arch }}
@@ -49,6 +55,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
   web:
+    if: inputs.include_private_web
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -58,6 +65,8 @@ jobs:
           node-version: 22.17.1
           cache: npm
       - run: npm ci
+      - name: Read package version
+        run: node -e "console.log('HPCLAW_PACKAGE_VERSION=' + require('./package.json').version)" >> "$GITHUB_ENV"
       - run: npm run lint
       - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
@@ -65,7 +74,7 @@ jobs:
       - run: node scripts/smoke-web.mjs
       - name: Verify deployment container
         run: |
-          cd release-web/HPClaw-0.4.41-web-linux-x64
+          cd release-web/HPClaw-${{ env.HPCLAW_PACKAGE_VERSION }}-web-linux-x64
           docker compose up -d --build --wait --wait-timeout 120
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3003/api/app-info)" = 401
           docker compose down
@@ -79,7 +88,10 @@ jobs:
           compression-level: 0
   publish:
     needs: [mac, web]
-    if: inputs.publish
+    if: always() && inputs.publish && needs.mac.result == 'success' && (needs.web.result == 'success' || needs.web.result == 'skipped')
+    concurrency:
+      group: hpclaw-release-assets-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

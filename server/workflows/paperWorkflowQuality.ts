@@ -9,7 +9,7 @@ import type {
   WorkflowStep,
 } from './workflowTypes';
 
-export const PAPER_IMPORTER_VERSION = 'paper-agent-v3';
+export const PAPER_IMPORTER_VERSION = 'paper-agent-v4';
 
 export interface PaperContextSummary {
   originalChars: number;

@@ -10,7 +10,7 @@
 
 > 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
 
-Mac（Apple 芯片 / Intel）与 Linux 网页部署包：见 [安装和简单命令部署说明](docs/MAC_WEB_DEPLOYMENT.md)。平台扩展包由 GitHub 的原生平台工作流构建，通过测试后添加到 v0.4.41 Release；Windows 安装包保持不变。
+v0.4.42 提供 Windows、Mac（Apple 芯片 / Intel）和公共 Linux 网页包，保留经典界面并修复文献学习的 PDF/Methods 提取、作者代码核验和异常恢复。Mac 见 [安装说明](docs/MAC_WEB_DEPLOYMENT.md)；各平台测试通过后发布到同一版本的 Release。
 
 面向大众的网页服务请选择 **public-web-linux-x64-node20** 包（Node.js 20.19.5+）：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
 
@@ -33,7 +33,7 @@ Mac（Apple 芯片 / Intel）与 Linux 网页部署包：见 [安装和简单命
 ```bash
 npm install          # 安装依赖
 npm run dev          # 开发模式
-npm run test         # 运行测试（168 个测试文件，1296 项）
+npm run test         # 运行回归测试
 npm run electron:dist  # 打包 Windows 安装包（输出到 release/）
 ```
 

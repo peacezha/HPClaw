@@ -114,6 +114,7 @@ export interface WorkflowPaperImport {
   doi?: string;
   repoUrl?: string;
   repoFiles?: string[];
+  repoCommit?: string;
   primaryPath?: string;
   methodSections: string[];
   excludedBranches: string[];

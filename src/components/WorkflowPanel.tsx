@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { paperPageText, selectPaperPages } from '../features/workflows/paperPdf';
 import type { Socket } from 'socket.io-client';
 import {
   Search, Plus, Sparkles, ChevronDown, ChevronRight, Play, Pencil, Trash2,
@@ -433,24 +434,23 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
         'pdfjs-dist/build/pdf.worker.min.mjs',
         import.meta.url,
       ).toString();
-      const doc = await pdfjs.getDocument({ data: bytes }).promise;
+      const loadingTask = pdfjs.getDocument({ data: bytes });
+      const doc = await loadingTask.promise;
       const parts: string[] = [];
-      // 数据/代码可用性通常在论文末页。先取首页与末 10 页，再补前 45 页，
-      // 避免长论文在字符上限前永远读不到 accession 与原始文件说明。
-      const pageNumbers = [...new Set([
-        ...Array.from({ length: Math.min(3, doc.numPages) }, (_value, index) => index + 1),
-        ...Array.from({ length: Math.min(10, doc.numPages) }, (_value, index) => doc.numPages - Math.min(10, doc.numPages) + index + 1),
-        ...Array.from({ length: Math.min(45, doc.numPages) }, (_value, index) => index + 1),
-      ])];
-      for (const p of pageNumbers) {
-        const page = await doc.getPage(p);
-        const content = await page.getTextContent();
-        parts.push(`[Page ${p}]\n${content.items.map((it: any) => `${it.str}${it.hasEOL ? '\n' : ' '}`).join('')}`);
-        if (parts.join('\n').length > 220_000) break;
-      }
+      // Retain the beginning and the tail, but concatenate in original page order.
+      const totalPages = doc.numPages;
+      const pageNumbers = selectPaperPages(totalPages);
+      try {
+        for (const p of pageNumbers) {
+          const page = await doc.getPage(p);
+          const content = await page.getTextContent();
+          parts.push(`[Page ${p}]\n${paperPageText(content.items).slice(0, 20_000)}`);
+          page.cleanup();
+        }
+      } finally { await loadingTask.destroy(); }
       const paperText = parts.join('\n');
       if (paperText.length < 800) throw new Error('PDF 提取的文本太少（可能是扫描件图片型 PDF）');
-      setLearnStatus(`已提取 ${Math.round(paperText.length / 1000)}k 字符，AI 学习中…`);
+      setLearnStatus(`已按页序读取 ${pageNumbers.length}/${totalPages} 页，提取 ${Math.round(paperText.length / 1000)}k 字符，正在核对方法与数据来源…`);
       const { draft, draftId, repoUsed, softwareCheck, paperImport } = await learnFromPaper({ paperText }, aiProfile);
       openLearnedDraft(draft, { repoUsed, softwareCheck, paperImport }, draftId || undefined);
       void refreshLearnDrafts();
@@ -584,7 +584,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
         {learnNotice && (
           <div className="text-[11px] rounded-lg border border-accent/20 bg-accent/5 p-2 space-y-0.5 shrink-0">
             {learnNotice.repoUsed && (
-              <p className="text-scholar-300">已参考代码仓库：<code className="text-accent/90">{learnNotice.repoUsed}</code>（步骤以仓库代码为准）</p>
+              <p className="text-scholar-300">已参考代码仓库：<code className="text-accent/90">{learnNotice.repoUsed}</code>（论文与代码参数冲突会标记待核对）{editor.paperImport?.repoCommit && <span className="ml-1" title={editor.paperImport.repoCommit}>版本：{editor.paperImport.repoCommit.slice(0, 12)}</span>}</p>
             )}
             {learnNotice.okTools.length > 0 && (
               <p className="text-emerald-500">Bioconda 已收录：{learnNotice.okTools.map(t => t.hit && t.hit !== t.name.toLowerCase() ? `${t.name}→${t.hit}` : t.name).join('、')}</p>
@@ -1040,7 +1040,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                   e.target.value = '';
                 }} />
             </label>
-            {learnStatus && <span className="text-[10px] text-scholar-400">{learnStatus}{learning && learnElapsed > 5 ? `（已用 ${learnElapsed} 秒，整篇论文通常需 1–3 分钟；超时 4 分钟会明确报错，可放心重试）` : ''}</span>}
+            {learnStatus && <span className="text-[10px] text-scholar-400">{learnStatus}{learning && learnElapsed > 5 ? `（已用 ${learnElapsed} 秒；正在提取证据、核对代码和审计流程）` : ''}</span>}
           </div>
           {/* 直接粘贴方法学文本：只贴生信分析部分，避免整篇投喂带入湿实验步骤 */}
           <details className="rounded-md bg-scholar-950/60 px-2 py-1.5">

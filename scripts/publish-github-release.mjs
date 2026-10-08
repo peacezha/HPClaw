@@ -78,7 +78,8 @@ async function main() {
   if (existing.status === 200) {
     release = existing.json;
     console.log('release exists:', release.html_url);
-    // 复用时同步更新标题与正文（产物随后逐个替换）
+    // Preserve platform/public-web sections appended by independent verified builds.
+    if (release.body?.startsWith(body)) body = release.body;
     const patched = await apiJson(`${API}/releases/${release.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -96,11 +97,21 @@ async function main() {
     console.log('release created:', release.html_url);
   }
 
-  // 2) upload artifacts (replace same-named assets)
-  const existingAssets = new Map((release.assets || []).map(a => [a.name, a.id]));
+  // 2) Upload immutable assets; retry only when the existing bytes match.
+  const existingAssets = new Map((release.assets || []).map(a => [a.name, a]));
   const uploadOne = async ({ file, type }) => {
     const full = path.join(releaseDir, file);
     const size = fs.statSync(full).size;
+    const sha256 = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(full)) sha256.update(chunk);
+    const digest = 'sha256:' + sha256.digest('hex');
+    const existingAsset = existingAssets.get(file);
+    if (existingAsset) {
+      if (existingAsset.size === size && existingAsset.digest === digest && existingAsset.state === 'uploaded') {
+        console.log('already verified:', file); return;
+      }
+      throw new Error('Refusing to overwrite a different existing release asset: ' + file);
+    }
     const doUpload = async () => {
       const res = await fetch(`${UPLOAD}/releases/${release.id}/assets?name=${encodeURIComponent(file)}`, {
         method: 'POST',
@@ -110,28 +121,15 @@ async function main() {
       });
       return { status: res.status, text: await res.text() };
     };
-    let up = await doUpload();
-    if (up.status === 422 && up.text.includes('already_exists')) {
-      // 旧资产删除未生效（或刚被并发重建）：重新取资产列表再删一次后重试
-      const fresh = await apiJson(`${API}/releases/${release.id}/assets?per_page=100`);
-      const stale = (fresh.json || []).find(a => a.name === file);
-      if (stale) {
-        const del = await apiJson(`${API}/releases/assets/${stale.id}`, { method: 'DELETE' });
-        console.log('delete stale asset retry:', file, del.status);
-      }
-      up = await doUpload();
-    }
+    const up = await doUpload();
     if (up.status !== 201) throw new Error(`upload ${file} failed: ${up.status} ${up.text.slice(0, 400)}`);
     const asset = JSON.parse(up.text);
+    if (asset.state !== 'uploaded' || asset.size !== size || asset.digest !== digest) {
+      throw new Error('Uploaded asset checksum or size mismatch: ' + file);
+    }
     console.log(`uploaded: ${asset.name} ${(asset.size / 1024 / 1024).toFixed(1)} MB state=${asset.state}`);
   };
   for (const artifact of artifacts) {
-    const { file } = artifact;
-    const oldId = existingAssets.get(file);
-    if (oldId) {
-      const del = await apiJson(`${API}/releases/assets/${oldId}`, { method: 'DELETE' });
-      console.log('delete old asset:', file, del.status);
-    }
     await uploadOne(artifact);
   }
 
@@ -141,7 +139,7 @@ async function main() {
     const asset = uploaded.json.find(item => item.name === file);
     if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(path.join(releaseDir, file)).size) throw new Error(`Uploaded asset incomplete: ${file}`);
   }
-  if (release.draft) {
+  if (release.draft && process.env.HPCLAW_KEEP_RELEASE_DRAFT !== '1') {
     const published = await apiJson(`${API}/releases/${release.id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ draft: false, make_latest: 'true' }),
