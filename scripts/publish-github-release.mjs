@@ -74,7 +74,13 @@ async function main() {
 
   // 1) create or reuse release by tag
   let release;
-  const existing = await apiJson(`${API}/releases/tags/${TAG}`);
+  let existing = await apiJson(`${API}/releases/tags/${TAG}`);
+  if (existing.status === 404) {
+    const listed = await apiJson(`${API}/releases?per_page=100`);
+    const drafts = listed.json?.filter(item => item.tag_name === TAG && item.draft) || [];
+    if (drafts.length > 1) throw new Error('Multiple matching draft releases; resolve before publishing');
+    if (drafts.length === 1) existing = { status: 200, json: drafts[0] };
+  }
   if (existing.status === 200) {
     release = existing.json;
     console.log('release exists:', release.html_url);
@@ -148,7 +154,7 @@ async function main() {
   }
 
   // 3) verify release assets are publicly reachable
-  const finalRel = await apiJson(`${API}/releases/tags/${TAG}`);
+  const finalRel = await apiJson(`${API}/releases/${release.id}`);
   const names = (finalRel.json?.assets || []).map(a => a.name);
   console.log('final assets:', names.join(', '));
   if (!names.includes('latest.yml')) throw new Error('latest.yml missing from release assets!');

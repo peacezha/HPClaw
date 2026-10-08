@@ -14,8 +14,15 @@ const repository = 'peacezha/HPClaw';
 const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'hpclaw-platform-release' };
 const response = await fetch(`https://api.github.com/repos/${repository}/releases/tags/${tag}`, { headers });
-if (!response.ok) throw new Error('Existing release not found: ' + response.status);
-const release = await response.json();
+let release;
+if (response.ok) release = await response.json();
+else if (response.status === 404) {
+  const listed = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=100`, { headers });
+  if (!listed.ok) throw new Error('Could not list draft releases: ' + listed.status);
+  const drafts = (await listed.json()).filter(item => item.tag_name === tag && item.draft);
+  if (drafts.length !== 1) throw new Error('Expected exactly one matching draft release');
+  release = drafts[0];
+} else throw new Error('Existing release not found: ' + response.status);
 const files = fs.readdirSync(directory).filter(name => name.startsWith(prefix)
   && /^(?:mac-(?:arm64|x64)\.(?:dmg|zip)|web-linux-x64\.tar\.gz(?:\.sha256)?|platforms-[\w.-]+\.json)$/.test(name.slice(prefix.length)));
 for (const needed of [prefix + 'mac-arm64.dmg', prefix + 'mac-x64.dmg']) {

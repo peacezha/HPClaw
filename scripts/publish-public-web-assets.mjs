@@ -11,8 +11,15 @@ const names = [archiveName, archiveName + '.sha256'];
 const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hpclaw-public-web-release', 'X-GitHub-Api-Version': '2022-11-28' };
 const base = 'https://api.github.com/repos/peacezha/HPClaw/releases';
 const response = await fetch(base + '/tags/v' + version, { headers });
-if (!response.ok) throw new Error('Existing release unavailable: ' + response.status);
-const release = await response.json();
+let release;
+if (response.ok) release = await response.json();
+else if (response.status === 404) {
+  const listed = await fetch(base + '?per_page=100', { headers });
+  if (!listed.ok) throw new Error('Could not list draft releases: ' + listed.status);
+  const drafts = (await listed.json()).filter(item => item.tag_name === 'v' + version && item.draft);
+  if (drafts.length !== 1) throw new Error('Expected exactly one matching draft release');
+  release = drafts[0];
+} else throw new Error('Existing release unavailable: ' + response.status);
 for (const name of names) {
   const file = path.join(directory, name);
   const size = fs.statSync(file).size;
