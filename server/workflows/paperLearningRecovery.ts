@@ -2,7 +2,7 @@ import type { EvidenceInventory } from './learnFromPaper';
 
 const normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim();
 const computational = /\b(?:reads?|sequences?|peaks?|motifs?|genomes?|genes?|expression|statistics|statistical|enrichment|alignment|mapping|quantif\w*|bioinformatics)\b|比对|富集|定量|统计|质控/i;
-const operation = /\b(?:aligned|mapped|mapping|cleaned|trimmed|filtered|removed|identified|detected|calculated|normalized|quantified|downloaded|analy[sz]ed|used|performed)\b|比对|计算|过滤|分析|下载/i;
+const operation = /\b(?:aligned|mapped|mapping|cleaned|trimmed|filtered|removed|identified|detected|called|calling|compared|estimated|classified|calculated|normalized|quantified|downloaded|analy[sz]ed|used|performed)\b|比对|计算|过滤|分析|下载/i;
 
 /** A quoted source must actually occur in the input; model claims alone are not evidence. */
 export function paperQuoteExists(quote: unknown, text: string): boolean {
@@ -74,7 +74,7 @@ export function recoverPaperWorkflow(value: any, evidence: EvidenceInventory | n
       command: '# HPCLAW_REVIEW_REQUIRED\n# REVIEW_REQUIRED: ' + gap + '\nexit 2',
       notes: quote,
       agent: { kind: 'compute', sourceType: 'paper', sourcePath: 'paper', sourceSection: 'Methods (recovered evidence)',
-        evidence: quote, confidence: 'low', requiresReview: true, template: true, contractVersion: 'paper-agent-v4' },
+        evidence: quote, confidence: 'low', requiresReview: true, template: true, contractVersion: 'paper-agent-v5' },
     };
   };
   let steps = Array.isArray(workflow.steps) ? workflow.steps.map((step: any) => {

@@ -6,6 +6,7 @@ import { registerWorkflowRoutes } from './registerWorkflowRoutes';
 
 const mocks = vi.hoisted(() => ({
   evidence: vi.fn(), learn: vi.fn(), repair: vi.fn(), save: vi.fn(),
+  publicData: vi.fn(),
 }));
 vi.mock('./learnFromPaper', async importOriginal => {
   const actual = await importOriginal<typeof import('./learnFromPaper')>();
@@ -13,6 +14,9 @@ vi.mock('./learnFromPaper', async importOriginal => {
     repairWorkflowJsonWithModel: mocks.repair, fetchRepoCodeExcerpt: vi.fn().mockResolvedValue(null),
     checkToolsInBioconda: vi.fn().mockResolvedValue([]) };
 });
+vi.mock('./paperPublicData', async importOriginal => ({
+  ...await importOriginal<typeof import('./paperPublicData')>(), resolvePaperPublicData: mocks.publicData,
+}));
 vi.mock('./learnDraftStore', () => ({
   saveLearnDraft: mocks.save, deleteLearnDraft: vi.fn(), getLearnDraft: vi.fn(), listLearnDrafts: vi.fn(), updateLearnDraft: vi.fn(),
 }));
@@ -43,6 +47,7 @@ beforeEach(() => {
   mocks.learn.mockResolvedValue('{"workflow":{"name":"Paper","steps":[]},"extraction":{}}');
   mocks.repair.mockResolvedValue('not valid JSON');
   mocks.save.mockReturnValue({ id: 'review-draft' });
+  mocks.publicData.mockResolvedValue({ records: [], projects: [], warnings: [] });
 });
 afterEach(async () => {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()));

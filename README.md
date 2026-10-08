@@ -10,7 +10,7 @@
 
 > 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
 
-v0.4.42 提供 Windows、Mac（Apple 芯片 / Intel）和公共 Linux 网页包，保留经典界面并修复文献学习的 PDF/Methods 提取、作者代码核验和异常恢复。Mac 见 [安装说明](docs/MAC_WEB_DEPLOYMENT.md)；各平台测试通过后发布到同一版本的 Release。
+v0.4.43 提供 Windows、Mac（Apple 芯片 / Intel）和公共 Linux 网页包，保留经典界面。文献学习自动查询 GEO/ENA 原始数据清单、生成 FASTQ 下载及 MD5 校验步骤，并分批补齐分析流程，避免截断成两步草稿。详见 [更新说明](v0.4.43_更新说明.md) 和 [Mac 安装说明](docs/MAC_WEB_DEPLOYMENT.md)。
 
 面向大众的网页服务请选择 **public-web-linux-x64-node20** 包（Node.js 20.19.5+）：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
 

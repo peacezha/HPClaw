@@ -37,7 +37,7 @@ jobs:
       - name: Read package version
         run: node -e "console.log('HPCLAW_PACKAGE_VERSION=' + require('./package.json').version)" >> "$GITHUB_ENV"
       - run: npm run lint
-      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx --maxWorkers 1 --minWorkers 1
+      - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx server/workflows/paperWorkflowGeneration.test.ts server/workflows/paperPublicData.test.ts server/workflows/paperModelTransport.test.ts server/workflows/paperLearningPrompt.test.ts --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
       - run: npm run electron:mac
         env:

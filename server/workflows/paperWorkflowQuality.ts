@@ -8,8 +8,9 @@ import type {
   WorkflowPaperImport,
   WorkflowStep,
 } from './workflowTypes';
+import { hasExecutableBody } from './paperWorkflowGeneration';
 
-export const PAPER_IMPORTER_VERSION = 'paper-agent-v4';
+export const PAPER_IMPORTER_VERSION = 'paper-agent-v5';
 
 export interface PaperContextSummary {
   originalChars: number;
@@ -100,7 +101,7 @@ export function sanitizePaperExtractionMeta(value: unknown): PaperExtractionMeta
         return record;
       })
       .filter(item => item.evidence || item.projectAccession || item.sampleAccession || item.runAccessions.length || item.files.length)
-      .slice(0, 500)
+      .slice(0, 5000)
     : [];
   const parameterEvidence = Array.isArray(raw.parameterEvidence)
     ? raw.parameterEvidence
@@ -151,10 +152,9 @@ export function evaluatePaperReproducibility(
     : coveredParams === extraction.parameterEvidence.length
       ? 'complete'
       : 'partial';
-  const hasAcquisitionStep = workflow.steps.some(step =>
-    /(?:prefetch|fasterq-dump|fastq-dump|enaDataGet|ascp|aspera|wget|curl|download|下载|获取原始数据|raw[_-]?data[_-]?manifest)/i
-      .test(`${step.title}\n${step.command}`),
-  );
+  const hasAcquisitionStep = workflow.steps.some(step => hasExecutableBody(step.command)
+    && /(?:prefetch|fasterq-dump|fastq-dump|enaDataGet|ascp|aspera|wget|curl|urlopen|urlretrieve)/i.test(
+      step.command.split('\n').filter(line => !line.trim().startsWith('#')).join('\n')));
   const missing: string[] = [];
   if (rawDataStatus === 'missing') missing.push('未从正文/数据可用性章节提取原始数据仓库、accession 或文件来源');
   if (rawDataStatus === 'partial') missing.push('原始数据记录缺少稳定 accession/文件定位或样本映射');

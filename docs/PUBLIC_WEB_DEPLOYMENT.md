@@ -1,4 +1,4 @@
-# HPClaw v0.4.42 公共网页端（Linux / npm）
+# HPClaw v0.4.43 公共网页端（Linux / npm）
 
 此包面向多位访客，保留经典 v0.4.41 界面。**不要把旧的 `web-linux-x64` 单用户包去掉口令后公开**；请选择名称含 `public-web` 的新包。无需 Docker，无需统一网站密码。
 
@@ -7,8 +7,8 @@
 前提：Linux x64、Node.js **20.19.5 或更新正式版**和 npm；已有网站的 HTTPS 域名/反向代理可继续使用。以下命令不修改其他网站，也不安装系统软件。本兼容包支持现有 Node.js 20.19.5，但 Node.js 20 已[结束官方维护](https://nodejs.org/en/about/previous-releases)，长期公网部署建议使用受支持的 LTS。
 
 ```bash
-tar -xzf HPClaw-0.4.42-public-web-linux-x64-node20.tar.gz
-cd HPClaw-0.4.42-public-web-linux-x64-node20
+tar -xzf HPClaw-0.4.43-public-web-linux-x64-node20.tar.gz
+cd HPClaw-0.4.43-public-web-linux-x64-node20
 npm ci --omit=dev --ignore-scripts
 npm start -- --url https://你的实际域名
 ```
@@ -69,7 +69,7 @@ HPCLAW_ALLOW_PRIVATE_CLUSTERS=1 npm start -- --url https://你的域名
 
 同一集群账号多窗口修改同一个设置文件会检测冲突，拒绝覆盖并提示重新登录；不要用同一 SSH 账号给不同人提供所谓隔离。若进程恰在远程写入期间被强杀，可能残留 `~/hpclaw_web/state.lock`；确认该账号没有任何正在保存的网页连接后，才可手动 `rmdir ~/hpclaw_web/state.lock`。不自动删除无法确认归属的锁。
 
-升级时停止旧服务，将新包解压到新目录，安装依赖并用同一域名/端口启动。不需要复制网页服务器的用户数据库；用户数据在各自集群。回滚到之前的**公共网页包**，不要回滚为无口令的单用户服务。v0.4.42 同时发布修复后的 Windows/Mac 安装包；历史 v0.4.41 标签和资产不覆盖。已有文献草稿不会自动改写，升级后重新上传 PDF 学习即可使用新的提取逻辑。
+升级时停止旧服务，将新包解压到新目录，安装依赖并用同一域名/端口启动。不需要复制网页服务器的用户数据库；用户数据在各自集群。回滚到之前的**公共网页包**，不要回滚为无口令的单用户服务。v0.4.43 同时提供 Windows/Mac 文献学习修复；历史版本标签和资产不覆盖。已有文献草稿不会自动改写，升级后重新上传 PDF 学习即可使用原始数据查询与分批生成逻辑。
 
 ## 验证范围
 

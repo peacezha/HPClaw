@@ -19,6 +19,7 @@ import {
 } from './learnDraftStore';
 import type { Workflow, WorkflowPaperImport, WorkflowParam, WorkflowStep } from './workflowTypes';
 import { hasUsablePaperSteps, recoverPaperWorkflow, scanPaperAnalysis } from './paperLearningRecovery';
+import { attachPublicDataDownload, resolvePaperPublicData } from './paperPublicData';
 
 function sendError(res: Response, status: number, message: string): void {
   res.status(status).json({ success: false, error: message });
@@ -435,6 +436,14 @@ export function registerWorkflowRoutes(app: Express): void {
 
       // 论文附带代码仓库时，抓取仓库流程代码作为步骤的事实来源（CoPaLink 代码侧）
       const context = preparePaperContext(paperText);
+      const publicData = await resolvePaperPublicData(context.text);
+      learnLog(`public data runs=${publicData.records.length} projects=${publicData.projects.length}`);
+      const dataSummary = JSON.stringify(publicData.projects.map(project => {
+        const rows = publicData.records.filter(row => row.projectAccession === project);
+        return { project, runs: rows.length, samples: new Set(rows.map(row => row.sampleAccession)).size,
+          examples: rows.slice(0, 3).map(row => ({ sample: row.sampleAccession, name: row.sampleName, run: row.runAccessions,
+            layout: row.layout, files: row.files })), warnings: publicData.warnings.filter(item => item.startsWith(project)) };
+      }));
       let codeExcerpt: Awaited<ReturnType<typeof fetchRepoCodeExcerpt>> = null;
       const repoUrls = findRepoUrls(paperText);
       for (const repoUrl of repoUrls) {
@@ -444,11 +453,13 @@ export function registerWorkflowRoutes(app: Express): void {
       if (repoUrls.length > 0) learnLog(`repo ${codeExcerpt ? 'fetched ' + codeExcerpt.repoUrl : 'unavailable'}`);
 
       // 第一段：证据清单（工具/参数/阈值带逐字出处句）。失败不阻断，退化为单段提取。
-      modelDeadline = AbortSignal.timeout(240_000);
+      modelDeadline = AbortSignal.timeout(360_000);
       let evidence: Awaited<ReturnType<typeof extractEvidenceInventory>>['inventory'] = null;
+      const evidenceWarnings: string[] = [];
       try {
         const inv = await extractEvidenceInventory(context.text, profile, locale, AbortSignal.any([modelDeadline, AbortSignal.timeout(120_000)]));
         evidence = inv.inventory;
+        evidenceWarnings.push(...(inv.warnings || []));
         learnLog(`evidence tools=${evidence?.tools.length ?? 'n/a'} params=${evidence?.parameters.length ?? 'n/a'}`);
       } catch (err) {
         learnLog(`evidence failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -458,7 +469,7 @@ export function registerWorkflowRoutes(app: Express): void {
       // 前端无限期空等。超时返回明确错误，让用户知道可以重试而不是干等。
       // The underlying requests are aborted; no dangling Promise.race timer or
       // separate four-minute allowance for every retry.
-      const raw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence, undefined, modelDeadline);
+      const raw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, evidence, undefined, modelDeadline, dataSummary);
       learnLog('llm done');
       let parseResult = await parseWorkflowJson(raw);
       let parsed = parseResult.value as any;
@@ -480,7 +491,7 @@ export function registerWorkflowRoutes(app: Express): void {
         try {
           const retryRaw = await learnWorkflowFromText(context.text, profile, codeExcerpt, context, locale, recoveryEvidence,
             '上次回答没有有效的 title + command。原文有计算分析证据，不得误判为只有湿实验。每个分析步骤须保留；缺 CLI 时写 REVIEW_REQUIRED 并标记 requiresReview=true，不得编造命令。',
-            modelDeadline);
+            modelDeadline, dataSummary);
           const retryParsed = await parseWorkflowJson(retryRaw);
           if (retryParsed.value) {
             parsed = retryParsed.value;
@@ -492,13 +503,23 @@ export function registerWorkflowRoutes(app: Express): void {
       if (recovered.recovered) { parsed = recovered.value; learnLog('recovered review steps=' + recovered.recovered); }
       if (!parsed) return sendError(res, 502, 'AI 返回内容不完整，系统自动修复后仍无法解析；请缩短论文文本或重试');
       const workflowRaw = parsed.workflow && typeof parsed.workflow === 'object' ? parsed.workflow : parsed;
+      attachPublicDataDownload(workflowRaw, publicData, locale === 'en-US');
       const extraction = sanitizePaperExtractionMeta(parsed.extraction);
+      extraction.warnings.push(...publicData.warnings, ...evidenceWarnings);
       if (!evidence) evidence = sourceEvidence;
       if (evidence) {
         const evidenceRawData = rawDataFromEvidence(evidence);
         const evidenceParameters = parameterEvidenceFromInventory(evidence, workflowRaw);
         if (evidenceRawData.length > 0) extraction.rawData = evidenceRawData;
         if (evidenceParameters.length > 0) extraction.parameterEvidence = evidenceParameters;
+      }
+      if (publicData.records.length) {
+        const resolved = new Set(publicData.records.map(row => row.projectAccession));
+        extraction.rawData = [...(extraction.rawData || []).filter(row => !resolved.has(row.projectAccession)),
+          ...publicData.records];
+        extraction.unresolvedQuestions.push({ question: locale === 'en-US'
+          ? 'Confirm DATA_PROJECT and DOWNLOAD_RUNS before downloading; sample conditions/replicates are not inferred from names.'
+          : '已取得真实 FASTQ 地址与校验值；运行前确认 DATA_PROJECT 和 DOWNLOAD_RUNS。条件/重复不能仅凭样本名猜测，需按实验设计核对。', blocking: true });
       }
       extraction.parameterEvidence = markParameterEvidenceCoverage(extraction.parameterEvidence, workflowRaw);
       if (parseResult.truncated || parseResult.mode === 'partial-repair') {
@@ -624,7 +645,7 @@ export function registerWorkflowRoutes(app: Express): void {
         },
       });
     } catch (err: any) {
-      sendError(res, 502, modelDeadline?.aborted ? 'AI 文献学习超过 4 分钟，已停止模型请求；这是模型响应超时，不代表论文没有计算分析步骤。' : err.message || String(err));
+      sendError(res, 502, modelDeadline?.aborted ? 'AI 文献学习超过 6 分钟，已停止模型请求；这是模型响应超时，不代表论文没有计算分析步骤。' : err.message || String(err));
     }
   });
 
