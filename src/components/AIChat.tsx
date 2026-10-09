@@ -1739,7 +1739,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     autoResizeChatInput();
   };
 
-  const isChatInputDisabled = shouldDisableChatInput(isAiLoading, loadingConversationId);
+  const isChatInputDisabled = shouldDisableChatInput(isAiLoading, loadingConversationId) || userQuestions.busy;
   // 流程卡片用的真实集群会话：本地工作台（App 传入 'local-workbench'）视为未连接集群
   const clusterSessionId = sessionId && sessionId !== 'local-workbench' ? sessionId : null;
   // 稳定引用：MessageBubble/memo 子树共享，避免每次渲染击穿 memo
@@ -2222,7 +2222,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
           {userQuestions.notice && !pendingAsk && <p role="status" className="mx-3 mb-2 text-xs text-scholar-300">{userQuestions.notice}</p>}
           {pendingAsk && pendingAsk.key === deferredQuestionKey && <div className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
-            <p className="text-sm text-scholar-200">{isEnglish ? 'The agent is waiting for your answer.' : 'Agent 正在等待你的回答。'}</p>
+            <div className="min-w-0">
+              <p className="text-sm text-scholar-200">{userQuestions.busy
+                ? isEnglish ? 'Sending your answer…' : '正在送达你的回答…'
+                : isEnglish ? 'The agent is waiting for your answer.' : 'Agent 正在等待你的回答。'}</p>
+              {userQuestions.error && <p role="alert" className="mt-1 text-sm text-red-400">{userQuestions.error}</p>}
+            </div>
             <button type="button" onClick={() => setDeferredQuestionKey('')} className="px-3 py-1.5 text-sm text-accent">{isEnglish ? 'Answer question' : '回答问题'}</button>
           </div>}
           {pendingAsk && <AIQuestionDialog key={pendingAsk.key} question={pendingAsk} english={isEnglish} open={pendingAsk.key !== deferredQuestionKey}

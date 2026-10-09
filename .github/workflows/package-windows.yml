@@ -1,0 +1,74 @@
+name: Package verified Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hpclaw-windows-package
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Build installer and verify embedded archive CRC
+        run: npm run electron:dist
+        env:
+          HPCLAW_RELEASE_DIR: release-windows
+      - name: Smoke-test the packaged backend and runtime in an isolated directory
+        shell: pwsh
+        run: |
+          $env:HPCLAW_SMOKE_VERSION = node -p "require('./package.json').version"
+          $env:HPCLAW_SMOKE_RESOURCES = 'release-windows/win-unpacked/resources'
+          node scripts/smoke-windows.mjs
+      - name: Record exact source and artifact checksums
+        run: node scripts/record-windows-build.mjs release-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            release-windows/*.exe
+            release-windows/*.exe.blockmap
+            release-windows/latest.yml
+            release-windows/windows-build.json
+          if-no-files-found: error
+          compression-level: 0
+  upload-draft:
+    needs: windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: windows-artifacts
+      - name: Verify build provenance
+        run: node scripts/record-windows-build.mjs windows-artifacts --verify
+      - name: Upload immutable assets to the draft only
+        run: |
+          HPCLAW_RELEASE_NOTES="docs/WINDOWS_$(node -p 'require("./package.json").version')_RELEASE.md" node scripts/publish-github-release.mjs windows-artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HPCLAW_KEEP_RELEASE_DRAFT: '1'

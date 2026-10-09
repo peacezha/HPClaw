@@ -43,6 +43,8 @@ try {
     builderCli,
     '--win',
     'nsis',
+    '--publish',
+    'never',
     '--config.compression=normal',
     `--config.electronDist=${electronDist}`,
     `--config.directories.output=${releaseDir}`,

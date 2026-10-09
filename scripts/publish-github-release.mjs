@@ -1,5 +1,5 @@
 // Publish HPClaw release to GitHub (peacezha/HPClaw).
-// Token is read from the local git credential manager (never printed, never on argv).
+// Use a scoped CI job token or the local credential manager; never print either.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -24,6 +24,8 @@ const artifacts = [
 ];
 
 function readToken() {
+  // CI uses its scoped job token; desktop publishing keeps the existing GCM flow.
+  if (process.env.GITHUB_TOKEN?.trim()) return process.env.GITHUB_TOKEN.trim();
   const res = spawnSync('git', ['credential', 'fill'], {
     input: 'protocol=https\nhost=github.com\n\n',
     encoding: 'utf8',
