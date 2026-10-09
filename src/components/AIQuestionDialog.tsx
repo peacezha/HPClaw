@@ -18,6 +18,11 @@ export default function AIQuestionDialog({ question, english, busy, error, count
   const panel = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
+    if (!question.draft) return;
+    setSelected(question.draft.selected);
+    setCustom(question.draft.custom || '');
+  }, [question.draft]);
+  useEffect(() => {
     if (!open) return;
     const prior = document.activeElement as HTMLElement | null;
     const target = panel.current;

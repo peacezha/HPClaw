@@ -125,6 +125,40 @@ describe('AIChat 对话附件', () => {
     expect(await screen.findByText('仅模拟问答完成，未操作集群。')).toBeVisible();
   });
 
+  it('keeps a failed composer answer in the deferred dialog without starting another task', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+          type: 'ask', id: 'q-composer', question: '请填写 FASTQ 文件路径。', options: [],
+        }) + '\n\n'));
+      } }));
+      if (url === '/api/ai/question') throw new Error('Simulated offline delivery');
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    function Controlled() {
+      const [messages, setMessages] = useState<any[]>([]);
+      return <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only" activeConversationId="qa-only"
+        messages={messages} onMessagesChange={setMessages} onSkillsChange={() => {}} /></LocaleProvider>;
+    }
+    render(<Controlled />);
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '分析数据' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByTestId('ai-question-dialog');
+    fireEvent.click(screen.getByRole('button', { name: '稍后回答' }));
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '/data/retained_R1.fastq.gz' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/question')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: '回答问题' }));
+    expect(screen.getByLabelText('你的回答 / 补充说明')).toHaveValue('/data/retained_R1.fastq.gz');
+    expect(await screen.findByRole('alert')).toHaveTextContent('尚未核验');
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/stream')).toHaveLength(1);
+    await act(async () => stream.close());
+  });
+
   it('restores an unanswered question on reattach and only clears it on a real conversation switch', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

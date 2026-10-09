@@ -46,6 +46,7 @@ describe('user question receipts and UI lifecycle', () => {
     const f = fixture(); f.ask();
     await act(async () => f.result.current.reply({ selected: [], custom: '/data/raw' }));
     expect(f.result.current.pending?.id).toBe('q1'); expect(f.result.current.error).toContain('尚未核验'); expect(f.onAnswered).not.toHaveBeenCalled();
+    expect(f.result.current.pending?.draft).toEqual({ selected: [], custom: '/data/raw' });
     await act(async () => f.result.current.reply({ selected: [], custom: '/data/raw' }));
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({ id: 'q1', answer: { custom: '/data/raw' } });
     expect(f.onAnswered).toHaveBeenCalledTimes(1);

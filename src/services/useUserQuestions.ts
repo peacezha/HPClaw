@@ -4,6 +4,7 @@ import { ensureUserChoiceOptions } from '@/shared/askOptions';
 
 export interface PendingUserQuestion {
   key: string; id?: string; question: string; options: UserQuestionOption[]; multiSelect: boolean; expiresAt?: number;
+  draft?: UserQuestionAnswer;
 }
 
 export function useUserQuestions(opts: { english: boolean; onAnswered: (text: string) => void;
@@ -36,6 +37,9 @@ export function useUserQuestions(opts: { english: boolean; onAnswered: (text: st
     const epoch = generation.current;
     const text = answer ? [...answer.selected, answer.custom?.trim()].filter(Boolean).join('\n') : '';
     if (answer && !text) return;
+    // Replies entered in the main composer after deferral must also survive
+    // delivery failures; that input is separate from the modal's local draft.
+    if (answer) queue.current.set(pending.key, { ...pending, draft: answer });
     sending.current.add(pending.key); setError(''); refresh();
     try {
       if (!pending.id) {

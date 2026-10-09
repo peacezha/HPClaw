@@ -44,4 +44,13 @@ describe('question modal', () => {
     expect(screen.getByLabelText('Your answer / additional details')).toHaveValue('Keep reference');
     expect(screen.getByRole('alert')).toHaveTextContent('Delivery unverified');
   });
+  it('restores a deferred composer answer after an unverified delivery', () => {
+    const f = fixture({ open: false });
+    const question = { ...f.props.question, draft: { selected: [], custom: '/data/retained_R1.fastq.gz' } };
+    f.rerender(<AIQuestionDialog {...f.props} question={question} error="Delivery unverified" />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    f.rerender(<AIQuestionDialog {...f.props} question={question} open error="Delivery unverified" />);
+    expect(screen.getByLabelText('Your answer / additional details')).toHaveValue('/data/retained_R1.fastq.gz');
+    expect(screen.getByRole('alert')).toHaveTextContent('Delivery unverified');
+  });
 });
