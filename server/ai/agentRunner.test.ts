@@ -98,6 +98,13 @@ describe('agent response language', () => {
     expect(prompt).not.toContain('TASK SIZING');
     expect(prompt).not.toContain('AGENT DISCIPLINE');
   });
+  it('requires source-backed QC and resource diagnosis instead of treating suspension as OOM', () => {
+    const prompt = buildAgentSystemPrompt(config, false);
+    expect(prompt).toContain('SSUSP alone is not evidence of out-of-memory');
+    expect(prompt).toContain('processor slots, not physical node count');
+    expect(prompt).toContain('not overall library enrichment or assay success');
+    expect(prompt).not.toContain('第一反应必须是增加 #BSUB -n');
+  });
 
   it('requires English user-facing responses when the UI is English', () => {
     const prompt = buildAgentSystemPrompt(config, false, 'en-US');

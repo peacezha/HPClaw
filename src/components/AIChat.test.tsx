@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { LocaleProvider } from '../i18n';
 import AIChat, { buildConversationTimeline, extractOutputFiles } from './AIChat';
 import { saveAIProfile } from '../services/aiProfile';
@@ -80,6 +80,46 @@ afterEach(() => {
 });
 
 describe('AIChat 对话附件', () => {
+  it('discards a delayed completion reload after switching conversations', async () => {
+    let resolve!: (value: Response) => void;
+    let requested = false;
+    const onMessagesChange = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/active')) return Response.json({ success: true, running: url.includes('conversationId=old'), requestId: 'old-request' });
+      if (url.includes('/api/ai/stream/attach')) return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'done', content: 'old result' }) + '\n\n'));
+        controller.close();
+      } }));
+      if (url.includes('/api/conversations/old')) { requested = true; return new Promise<Response>(r => { resolve = r; }); }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    }));
+    const chat = (id: string) => <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only"
+      activeConversationId={id} messages={[]} onMessagesChange={onMessagesChange} onSkillsChange={() => {}} /></LocaleProvider>;
+    const view = render(chat('old'));
+    await waitFor(() => expect(requested).toBe(true));
+    view.rerender(chat('new'));
+    await act(async () => resolve(Response.json({ success: true, conversation: { messages: [{ role: 'assistant', content: 'late-old' }] } })));
+    expect(onMessagesChange).not.toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ content: 'late-old' })]));
+  });
+  it('restores command approval after attaching to a running conversation and renders without crashing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/active')) return Response.json({ success: true, running: true, requestId: 'qa-only' });
+      if (url.includes('/api/ai/stream/attach')) return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+          type: 'confirm', id: 'qa-only', command: 'bkill 123456', risk: 'destructive', expiresAt: Date.now() + 60000,
+        }) + '\n\n')); },
+      }));
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    }));
+    render(<LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only"
+      activeConversationId="qa-only" messages={[]} onMessagesChange={vi.fn()} onSkillsChange={() => {}} /></LocaleProvider>);
+    const dialog = await screen.findByTestId('command-approval');
+    expect(dialog.textContent).toContain('bkill 123456');
+    expect(screen.getByRole('button', { name: '允许本次' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '信任常规命令' })).toBeNull();
+  });
   it('collapses existing DSH technical logs but keeps the answer and error visible', () => {
     const messages = [
       { role: 'user' as const, content: '继续' },

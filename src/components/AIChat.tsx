@@ -47,6 +47,7 @@ import {
 } from '@/shared/workflowExecution';
 import { closeSseReader, type SseReaderCloseReason } from '../services/sseReaderLifecycle';
 import { prepareAiRequestBody } from '../services/aiRequestBody';
+import { useCommandApprovals } from '../services/useCommandApprovals';
 import {
   appendAttachmentRefs,
   baseName,
@@ -528,7 +529,7 @@ function AgentSettingsFields({
         <label className="block text-xs text-scholar-300 mb-1">执行前确认</label>
         <select value={confirmationPolicy} onChange={e => onConfirmationPolicyChange(e.target.value as AgentConfirmationPolicy)} className={fieldClass}>
           <option value="dangerous">仅高风险操作（推荐）</option>
-          <option value="never">完全自动（不弹确认）</option>
+          <option value="never">自动执行（终止作业仍需确认）</option>
           <option value="state_changes">写入、联网、提交作业都确认</option>
           <option value="every_command">每条命令都确认</option>
         </select>
@@ -818,11 +819,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     try { if (isPublicWeb()) savePublicPreference(CONFIRM_MODE_KEY, mode); else localStorage.setItem(CONFIRM_MODE_KEY, mode); } catch { /* 隐私模式下忽略 */ }
   }, []);
   const [currentCwd, setCurrentCwd] = useState<string>('');
-  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
-  const [pendingCommandDirWarning, setPendingDirWarning] = useState(false);
-  const [pendingMode, setPendingMode] = useState<'command' | 'monitor'>('command');
-  const confirmResolveRef = useRef<((action: 'execute' | 'reject' | 'trust') => void) | null>(null);
+  const commandApprovals = useCommandApprovals({ english: isEnglish,
+    trusted: () => confirmModeRef.current === 'trust_all', onTrust: () => applyConfirmMode('trust_all') });
+  const pendingCommand = commandApprovals.pending?.command;
   const currentPwdRef = useRef<string>('');
+  const pendingCommandDirWarning = pendingCommand ? checkDirBoundary(pendingCommand) : false;
   // AI 反问（agent ask_user）：问题 + 可点选候选答案，固定显示在底部输入框上方
   const [pendingAsk, setPendingAsk] = useState<{
     question: string;
@@ -867,8 +868,20 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     stickToBottomRef.current = true;
     const previous = agentPlanConversationRef.current;
     // 新对话首次保存会从 null 获得 id，此时保留正在运行的计划；真正切换会话时清理。
-    if ((previous && previous !== activeConversationId) || (previous !== undefined && activeConversationId === null)) {
+    if (previous != null && previous !== activeConversationId) {
+      // Detach the old view, not the cluster job or server-side Agent run.
+      aiRunIdRef.current++;
+      aiRunningRef.current = false;
+      aiRequestIdRef.current = '';
+      const oldReader = agentReaderRef.current;
+      agentReaderRef.current = null;
+      if (oldReader) void closeSseReader(oldReader, 'stale-run');
+      setIsAiLoading(false);
+      setIsStreaming(false);
+      setStreamingContent('');
       agentPlanRef.current = null;
+      commandApprovals.clear();
+      setPendingAsk(null);
     }
     agentPlanConversationRef.current = activeConversationId;
     const savedPlan = findLatestAgentPlanCheckpoint(messages);
@@ -881,6 +894,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   // 终态自动回写对话存档；回到该对话时由 attach 机制接续显示。
   useEffect(() => {
     return () => {
+      aiRunIdRef.current++;
+      aiRunningRef.current = false;
       if (agentReaderRef.current) {
         void closeSseReader(agentReaderRef.current, 'stale-run');
         agentReaderRef.current = null;
@@ -1236,30 +1251,16 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 addMessage({ role: 'assistant', content: `❓ ${question}` });
                 break;
               }
+              case 'ask_resolved':
+                setPendingAsk(current => current?.id === event.id ? null : current);
+                break;
               case 'confirm': {
-                const confirmId = String(event.id || '');
-                const command = String(event.command || '');
-                const reply = (approved: boolean) => fetch('/api/ai/confirm', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ id: confirmId, approved }),
-                }).catch(() => {});
-                if (confirmModeRef.current === 'trust_all') {
-                  void reply(true);
-                  break;
-                }
-                setPendingMode('command');
-                setPendingCommand(command);
-                setPendingDirWarning(checkDirBoundary(command));
-                confirmResolveRef.current = (action) => {
-                  if (action === 'trust') applyConfirmMode('trust_all');
-                  void reply(action !== 'reject');
-                  setPendingCommand(null);
-                  setPendingDirWarning(false);
-                  confirmResolveRef.current = null;
-                };
+                commandApprovals.handleEvent(event);
                 break;
               }
+              case 'confirm_resolved':
+                commandApprovals.handleEvent(event);
+                break;
               case 'ask_done':
                 // Agent finished after asking. Clear streaming preview first
                 // so the final message doesn't visually duplicate.
@@ -1273,6 +1274,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 fullText = '';
                 break;
               case 'done':
+                commandApprovals.clear();
                 aiRunningRef.current = false;
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
                 setStreamingContent('');
@@ -1313,6 +1315,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 break;
               }
               case 'error':
+                commandApprovals.clear();
                 addMessage({ role: 'system', content: `[❌ Error] ${event.error}` });
                 setErrorMessage(String(event.error || 'AI 请求出错'));
                 // 错误事件本身就是本轮的终止状态。不等待供应商/服务端
@@ -1358,8 +1361,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       }
       stoppedByUserRef.current = false;
     } finally {
-      agentReaderRef.current = null;
       if (isCurrentAiRun(aiRunIdRef.current, runId)) {
+        agentReaderRef.current = null;
         setIsStreaming(false);
         setStreamingContent('');
         setStreamingReasoning('');
@@ -1402,6 +1405,18 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           try {
             const event = JSON.parse(trimmedLine.slice(6));
             switch (event.type) {
+              case 'confirm':
+              case 'confirm_resolved':
+                commandApprovals.handleEvent(event);
+                break;
+              case 'ask':
+                setPendingAsk({ question: String(event.question || ''),
+                  options: ensureUserChoiceOptions(String(event.question || ''), event.options, locale),
+                  id: typeof event.id === 'string' ? event.id : undefined });
+                break;
+              case 'ask_resolved':
+                setPendingAsk(current => current?.id === event.id ? null : current);
+                break;
               case 'status':
                 if (event.message) setAiStatus(String(event.message));
                 break;
@@ -1417,6 +1432,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 setAiStatus(`AI 正在使用 ${event.name || '工具'}…`);
                 break;
               case 'done': {
+                commandApprovals.clear();
+                setPendingAsk(null);
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1428,12 +1445,14 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 const convId = activeConversationId;
                 void (async () => {
                   await new Promise(r => setTimeout(r, 400));
+                  if (!isCurrentAiRun(aiRunIdRef.current, runId)) return;
                   try {
                     const res = await fetch(`/api/conversations/${convId}`, {
                       credentials: 'include' as RequestCredentials,
                       headers: sessionId ? { 'X-SSH-Session-Id': sessionId } : {},
                     });
                     const data = await res.json();
+                    if (!isCurrentAiRun(aiRunIdRef.current, runId)) return;
                     if (data?.success && Array.isArray(data.conversation?.messages)) {
                       onMessagesChange(data.conversation.messages.filter(
                         (m: any) => m && ['system', 'user', 'assistant'].includes(m.role) && typeof m.content === 'string',
@@ -1441,12 +1460,15 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                       return;
                     }
                   } catch { /* fall through to local append */ }
+                  if (!isCurrentAiRun(aiRunIdRef.current, runId)) return;
                   if (fallbackText) addMessage({ role: 'assistant', content: fallbackText });
                 })();
                 setAiStatus(isEnglish ? 'Agent turn ended' : 'Agent 本轮已结束');
                 break;
               }
               case 'error':
+                commandApprovals.clear();
+                setPendingAsk(null);
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1473,7 +1495,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       }
     } catch { /* attach 失败静默：对话存档里已有/将有结果 */ }
     if (reader) {
-      agentReaderRef.current = null;
+      if (agentReaderRef.current === reader) agentReaderRef.current = null;
       await closeSseReader(reader, 'completed');
     }
     if (isCurrentAiRun(aiRunIdRef.current, runId)) {
@@ -1764,11 +1786,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       aiRequestIdRef.current = '';
     }
     stoppedByUserRef.current = true;
-    if (confirmResolveRef.current) {
-      confirmResolveRef.current('reject');
-      confirmResolveRef.current = null;
-    }
-    setPendingCommand(null);
+    commandApprovals.clear();
     setPendingAsk(null);
     setIsAiLoading(false);
     setIsStreaming(false);
@@ -2173,7 +2191,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   )}
                   <div className="flex items-center gap-2 mt-2 text-scholar-400">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    <span className="text-xs">{aiStatus}</span>
+                    <span className="text-xs">{t(aiStatus)}</span>
                   </div>
                 </div>
               </div>
@@ -2183,7 +2201,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
             {isAiLoading && !isStreaming && (
               <div className="flex items-start mb-3">
                 <div className="p-2.5 rounded-lg bg-scholar-800 border border-scholar-700/60 text-scholar-300 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" /> {aiStatus}
+                <Loader2 className="w-4 h-4 animate-spin" /> {t(aiStatus)}
                 </div>
               </div>
             )}
@@ -2215,66 +2233,53 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           {confirmMode === 'trust_all' && !pendingCommand && (
             <div className="mx-3 mb-1 flex items-center gap-1.5 text-[10px] text-scholar-400 shrink-0">
               <ShieldCheck className="w-3 h-3 text-accent" />
-              <span>已信任全部命令：AI 的命令不再逐条确认（硬性安全拦截仍生效）</span>
+              <span>{isEnglish ? 'Routine commands are trusted; high-risk operations still require one-shot confirmation.' : '已信任常规命令，高风险操作仍需单次确认。'}</span>
               <button type="button" onClick={() => applyConfirmMode('ask')} className="text-accent hover:underline">取消信任</button>
             </div>
           )}
 
           {/*  Confirmation Dialog  */}
-          {pendingCommand && pendingMode === 'command' && (
-            <div className="mx-3 p-3 bg-accent/5 border border-accent/15 rounded-lg shrink-0 overflow-hidden">
+          {commandApprovals.notice && !pendingCommand && (
+            <div role="status" className="mx-3 mb-2 text-xs text-scholar-300">{commandApprovals.notice}</div>
+          )}
+          {pendingCommand && (
+            <div role="dialog" aria-label={isEnglish ? 'Command approval' : '命令确认'} data-testid="command-approval"
+              className="mx-3 mb-2 p-3 bg-accent/5 border border-accent/30 rounded-lg shrink-0 overflow-hidden">
               <div className="flex items-start gap-2 mb-2">
                 <AlertCircle className="w-4 h-4 text-accent shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0 overflow-hidden">
-                  <p className="text-xs text-accent font-medium">命令确认</p>
+                  <p className="text-sm text-accent font-medium">{isEnglish ? 'Command approval' : '命令确认'}
+                    {commandApprovals.count > 1 ? ` (${commandApprovals.count})` : ''}</p>
+                  <p className="text-xs text-scholar-300 mt-1">{commandApprovals.pending?.risk === 'destructive'
+                    ? isEnglish ? 'High-risk operation. Review the exact target; permission applies to this command only.' : '高风险操作，请核对准确目标；允许仅对本条命令生效。'
+                    : isEnglish ? 'Awaiting your decision. No permission has been granted.' : '正在等待你的确认，尚未授予执行许可。'}</p>
                   {pendingCommandDirWarning && (
                     <p className="text-[10px] text-red-600 mt-1">⚠ 命令可能访问工作目录以外的路径</p>
                   )}
-                  <pre className="mt-1.5 p-2 bg-scholar-950 border border-scholar-700 rounded-md text-xs font-mono text-scholar-200 overflow-x-auto max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+                  <pre data-user-content="true" className="mt-1.5 p-2 bg-scholar-950 border border-scholar-700 rounded-md text-xs font-mono text-scholar-200 overflow-x-auto max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                     {pendingCommand}
                   </pre>
                 </div>
               </div>
+              {commandApprovals.error && <p role="alert" className="text-xs text-red-400 mb-2">{commandApprovals.error}</p>}
               <div className="flex gap-2 justify-end">
-                <button onClick={() => confirmResolveRef.current?.('reject')}
+                <button disabled={commandApprovals.busy} onClick={() => void commandApprovals.decide(commandApprovals.pending!.id, 'reject')}
                   className="px-3 py-1.5 text-xs bg-[rgb(var(--danger-rgb)/0.15)] text-[var(--color-danger)] border border-[rgb(var(--danger-rgb)/0.3)] rounded-lg hover:bg-[rgb(var(--danger-rgb)/0.25)] transition-colors">
-                  拒绝
+                  {isEnglish ? 'Reject' : '拒绝'}
                 </button>
-                <button onClick={() => confirmResolveRef.current?.('trust')}
-                  title="执行本条，且此后所有命令都不再询问（硬性安全拦截仍生效；可随时在输入区上方取消信任）"
+                {commandApprovals.pending?.risk !== 'destructive' && commandApprovals.pending?.risk !== 'unknown' && <button disabled={commandApprovals.busy} onClick={() => void commandApprovals.decide(commandApprovals.pending!.id, 'trust')}
+                  title={isEnglish ? 'Allow this command and trust future routine commands; high-risk operations still need confirmation.' : '允许本条并信任后续常规命令；高风险操作仍需单次确认。'}
                   className="px-3 py-1.5 text-xs bg-scholar-900 text-scholar-200 border border-scholar-600 rounded-lg hover:bg-scholar-800 transition-colors">
-                  信任全部
-                </button>
-                <button onClick={() => confirmResolveRef.current?.('execute')}
+                  {isEnglish ? 'Trust routine commands' : '信任常规命令'}
+                </button>}
+                <button disabled={commandApprovals.busy} onClick={() => void commandApprovals.decide(commandApprovals.pending!.id, 'execute')}
                   className="px-3 py-1.5 text-xs bg-accent/15 text-accent border border-accent/30 rounded-lg hover:bg-accent/25 font-medium transition-colors">
-                  执行
+                  {commandApprovals.busy ? isEnglish ? 'Sending…' : '正在送达…' : isEnglish ? 'Allow once' : '允许本次'}
                 </button>
               </div>
             </div>
           )}
 
-          {pendingCommand && pendingMode === 'monitor' && (
-            <div className="mx-3 p-3 bg-accent/5 border border-accent/20 rounded-lg shrink-0">
-              <div className="flex items-start gap-2 mb-2">
-                <AlertCircle className="w-4 h-4 text-accent shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-accent font-medium">作业监控中</p>
-                  <p className="text-xs text-scholar-200 mt-1">{pendingCommand}</p>
-                  <p className="text-[10px] text-scholar-400 mt-1">等待超时：10 分钟</p>
-                </div>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => confirmResolveRef.current?.('reject')}
-                  className="px-3 py-1.5 text-xs bg-scholar-900 text-scholar-200 border border-scholar-600 rounded-lg hover:bg-scholar-800 transition-colors">
-                  停止
-                </button>
-                <button onClick={() => confirmResolveRef.current?.('execute')}
-                  className="px-3 py-1.5 text-xs bg-accent/15 text-accent border border-accent/30 rounded-lg hover:bg-accent/25 font-medium transition-colors">
-                  继续
-                </button>
-              </div>
-            </div>
-          )}
 
           {/*  AI 反问：问题固定在最底部，候选答案做成可点选按钮  */}
           {pendingAsk && (
@@ -2475,7 +2480,9 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
             </form>
             {isAiLoading && (
               <p className="text-xs text-scholar-400 mt-1 text-center">
-                {aiStatus}，可随时停止；AI 超时不会断开计算资源
+                {t(aiStatus)}{isEnglish
+                  ? ' — You can stop at any time; an AI timeout will not disconnect the compute resource.'
+                  : '，可随时停止；AI 超时不会断开计算资源'}
               </p>
             )}
           </div>

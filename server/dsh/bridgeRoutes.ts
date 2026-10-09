@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import type { Express, NextFunction, Request, Response } from 'express';
 import type { SFTPWrapper } from 'ssh2';
-import { classifyCommandRisk, isCatastrophicCommand } from '../ai/commandSafety';
+import { classifyCommandRisk, isCatastrophicCommand, isJobTerminationCommand } from '../ai/commandSafety';
 import { invokeWebApi } from '../webapis/invoke';
 import { SftpFileService } from '../files/sftpFileService';
 import { assertRemotePathWithinRoot } from '../files/pathSafety';
@@ -247,7 +247,7 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     const cluster = requireCluster(req, res);
     if (!cluster) return;
     const risk = classifyCommandRisk(command);
-    if (requiresConfirmation(risk, cluster.binding.confirmationPolicy) && body.confirmed !== true) {
+    if ((isJobTerminationCommand(command) || requiresConfirmation(risk, cluster.binding.confirmationPolicy)) && body.confirmed !== true) {
       res.status(428).json({ error: 'confirmation_required', risk });
       return;
     }

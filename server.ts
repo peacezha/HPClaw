@@ -28,6 +28,7 @@ import { appPath, staticPath, dataPath, ensureDir, DATA_ROOT } from './server/pa
 import { formatLoginFailure } from './server/loginDiagnostics';
 import { verifySSHCredentials } from './server/sshAuthenticator';
 import { runAgent, type AgentCtx } from './server/ai/agentRunner';
+import { CommandApprovals } from './server/ai/commandApprovals';
 import {
   resolveAccountScheduler,
   clearSchedulerTag,
@@ -44,6 +45,7 @@ import {
   markRunDetached,
   pushRunEvent,
   registerActiveRun,
+  replayRunEvents,
 } from './server/ai/activeRuns';
 import { classifyWorkflowTurn } from './server/ai/workflowTurnIntent';
 import {
@@ -170,10 +172,7 @@ interface ActiveSession {
 
 const sessions = new Map<string, ActiveSession>();
 
-const pendingAiConfirmations = new Map<string, {
-  resolve: (approved: boolean) => void;
-  timer: ReturnType<typeof setTimeout>;
-}>();
+const pendingAiConfirmations = new CommandApprovals();
 const pendingAiQuestions = new Map<string, {
   resolve: (answer: string | null) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -1708,26 +1707,8 @@ app.post('/api/ai/stream', async (req, res) => {
           onConfirm: ({ command, risk }) => {
             const id = `confirm-${createSessionId()}`;
             dshConfirmIds.add(id);
-            send({ type: 'confirm', id, command, risk, title: requestLocale === 'en-US' ? 'Agent requests permission to run a command' : 'Agent 请求执行命令' });
-            return new Promise<boolean>((resolve) => {
-              const finish = (approved: boolean) => {
-                requestAbort.signal.removeEventListener('abort', onAbort);
-                resolve(approved);
-              };
-              const onAbort = () => {
-                const pending = pendingAiConfirmations.get(id);
-                if (pending) clearTimeout(pending.timer);
-                pendingAiConfirmations.delete(id);
-                finish(false);
-              };
-              const timer = setTimeout(() => {
-                pendingAiConfirmations.delete(id);
-                finish(false);
-              }, 2 * 60_000);
-              pendingAiConfirmations.set(id, { resolve: finish, timer });
-              requestAbort.signal.addEventListener('abort', onAbort, { once: true });
-              if (requestAbort.signal.aborted) onAbort();
-            });
+            return pendingAiConfirmations.request({ id, command, risk, send, requestId: aiRequestId,
+              signal: requestAbort.signal, title: requestLocale === 'en-US' ? 'Agent requests permission to run a command' : 'Agent 请求执行命令' });
           },
           onQuestion: async ({ questions }) => {
             const answers: Array<{ id: string; selected: string[]; custom?: string }> = [];
@@ -1756,6 +1737,7 @@ app.post('/api/ai/stream', async (req, res) => {
                   if (settled) return;
                   settled = true;
                   requestAbort.signal.removeEventListener('abort', onAbort);
+                  send({ type: 'ask_resolved', id, answered: value !== null });
                   resolve(value);
                 };
                 const onAbort = () => {
@@ -1793,11 +1775,7 @@ app.post('/api/ai/stream', async (req, res) => {
         }
       } finally {
         for (const id of dshConfirmIds) {
-          const pending = pendingAiConfirmations.get(id);
-          if (!pending) continue;
-          clearTimeout(pending.timer);
-          pending.resolve(false);
-          pendingAiConfirmations.delete(id);
+          pendingAiConfirmations.cancel(id);
         }
         for (const id of dshQuestionIds) {
           const pending = pendingAiQuestions.get(id);
@@ -1922,26 +1900,9 @@ app.post('/api/ai/stream', async (req, res) => {
         confirmCommand: async (command, details) => {
           const id = `confirm-${createSessionId()}`;
           requestConfirmationIds.add(id);
-          send({ type: 'confirm', id, command, risk: details?.risk, title: details?.title });
-          return await new Promise<boolean>((resolve) => {
-            const finish = (approved: boolean) => {
-              requestAbort.signal.removeEventListener('abort', onAbort);
-              resolve(approved);
-            };
-            const onAbort = () => {
-              const pending = pendingAiConfirmations.get(id);
-              if (pending) clearTimeout(pending.timer);
-              pendingAiConfirmations.delete(id);
-              finish(false);
-            };
-            const timer = setTimeout(() => {
-              pendingAiConfirmations.delete(id);
-              finish(false);
-            }, 2 * 60_000);
-            pendingAiConfirmations.set(id, { resolve: finish, timer });
-            requestAbort.signal.addEventListener('abort', onAbort, { once: true });
-            if (requestAbort.signal.aborted) onAbort();
-          });
+          const decision = await pendingAiConfirmations.request({ id, command, risk: details?.risk,
+            title: details?.title, send, signal: requestAbort.signal, requestId: aiRequestId });
+          return decision.approved;
         },
         home: s.home,
         skillsDir: APP_SKILLS_DIR,
@@ -2030,11 +1991,7 @@ app.post('/api/ai/stream', async (req, res) => {
         }, agentMessages);
       } finally {
         for (const id of requestConfirmationIds) {
-          const pending = pendingAiConfirmations.get(id);
-          if (!pending) continue;
-          clearTimeout(pending.timer);
-          pending.resolve(false);
-          pendingAiConfirmations.delete(id);
+          pendingAiConfirmations.cancel(id);
         }
       }
     } else {
@@ -2071,26 +2028,9 @@ app.post('/api/ai/stream', async (req, res) => {
         confirmCommand: async (command, details) => {
           const id = `confirm-${createSessionId()}`;
           localConfirmationIds.add(id);
-          send({ type: 'confirm', id, command, risk: details?.risk, title: details?.title });
-          return await new Promise<boolean>((resolve) => {
-            const finish = (approved: boolean) => {
-              requestAbort.signal.removeEventListener('abort', onAbort);
-              resolve(approved);
-            };
-            const onAbort = () => {
-              const pending = pendingAiConfirmations.get(id);
-              if (pending) clearTimeout(pending.timer);
-              pendingAiConfirmations.delete(id);
-              finish(false);
-            };
-            const timer = setTimeout(() => {
-              pendingAiConfirmations.delete(id);
-              finish(false);
-            }, 2 * 60_000);
-            pendingAiConfirmations.set(id, { resolve: finish, timer });
-            requestAbort.signal.addEventListener('abort', onAbort, { once: true });
-            if (requestAbort.signal.aborted) onAbort();
-          });
+          const decision = await pendingAiConfirmations.request({ id, command, risk: details?.risk,
+            title: details?.title, send, signal: requestAbort.signal, requestId: aiRequestId });
+          return decision.approved;
         },
         skillsDir: APP_SKILLS_DIR,
         lsfSkillDir: LSF_SKILLS_DIR,
@@ -2133,11 +2073,7 @@ app.post('/api/ai/stream', async (req, res) => {
         }, smartMessages);
       } finally {
         for (const id of localConfirmationIds) {
-          const pending = pendingAiConfirmations.get(id);
-          if (!pending) continue;
-          clearTimeout(pending.timer);
-          pending.resolve(false);
-          pendingAiConfirmations.delete(id);
+          pendingAiConfirmations.cancel(id);
         }
       }
     }
@@ -2228,7 +2164,7 @@ app.get('/api/ai/stream/attach', (req, res) => {
   const writeEvent = (event: any) => {
     if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
-  for (const event of run.events) writeEvent(event);
+  for (const event of replayRunEvents(run)) writeEvent(event);
   if (run.terminal) {
     res.end();
     return;
@@ -2254,15 +2190,13 @@ app.get('/api/ai/stream/attach', (req, res) => {
 
 app.post('/api/ai/confirm', (req, res) => {
   const id = String(req.body?.id || '');
-  const pending = pendingAiConfirmations.get(id);
-  if (!pending) {
-    res.status(404).json({ success: false, error: '确认请求已失效' });
+  if (!id || typeof req.body?.approved !== 'boolean') {
+    res.status(400).json({ success: false, error: 'invalid_confirmation_response' });
     return;
   }
-  clearTimeout(pending.timer);
-  pendingAiConfirmations.delete(id);
-  pending.resolve(req.body?.approved === true);
-  res.json({ success: true });
+  const receipt = pendingAiConfirmations.respond(id, req.body.approved);
+  res.status(receipt.success ? 200 : 409).json({ ...receipt,
+    ...(receipt.success ? {} : { error: 'confirmation_no_longer_pending' }) });
 });
 
 app.post('/api/ai/question', (req, res) => {

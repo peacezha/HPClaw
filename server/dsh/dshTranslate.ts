@@ -109,7 +109,12 @@ export function createTranslator(hooks: TranslatorHooks): DshTranslator {
             .map((part: any) => part.text as string)
         : [];
       let result = texts.join('\n');
-      if (result.length > TOOL_RESULT_MAX) result = result.slice(0, TOOL_RESULT_MAX);
+      if (result.length > TOOL_RESULT_MAX) {
+        const marker = `\n...[HPClaw display truncated: ${result.length} characters; inspect the source before drawing conclusions]...\n`;
+        const head = Math.ceil((TOOL_RESULT_MAX - marker.length) / 2);
+        const tail = TOOL_RESULT_MAX - marker.length - head;
+        result = result.slice(0, head) + marker + result.slice(-tail);
+      }
       if (item.isError || data?.isError) result = `[error] ${result}`;
       send({ type: 'tool_result', name, result, ...(name === 'run_command' && typeof args?.command === 'string' ? { command: args.command } : {}) });
     }

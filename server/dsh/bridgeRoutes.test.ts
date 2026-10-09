@@ -165,6 +165,10 @@ describe('bridgeRoutes', () => {
     const cleanup = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/hpclaw-old-output' }, TOKEN);
     expect(cleanup.status).toBe(200);
     expect(exec).toHaveBeenCalledWith('rm -rf /tmp/hpclaw-old-output', 30_000);
+    for (const command of ['bkill 123', 'scancel 123', 'qdel 123']) {
+      expect((await post(base, '/api/bridge/exec', { command }, TOKEN)).status).toBe(428);
+      expect(exec).not.toHaveBeenCalledWith(command, 30_000);
+    }
 
     const catastrophic = await post(base, '/api/bridge/exec', { command: 'mkfs.ext4 /dev/sdb' }, TOKEN);
     expect(catastrophic.status).toBe(422);

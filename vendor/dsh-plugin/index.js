@@ -10,9 +10,9 @@
  *                           文件 {token, baseUrl, updatedAt} 每次调用重读以跟随
  *                           token 轮转），由服务端 SSH 到集群执行。内置 HPClaw 命令
  *                           风险分级：rm 直接硬拒（rm_blocked，不发 HTTP）；
- *                           destructive/network 先走 dsh 审批（ApprovalService.request），
- *                           用户放行后带 confirmed:true 提交；read/write/job/unknown 直接
- *                           提交；若意外收到 428 confirmation_required，补走一次审批后
+ *                           所有命令先交 HPClaw 服务端判定是否需要审批，终止作业始终确认；
+ *                           收到 428 confirmation_required 时，该命令尚未执行，走一次 dsh
+ *                           审批（ApprovalService.request），用户放行后
  *                           带 confirmed:true 重试（仅一次）。wait 参数（分钟，1..30）
  *                           让服务端捕获作业号后轮询 bjobs 到终态并附 bpeek 输出
  *                           （waitedJobs），HTTP 超时随 wait 放大。网络错误/桥文件缺失/超时
@@ -133,7 +133,7 @@ function httpGet(urlString, signal, timeoutMs) {
 /* ------------------------------------------------------------------ */
 
 const DANGEROUS_PATTERNS = [
-  /\bbkill\b/, // 杀集群作业
+  /\b(bkill|scancel|qdel)\b/, // Terminate LSF / Slurm / PBS jobs.
   /\bkill\s+-9\b/,
   /\bpkill\b/,
   /\bkillall\b/,
@@ -536,6 +536,14 @@ export function apply(ctx, config = {}) {
       return 'unavailable'
     }
     try {
+      // HPClaw owns command authorization. DSH's full-access preset pins
+      // approval=never, which means AUTO-REJECT, not HPClaw's automatic mode.
+      // Enable the official answerer for this bound bridge request only;
+      // never widen sandbox access or auto-allow a dangerous command.
+      if (typeof approval.effectivePolicy === 'function' && approval.effectivePolicy(exec.agent.session) === 'never') {
+        if (typeof approval.setPolicy !== 'function') return 'unavailable'
+        approval.setPolicy(exec.agent, 'ask')
+      }
       const outcome = await approval.request({
         agent: exec.agent,
         toolName,
@@ -556,7 +564,7 @@ export function apply(ctx, config = {}) {
       'Run ONE shell command on the NCPGR LSF cluster. This is the ONLY way to execute commands on the cluster: ' +
       'the call is bridged back to the HPClaw desktop server, which runs it over its SSH cluster session — it is NOT a local shell. ' +
       'Commands are risk-classified by HPClaw policy: `rm` is hard-blocked (use `mv` to a trash directory instead); ' +
-      'destructive/network commands require one-shot user confirmation before execution; read/write/job commands run directly. ' +
+      'The HPClaw server decides which commands require confirmation; terminating jobs always requires one-shot user confirmation. ' +
       'Returns { ok, exitCode, output, error?, risk? }. When error=bridge_unreachable the HPClaw desktop app is not running — ' +
       'report that honestly to the user instead of retrying or falling back to local execution.',
     parameters: {
@@ -625,30 +633,9 @@ export function apply(ctx, config = {}) {
         }
       }
 
-      // 3. destructive / network → 先走 dsh 审批
+      // Ask the authoritative server FIRST: ordinary network operations must not
+      // spuriously trigger approvals. HTTP 428 guarantees no command was executed.
       let confirmed = false
-      if (risk === 'destructive' || risk === 'network') {
-        const outcome = await requestCommandConfirmation(exec, command, risk)
-        if (outcome === 'allowed-once') {
-          confirmed = true
-        } else if (outcome === 'rejected') {
-          return {
-            ok: false,
-            error: 'confirmation_denied',
-            risk,
-            confirmation: 'rejected',
-            output: '用户拒绝了该高危命令（confirmation denied）。不要重试原命令；如需继续，请与用户商量替代方案。',
-          }
-        } else {
-          return {
-            ok: false,
-            error: 'confirmation_unavailable',
-            risk,
-            confirmation: outcome,
-            output: '该命令需要用户在 HPClaw 界面确认，但当前无审批通道（审批服务不可用或已取消），命令未执行。',
-          }
-        }
-      }
 
       // 4. 直接提交（read/write/job/unknown 不带 confirmed；审批通过带 confirmed:true）
       const baseBody = { command, timeoutMs, ...(waitMin > 0 ? { waitForJobs: waitMin } : {}) }
@@ -1116,9 +1103,9 @@ export function apply(ctx, config = {}) {
       '- cluster_fs 做集群文件 list/read/write 和本地↔集群互传（push=本地上传到集群、pull=集群下载到本地）；path 永远是集群侧路径。\n' +
       '- 集群规范：作业一律写成 .lsf 脚本用 bsub 提交（bsub < script.lsf），不设 -M/-W（违反集群规范）；' +
       '软件用 module load（先 module av 确认，不要假设 PATH）；生物信息软件加 -R "span[hosts=1]"；' +
-      '内存不足（TERM_MEMLIMIT/exit 137/OOM/SSUSP）第一反应是扩 #BSUB -n 节点数（5GB × 节点数），禁止用 -M 或 rusage[mem]。\n' +
+      'SSUSP/exit 137/Killed 不能单独证明内存不足；先查调度器原因、历史和日志。确认 OOM 后遵循当前站点已核实的内存政策；#BSUB -n 是处理器 slots，不是物理节点数，不要假设任意集群都是 5GB/slot。\n' +
       '- 禁止 rm：需要删除时 mv 到回收目录（如 /tmp）或请用户手动处理；rm 会被直接拒绝（rm_blocked）。\n' +
-      '- destructive/network 级命令会触发用户确认（HPClaw 审批）；被拒绝后不要原样重试。一次 run_command 只跑一条命令，' +
+      '- 由 HPClaw 服务端按执行策略决定确认范围；终止作业始终需要一次性确认。明确拒绝后不要原样重试；审批不可用或超时不是用户拒绝。一次 run_command 只跑一条命令，' +
       '等真实输出再决定下一步；失败先用 ls -ld / stat / namei 诊断，不要原样重试。\n' +
       '- 作业交接：提交了预计长时间运行的 LSF 作业后，向用户简要总结已提交的作业号与后续安排，然后自然结束本轮——' +
       '系统会在作业完成时自动唤醒你继续，不要在本轮里反复 bjobs 轮询空等。\n' +

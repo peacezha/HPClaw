@@ -12,6 +12,7 @@ import { createTranslateState, createTranslator } from './dshTranslate';
 import { normalizeDeepSeekBaseUrl, redactDshSensitiveText } from './dshConfigSafety';
 import { writeFileAtomic0600 } from './fileUtils';
 import { addBindings, extractSubmittedJobIds, initJobAgentBindings, isSubmissionCommand } from './jobAgentBindings';
+import type { ApprovalDecision } from '../ai/commandApprovals';
 
 export interface DshAgentProfile {
   provider: string;
@@ -44,7 +45,7 @@ export interface DshAgentOptions {
   /** Agent 拿到作业号后立即交给服务端 watcher，避免短作业漏检。 */
   onJobsSubmitted?: (jobIds: string[]) => void;
   /** 复用 server.ts 的挂起确认机制：给用户发 confirm、等待 /api/ai/confirm 裁决 */
-  onConfirm: (meta: { rpcId: string; sessionId: string; approvalId: string; command: string; risk: string }) => Promise<boolean>;
+  onConfirm: (meta: { rpcId: string; sessionId: string; approvalId: string; command: string; risk: string }) => Promise<boolean | ApprovalDecision>;
   /** 把 dsh ask_user_question 交给前端，在原 SSE 连接上等待用户回答。 */
   onQuestion: (meta: {
     rpcId: string;
@@ -172,6 +173,8 @@ export async function runDshAgent(opts: DshAgentOptions): Promise<DshAgentOutcom
       + `\n${displayInstruction}`
       + `\n${autonomyInstruction}`
       + `\n${evidenceInstruction}`
+      + `\n${zh ? '定量指标必须注明来源、样本、处理阶段和 reads/fragments 单位；表格与正文数值冲突时先复核，不可直接判通过。BAM 完整且比对率高只证明比对阶段结果，不能代替文库复杂度、富集、对照适用性和重复一致性质控。未获得相应指标时不得宣称文库全部合格。样本名不能证明对照适用性；基因组版本和有效基因组大小要用核实过的参考证据，不能套用 hs 或未经验证的组装长度比例。SSUSP、137、Killed 本身不能确定为内存不足；先查 bjobs -l/-s、历史和错误日志，再按当前站点核实的资源政策处理；#BSUB -n 是处理器 slots，不是物理节点数。' : 'For every quantitative metric identify its source, sample, processing stage and reads/fragments unit. Reconcile conflicting table and narrative values before a QC conclusion. A valid BAM and high alignment rate do not establish overall library quality; separately evaluate assay-appropriate complexity, enrichment, control suitability and replicate reproducibility. Missing QC is not a pass. A sample name does not establish control suitability. Verify the genome build and effective genome size; do not use hs or an unverified fraction of assembly length. SSUSP, exit 137 or Killed alone does not establish out-of-memory: inspect scheduler reasons, history and stderr, then follow the verified site resource policy. #BSUB -n specifies processor slots, not physical node count.'}`
+      + `\n${zh ? '审批结果必须精确区分用户主动拒绝、策略自动拦截、超时、取消和通道故障，禁止猜测用户犹豫或点了拒绝。只在收到执行结果并核验状态后说操作已完成。PEND 是待调度，USUSP/SSUSP/PSUSP 是挂起，不等于 RUN；挂起作业可能保留资源，以调度器实测为准。bjobs 中作业消失/not found 不证明 DONE，需 bhist/bacct 或其他终态证据及产物验收。取消待调度作业不会删除已有结果，也不证明某路线的结果全部放弃；说明实际影响和仍存在的产物。未提交执行的命令应称“已尝试请求执行，未执行”，不可称“已经执行”。' : 'Distinguish explicit user rejection, policy denial, expiry, cancellation and transport failure; never speculate about user hesitation. Claim an operation completed only after execution evidence and state verification. PEND is pending; USUSP/SSUSP/PSUSP are suspended, not RUN, and may retain allocations. A job disappearing from bjobs or returning not found does not prove DONE: inspect bhist/bacct or equivalent terminal evidence and validate outputs. Cancelling a pending job does not delete existing outputs or prove all results of a route are abandoned. A blocked command was requested, not executed.'}`
       + (opts.summary ? `\n\n${zh ? '对话摘要：' : 'Conversation summary: '}${opts.summary}` : '')
       + `\n\n${opts.userText}`;
     // 必须先完成 mux WebSocket 握手，再提交 prompt。否则极快的回答可能在
@@ -226,28 +229,40 @@ function runMuxLoop(opts: DshAgentOptions, client: DshClient, sessionId: string,
 
     const respondPendingApproval = async (event: any): Promise<void> => {
       const index = state.pendingApprovals.findIndex(p => p.rpcId === String(event?.id ?? ''));
-      const pending = index >= 0 ? state.pendingApprovals.splice(index, 1)[0] : state.pendingApprovals.pop();
+      const pending = index >= 0 ? state.pendingApprovals.splice(index, 1)[0] : undefined;
       if (!pending) return;
       if (pendingApprovalRpcIds.has(pending.rpcId)) return;
       pendingApprovalRpcIds.add(pending.rpcId);
       if (idleTimer) clearTimeout(idleTimer);
-      let approved = false;
+      let decision: ApprovalDecision = { approved: false, reason: 'unavailable' };
       try {
-        approved = await opts.onConfirm({
+        const answer = await opts.onConfirm({
           rpcId: pending.rpcId,
           sessionId: pending.sessionId,
           approvalId: pending.approvalId,
           command: String(event?.command ?? ''),
           risk: String(event?.risk ?? 'unknown'),
         });
+        decision = typeof answer === 'boolean'
+          ? { approved: answer, reason: answer ? 'allowed' : 'rejected' } : answer;
       } catch {
-        approved = false;
+        decision = { approved: false, reason: 'unavailable' };
       }
       try {
         if (finished) return;
+        if (!decision.approved && decision.reason !== 'rejected') {
+          // The wire accepts only allow/reject. Cancel the Agent turn rather than lie
+          // about a user rejection; this NEVER kills a submitted cluster job.
+          sendError(zh
+            ? `命令尚未执行：确认${decision.reason === 'expired' ? '已超时' : decision.reason === 'cancelled' ? '已取消' : '通道不可用'}，不是用户拒绝。已暂停本轮 Agent；集群作业未被终止。`
+            : `Command not executed: approval ${decision.reason}. This was not a user rejection. The Agent turn is paused; cluster jobs were not terminated.`);
+          finish('completed');
+          await client.cancel(sessionId).catch(() => {});
+          return;
+        }
         const accepted = await client.respondApproval({
           rpcId: pending.rpcId, sessionId: pending.sessionId, approvalId: pending.approvalId,
-          outcome: approved ? 'allowed-once' : 'rejected',
+          outcome: decision.approved ? 'allowed-once' : 'rejected',
         });
         if (!accepted) {
           sendError(zh ? '命令确认未送达引擎；执行状态尚未核验，请先检查任务状态。' : 'The approval response did not reach the engine. Execution is unverified; check task status first.');

@@ -13,6 +13,7 @@ export interface ActiveRun {
   sessionId?: string;
   abort: AbortController;
   events: ActiveRunEvent[];
+  pendingInteractions: Map<string, ActiveRunEvent>;
   text: string;
   startedAt: number;
   detached: boolean;
@@ -38,6 +39,7 @@ export function registerActiveRun(input: {
     sessionId: input.sessionId,
     abort: input.abort,
     events: [],
+    pendingInteractions: new Map(),
     text: '',
     startedAt: Date.now(),
     detached: false,
@@ -62,6 +64,12 @@ export function findActiveRunByConversation(conversationId: string): ActiveRun |
 
 /** 事件先落缓冲（供 attach 重放），再推给当前 attach 的订阅者。 */
 export function pushRunEvent(run: ActiveRun, event: ActiveRunEvent): void {
+  if ((event.type === 'confirm' || event.type === 'ask') && typeof event.id === 'string')
+    run.pendingInteractions.set(event.id, event);
+  if (event.type === 'confirm_resolved' && typeof event.id === 'string')
+    run.pendingInteractions.delete(event.id);
+  if (event.type === 'ask_resolved' && typeof event.id === 'string')
+    run.pendingInteractions.delete(event.id);
   if (event.type === 'content' && typeof event.content === 'string') run.text += event.content;
   if (event.type === 'done' && event.authoritative === true && typeof event.content === 'string') run.text = event.content;
   run.events.push(event);
@@ -71,11 +79,19 @@ export function pushRunEvent(run: ActiveRun, event: ActiveRunEvent): void {
   for (const listener of run.listeners) listener(event);
 }
 
+/** Pending confirmations survive log truncation; settled ones never become actionable again. */
+export function replayRunEvents(run: ActiveRun): ActiveRunEvent[] {
+  const visible = run.events.filter(event => !['confirm', 'ask'].includes(event.type) || run.pendingInteractions.has(String(event.id)));
+  const included = new Set(visible.map(event => String(event.id || '')));
+  return [...[...run.pendingInteractions.values()].filter(event => !included.has(String(event.id))), ...visible];
+}
+
 export function markRunDetached(run: ActiveRun): void {
   run.detached = true;
 }
 
 export function finishActiveRun(run: ActiveRun, terminal: 'done' | 'error', terminalText: string): void {
+  run.pendingInteractions.clear();
   run.terminal = terminal;
   run.terminalText = terminalText;
   setTimeout(() => {

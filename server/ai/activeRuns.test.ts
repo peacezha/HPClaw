@@ -8,10 +8,20 @@ import {
   markRunDetached,
   pushRunEvent,
   registerActiveRun,
+  replayRunEvents,
 } from './activeRuns';
 import { filterConversationsByScope } from '../conversations/localConversations';
 
 describe('activeRuns（后台 AI 运行登记处）', () => {
+  it('preserves actionable approvals across truncation but never replays settled approvals', () => {
+    const run = registerActiveRun({ requestId: 'approval-replay', abort: new AbortController() });
+    pushRunEvent(run, { type: 'confirm', id: 'a', command: 'bkill 123' });
+    for (let i = 0; i < 600; i++) pushRunEvent(run, { type: 'status', i });
+    expect(replayRunEvents(run)[0]).toMatchObject({ type: 'confirm', id: 'a' });
+    pushRunEvent(run, { type: 'confirm_resolved', id: 'a', reason: 'expired' });
+    expect(replayRunEvents(run).some(event => event.type === 'confirm')).toBe(false);
+    finishActiveRun(run, 'error', 'expired');
+  });
   it('stores the recovered authoritative answer instead of a partial streamed preview', () => {
     const run = registerActiveRun({ requestId: 'recovered-r44', abort: new AbortController() });
     pushRunEvent(run, { type: 'content', content: 'partial' });

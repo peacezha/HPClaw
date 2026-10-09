@@ -2,7 +2,7 @@
 // 高风险操作统一进入确认流程；默认模式不再把普通写入、作业提交或联网操作都交给用户手工执行。
 
 const DANGEROUS_PATTERNS: RegExp[] = [
-  /\bbkill\b/, // 杀集群作业
+  /\b(bkill|scancel|qdel)\b/, // Terminate LSF / Slurm / PBS jobs.
   /\bkill\s+-9\b/,
   /\bpkill\b/,
   /\bkillall\b/,
@@ -63,6 +63,11 @@ export function isDangerousCommand(command: string): boolean {
 export function isCatastrophicCommand(command: string): boolean {
   const normalized = command.trim();
   return Boolean(normalized) && CATASTROPHIC_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+/** Job termination always requires an exact, one-shot user decision. */
+export function isJobTerminationCommand(command: string): boolean {
+  return /\b(?:bkill|scancel|qdel)\b/i.test(command);
 }
 
 /**

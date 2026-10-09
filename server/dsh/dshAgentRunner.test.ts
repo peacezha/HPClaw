@@ -232,6 +232,18 @@ describe('DSH recovery without duplicate execution', () => {
 });
 
 describe('runDshAgent mux ordering', () => {
+  it('expiry cancels only the Agent turn, never fabricates rejection or sends an allow response', async () => {
+    vi.useFakeTimers(); harness.promptCompletes = false;
+    const run = pendingRun({ onConfirm: async () => ({ approved: false, reason: 'expired' }) });
+    await vi.advanceTimersByTimeAsync(80);
+    harness.hooks.onFrame({ method: 'approval/requested', rpcId: 'expired-rpc', payload: {
+      sessionId: 'dsh-session-test', approvalId: 'expired-id', reason: 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 123',
+    } });
+    await vi.advanceTimersByTimeAsync(0); await run.promise;
+    expect(harness.calls).toContain('cancel');
+    expect(harness.calls).not.toContain('respond-approval');
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('不是用户拒绝') }));
+  });
   it('falls back to legacy without an active SSH session instead of throwing', async () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-nosession-'));
     tempDirs.push(dataRoot);

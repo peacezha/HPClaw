@@ -11,7 +11,7 @@ import { installSkillFromSource } from './skillInstaller';
 import { isSubmissionCommand } from '../dsh/jobAgentBindings';
 import { loadWorkflows } from '../workflows/workflowStore';
 import { readWorkflowRun, updateWorkflowRun } from '../workflows/workflowRunService';
-import { classifyCommandRisk, isCatastrophicCommand, type CommandRisk } from './commandSafety';
+import { classifyCommandRisk, isCatastrophicCommand, isJobTerminationCommand, type CommandRisk } from './commandSafety';
 import { AgentPlanState, type AgentExecutionPlan } from './agentPlanState';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -368,10 +368,11 @@ RULES:
 6. After bsub/sbatch returns a Job ID, the runtime automatically records it, moves the formal workflow to waiting_jobs, marks the active plan step waiting, and ends this Agent turn. Do NOT poll bjobs/squeue in a loop and do not mark the step done. The background watcher owns monitoring and automatically wakes an Agent to verify outputs and continue after the job reaches a terminal state.
 6.1 文件/日志里的提交回执（如 "Job <id> is submitted"、logs/*.submit.txt）只代表「曾经提交过」，不代表作业此刻在跑。向用户报告「作业已提交/在跑/交后台监控」之前，必须用 bjobs/sacct/qstat 核实该作业号的当前真实状态。查不到作业不等于 DONE，也不能单凭此断定已结束或失败：先检查同一集群/账号、调度器历史记录和输出证据；仍无法确认则明确报告「状态尚未核验」，不得凭旧回执宣布等待或重复提交。
 7. Safety budget: use at most ${config.maxCommands} run_command calls and ${config.maxSteps} model/tool steps. If ${MAX_CONSECUTIVE_COMMAND_FAILURES} commands fail or time out in a row, or you would repeat the same command a third time, stop and summarize what you learned.
-8. Dangerous commands (killing jobs, wiping data, piping to shell, chmod 777) will be shown to the user for confirmation before execution. Do not retry them if rejected.
+8. Dangerous commands (killing jobs, wiping data, piping to shell, chmod 777) will be shown to the user for confirmation before execution. Do not retry them if rejected. Distinguish user rejection from policy denial, expiry, cancellation and transport failure; never speculate about user hesitation. A blocked command was requested, not executed. PEND is pending; USUSP/SSUSP/PSUSP are suspended, not RUN. A job disappearing from bjobs does not prove DONE; verify terminal state and outputs. Cancelling a pending job does not delete existing output files.
 9. When a command fails, do NOT retry it as-is. Diagnose first with ls -ld <dir>, stat <file>, or namei -l <path> to find whether the cause is a missing path or a permission problem, then adapt.
 10. For batch work (more than ~3 similar jobs), do NOT submit one bsub per call. Write a shell script with a for-loop or an LSF job array to a file (cat heredoc), then submit once with bsub, and report the job ID(s).
-11. 内存不足必须扩节点（底层逻辑，高于一切经验判断）：作业输出中出现 TERM_MEMLIMIT、"Exceeded job memory limit"、exit code 137、"Killed"、"Cannot allocate memory"、"std::bad_alloc"、"Out of memory"，或 bjobs 显示 SSUSP 时，第一反应必须是增加 #BSUB -n 节点数——本集群可用内存 = 5GB × 节点数，换算公式 slots = ceil(所需GB / 5)，宁多勿少。绝对禁止用 #BSUB -M 或 rusage[mem] 解决（违反集群规范）。无法估算时按上次申请量翻倍。操作前先向用户说明换算结果并征得同意（bmod -n 修改排队中的作业，或改 .lsf 脚本重新 bsub），详见 lsf-memory-scaling skill。
+11. Resource failures require diagnosis before resizing. SSUSP alone is not evidence of out-of-memory; inspect bjobs -l/-s, bhist/bacct and stderr for the actual suspension or termination reason. Exit 137 or "Killed" alone does not establish the cause either. For confirmed TERM_MEMLIMIT/OOM, follow the current cluster's documented memory policy. Only if the site's 5 GB per-slot policy is verified, calculate slots = ceil(requiredGB / 5) and adjust #BSUB -n (processor slots, not physical node count); do not use -M or rusage[mem] where the site forbids them. If that policy is unverified, inspect the approved cluster profile/documentation first, never assume it applies to arbitrary clusters. Explain the evidence and proposed resource change, obtain the required authorization, and check for a surviving job before changing or resubmitting anything.
+11.1 Quantitative and biological evidence: report each QC metric's source, sample, processing stage and unit (reads vs fragments). Conflicting table/text values require reconciliation before a pass/fail conclusion. BAM validity and high alignment rates only establish alignment-stage results, not overall library enrichment or assay success; separately evaluate assay-appropriate complexity, enrichment, controls and replicate reproducibility. Do not label every sample QC-pass when required downstream QC is missing. A sample name alone does not establish control suitability; distinguish metadata labels from biological suitability. Genome build and effective genome size must match verified reference evidence, not a human preset or an unverified fraction of assembly length.
 12. 只有流程步骤或用户明确要求报告时才生成报告；报告和所有产物必须写在 RUN/results/ 内，禁止为“完整”而额外扫描或复制无关文件。
 13. 正式流程不得把长计算命令直接交给 run_command：先读取当前 step 的 scriptPath，必要时更新脚本，再用 bash code/step-NN.sh 或 bsub < code/step-NN.sh 执行。scriptUserModified=true 时用户版本优先，不得覆盖；若无法安全使用则 ask_user。直接命令只用于读取当前脚本、写回脚本、提交脚本和验证当前步骤产出。
 
@@ -1120,10 +1121,10 @@ export async function runAgent(
               executionCommand = decision.command;
             }
 
-            if (requiresConfirmation(risk, runtimeConfig.confirmationPolicy)) {
+            if (isJobTerminationCommand(command) || requiresConfirmation(risk, runtimeConfig.confirmationPolicy)) {
               const approved = ctx.confirmCommand ? await ctx.confirmCommand(command, { risk, title: 'Agent 请求执行命令' }) : false;
               if (!approved) {
-                const msg = 'Command rejected by user: ' + command;
+                const msg = 'Command not authorized; it was not executed. A missing, expired or cancelled approval is not evidence of user rejection: ' + command;
                 cb.onToolResult('run_command', msg);
                 return msg;
               }
@@ -1442,7 +1443,7 @@ export async function runAgent(
                 ? await ctx.confirmCommand(`保存永久技能：${filename}`, { risk: 'persistent', title: '保存技能确认' })
                 : false;
               if (!approved) {
-                const msg = `Skill save rejected by user: ${filename}`;
+                const msg = `Skill save not authorized; nothing saved. Do not infer a user rejection from a timeout or cancellation: ${filename}`;
                 cb.onToolResult('save_skill', msg);
                 return msg;
               }
@@ -1765,7 +1766,7 @@ export async function runAgent(
               ? await ctx.confirmCommand(`新建本地文件：${input.path}`, { risk, title: 'Agent 请求新建本地文件' })
               : false;
             if (!approved) {
-              const msg = `Write rejected by user: ${input.path}`;
+              const msg = `Write not authorized; no file was written. Do not infer a user rejection from a timeout or cancellation: ${input.path}`;
               cb.onToolResult('write_local_file', msg);
               return msg;
             }
@@ -1805,7 +1806,7 @@ export async function runAgent(
                 ? await ctx.confirmCommand(command, { risk, title: 'Agent 请求执行本地命令' })
                 : false;
               if (!approved) {
-                const msg = 'Command rejected by user: ' + command;
+                const msg = 'Command not authorized; it was not executed. Do not infer a user rejection from a timeout or cancellation: ' + command;
                 cb.onToolResult('run_local_command', msg);
                 return msg;
               }
