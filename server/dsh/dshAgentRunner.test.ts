@@ -128,6 +128,25 @@ function pendingRun(overrides: Record<string, any> = {}) {
 }
 
 describe('DSH recovery without duplicate execution', () => {
+  it('waits for a live multi-select question without idle timeout, answers the matching RPC, and never resubmits the prompt', async () => {
+    vi.useFakeTimers(); harness.promptCompletes = false;
+    let resolve!: (value: any) => void;
+    const onQuestion = vi.fn(() => new Promise(r => { resolve = r; }));
+    const run = pendingRun({ onQuestion });
+    await vi.advanceTimersByTimeAsync(80);
+    const frame = { method: 'question/requested', rpcId: 'live-rpc', payload: { sessionId: 'dsh-session-test',
+      questions: [{ id: 'samples', question: 'Which samples?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] } };
+    harness.hooks.onFrame(frame); harness.hooks.onFrame(frame);
+    await vi.advanceTimersByTimeAsync(240000);
+    expect(onQuestion).toHaveBeenCalledTimes(1); expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+    expect(run.sent.some(event => event.type === 'error')).toBe(false);
+    resolve({ answers: [{ id: 'samples', selected: ['A', 'B'], custom: 'Keep control' }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.questionResponse).toMatchObject({ rpcId: 'live-rpc', answer: { answers: [{ id: 'samples', selected: ['A', 'B'], custom: 'Keep control' }] } });
+    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } } });
+    await run.promise;
+  });
   it('reports an unacknowledged answer without encouraging duplicate execution', async () => {
     vi.useFakeTimers();
     harness.replayQuestion = true;

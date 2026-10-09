@@ -48,6 +48,8 @@ import {
 import { closeSseReader, type SseReaderCloseReason } from '../services/sseReaderLifecycle';
 import { prepareAiRequestBody } from '../services/aiRequestBody';
 import { useCommandApprovals } from '../services/useCommandApprovals';
+import { useUserQuestions } from '../services/useUserQuestions';
+import AIQuestionDialog from './AIQuestionDialog';
 import {
   appendAttachmentRefs,
   baseName,
@@ -82,11 +84,6 @@ import {
   MIN_AGENT_COMMANDS,
   MIN_AGENT_STEPS,
 } from '@/shared/agentLimits';
-import {
-  ensureUserChoiceOptions,
-  isManualInputChoice,
-  isPathPickerChoice,
-} from '@/shared/askOptions';
 import { IS_COMPETITION_EDITION } from '../edition';
 
 //  Types 
@@ -824,13 +821,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const pendingCommand = commandApprovals.pending?.command;
   const currentPwdRef = useRef<string>('');
   const pendingCommandDirWarning = pendingCommand ? checkDirBoundary(pendingCommand) : false;
-  // AI 反问（agent ask_user）：问题 + 可点选候选答案，固定显示在底部输入框上方
-  const [pendingAsk, setPendingAsk] = useState<{
-    question: string;
-    options: string[];
-    /** dsh 在原流中等答案时的服务端挂起 id；内置 Agent 反问无此字段。 */
-    id?: string;
-  } | null>(null);
+  const userQuestions = useUserQuestions({ english: isEnglish,
+    onAnswered: text => addMessage({ role: 'user', content: text }),
+    onLegacyAnswer: async text => { await submitToAI(text, { appendUserMessage: true }); } });
+  const pendingAsk = userQuestions.pending;
+  const [deferredQuestionKey, setDeferredQuestionKey] = useState('');
 
   function checkDirBoundary(cmd: string): boolean {
     // Check if command accesses paths outside common safe locations
@@ -861,11 +856,9 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   };
   useEffect(() => { scrollToBottom(); }, [messages, streamingContent, isStreaming, activeTab]);
 
-  // 切换/新建对话后清掉未回答的反问卡片
+  // Only a real conversation switch clears interactions. Adding the question to
+  // messages must NOT immediately erase the answer controls (v0.4.47 regression).
   useEffect(() => {
-    setPendingAsk(null);
-    // 切换会话后恢复贴底，保证加载完会话自动滚动到最新消息
-    stickToBottomRef.current = true;
     const previous = agentPlanConversationRef.current;
     // 新对话首次保存会从 null 获得 id，此时保留正在运行的计划；真正切换会话时清理。
     if (previous != null && previous !== activeConversationId) {
@@ -881,13 +874,18 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       setStreamingContent('');
       agentPlanRef.current = null;
       commandApprovals.clear();
-      setPendingAsk(null);
+      userQuestions.clear();
+      setDeferredQuestionKey('');
+      stickToBottomRef.current = true;
     }
     agentPlanConversationRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
     const savedPlan = findLatestAgentPlanCheckpoint(messages);
     if (savedPlan) agentPlanRef.current = savedPlan;
     else if (!aiRunningRef.current) agentPlanRef.current = null;
-  }, [activeConversationId, messages]);
+  }, [messages]);
 
   // 组件卸载（切换对话/计算目标/视图触发重挂载）时只安静断开连接：
   // 服务端会把带 conversationId 的运行转为后台 detached 继续执行，
@@ -1243,16 +1241,13 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               }
               case 'ask': {
                 const question = String(event.question || (isEnglish ? 'Please confirm the next step.' : '请确认下一步。'));
-                setPendingAsk({
-                  question,
-                  options: ensureUserChoiceOptions(question, event.options, locale),
-                  id: typeof event.id === 'string' && event.id ? event.id : undefined,
-                });
+                userQuestions.handleEvent(event);
+                setAiStatus(isEnglish ? 'Waiting for your answer…' : '正在等待你回答…');
                 addMessage({ role: 'assistant', content: `❓ ${question}` });
                 break;
               }
               case 'ask_resolved':
-                setPendingAsk(current => current?.id === event.id ? null : current);
+                userQuestions.handleEvent(event);
                 break;
               case 'confirm': {
                 commandApprovals.handleEvent(event);
@@ -1267,7 +1262,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 aiRunningRef.current = false;
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
                 setStreamingContent('');
-                setAiStatus('AI 已等待你回答');
+                setAiStatus(isEnglish ? 'Waiting for your answer…' : '正在等待你回答…');
                 if (fullText.trim()) {
                   addMessage({ role: 'assistant', content: fullText.trim() });
                 }
@@ -1275,6 +1270,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 break;
               case 'done':
                 commandApprovals.clear();
+                userQuestions.clear();
                 aiRunningRef.current = false;
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
                 setStreamingContent('');
@@ -1316,6 +1312,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               }
               case 'error':
                 commandApprovals.clear();
+                userQuestions.clear();
                 addMessage({ role: 'system', content: `[❌ Error] ${event.error}` });
                 setErrorMessage(String(event.error || 'AI 请求出错'));
                 // 错误事件本身就是本轮的终止状态。不等待供应商/服务端
@@ -1410,12 +1407,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 commandApprovals.handleEvent(event);
                 break;
               case 'ask':
-                setPendingAsk({ question: String(event.question || ''),
-                  options: ensureUserChoiceOptions(String(event.question || ''), event.options, locale),
-                  id: typeof event.id === 'string' ? event.id : undefined });
+                userQuestions.handleEvent(event);
+                setAiStatus(isEnglish ? 'Waiting for your answer…' : '正在等待你回答…');
                 break;
               case 'ask_resolved':
-                setPendingAsk(current => current?.id === event.id ? null : current);
+                userQuestions.handleEvent(event);
                 break;
               case 'status':
                 if (event.message) setAiStatus(String(event.message));
@@ -1433,7 +1429,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 break;
               case 'done': {
                 commandApprovals.clear();
-                setPendingAsk(null);
+                userQuestions.clear();
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1468,7 +1464,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               }
               case 'error':
                 commandApprovals.clear();
-                setPendingAsk(null);
+                userQuestions.clear();
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1533,7 +1529,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     const trimmed = userText.trim();
     if (!trimmed) return;
     lastUserTextRef.current = trimmed; // 供断流后的"重试"使用
-    setPendingAsk(null); // 用户作答（或发起新任务）后关闭反问卡片
+    userQuestions.clear(); // Only a new task (not a reply to a live question) clears the question.
     if (aiRunningRef.current) {
       // Cleanly tear down the in-flight request BEFORE starting a new one.
       // Must await reader.cancel() so the TCP RST is fully processed by the
@@ -1603,69 +1599,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
    * 回给服务端挂起项。否则会取消原流，并把答案错送成新 prompt。
    */
   const answerLiveQuestion = async (answer: string): Promise<boolean> => {
-    const pending = pendingAsk;
+    const pending = userQuestions.pending;
     if (!pending?.id) return false;
     const trimmed = answer.trim();
     if (!trimmed) return true;
-    setPendingAsk(null);
-    addMessage({ role: 'user', content: trimmed });
-    try {
-      const response = await fetch('/api/ai/question', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: pending.id, answer: trimmed }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body?.error || `HTTP ${response.status}`);
-      }
-      setAiStatus(isEnglish ? 'Answer received. The agent is continuing…' : '已收到回答，Agent 正在继续…');
-    } catch (error) {
-      setPendingAsk(pending);
-      const message = error instanceof Error ? error.message : String(error);
-      setErrorMessage(message);
-      addMessage({ role: 'system', content: `[反问回复失败] ${message}` });
-    }
+    await userQuestions.reply({ selected: [], custom: trimmed });
     return true;
-  };
-
-  const dismissPendingAsk = () => {
-    const pending = pendingAsk;
-    setPendingAsk(null);
-    if (pending?.id) {
-      void fetch('/api/ai/question', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: pending.id, cancelled: true }),
-      }).catch(() => {});
-    }
-  };
-
-  const handlePendingAskOption = async (option: string) => {
-    if (isPathPickerChoice(option)) {
-      if (onPickRemoteFolder) {
-        const pickedPath = await onPickRemoteFolder();
-        if (pickedPath) {
-          if (!await answerLiveQuestion(pickedPath)) {
-            setPendingAsk(null);
-            await submitToAI(pickedPath, { appendUserMessage: true });
-          }
-        }
-      } else {
-        chatInputRef.current?.focus();
-      }
-      return;
-    }
-
-    if (isManualInputChoice(option)) {
-      chatInputRef.current?.focus();
-      return;
-    }
-
-    if (!await answerLiveQuestion(option)) {
-      setPendingAsk(null);
-      await submitToAI(option, { appendUserMessage: true });
-    }
   };
 
   const resetChatInputHeight = () => {
@@ -1787,7 +1726,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     }
     stoppedByUserRef.current = true;
     commandApprovals.clear();
-    setPendingAsk(null);
+    userQuestions.clear();
     setIsAiLoading(false);
     setIsStreaming(false);
     setAiStatus('AI 已停止');
@@ -2281,34 +2220,14 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           )}
 
 
-          {/*  AI 反问：问题固定在最底部，候选答案做成可点选按钮  */}
-          {pendingAsk && (
-            <div className="mx-3 mb-1 p-3 bg-accent/5 border border-accent/20 rounded-lg shrink-0">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-accent shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-accent font-medium">AI 需要你确认</p>
-                  <p data-user-content="true" className="text-sm text-scholar-100 mt-1 whitespace-pre-wrap break-words">{pendingAsk.question}</p>
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {pendingAsk.options.map((opt, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => void handlePendingAskOption(opt)}
-                        className="px-2.5 py-1.5 text-xs bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/25 font-medium transition-colors"
-                      >
-                        <span data-user-content="true">{opt}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-scholar-500 mt-2">{isEnglish ? 'Choose an option, or type your answer below.' : '点击选项直接回答，也可以在下方输入框补充。'}</p>
-                </div>
-                <button onClick={dismissPendingAsk} className="text-scholar-500 hover:text-scholar-300 shrink-0" aria-label="关闭">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
+          {userQuestions.notice && !pendingAsk && <p role="status" className="mx-3 mb-2 text-xs text-scholar-300">{userQuestions.notice}</p>}
+          {pendingAsk && pendingAsk.key === deferredQuestionKey && <div className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
+            <p className="text-sm text-scholar-200">{isEnglish ? 'The agent is waiting for your answer.' : 'Agent 正在等待你的回答。'}</p>
+            <button type="button" onClick={() => setDeferredQuestionKey('')} className="px-3 py-1.5 text-sm text-accent">{isEnglish ? 'Answer question' : '回答问题'}</button>
+          </div>}
+          {pendingAsk && <AIQuestionDialog key={pendingAsk.key} question={pendingAsk} english={isEnglish} open={pendingAsk.key !== deferredQuestionKey}
+            busy={userQuestions.busy} error={userQuestions.error} count={userQuestions.count}
+            onReply={userQuestions.reply} onPickPath={onPickRemoteFolder} onDefer={() => setDeferredQuestionKey(pendingAsk.key)} />}
 
           {/* Input */}
           <div data-chat-composer className="px-3 pt-2 pb-4 shrink-0 bg-gradient-to-t from-scholar-900 via-scholar-900 to-scholar-900/80">

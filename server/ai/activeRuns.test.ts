@@ -13,6 +13,15 @@ import {
 import { filterConversationsByScope } from '../conversations/localConversations';
 
 describe('activeRuns（后台 AI 运行登记处）', () => {
+  it('preserves unanswered questions across log truncation and drops answered questions on replay', () => {
+    const run = registerActiveRun({ requestId: 'question-replay', abort: new AbortController() });
+    pushRunEvent(run, { type: 'ask', id: 'q', question: 'Which sample?', multiSelect: true });
+    for (let i = 0; i < 600; i++) pushRunEvent(run, { type: 'status', i });
+    expect(replayRunEvents(run)[0]).toMatchObject({ type: 'ask', id: 'q', multiSelect: true });
+    pushRunEvent(run, { type: 'ask_resolved', id: 'q', reason: 'answered' });
+    expect(replayRunEvents(run).some(event => event.type === 'ask')).toBe(false);
+    finishActiveRun(run, 'done', 'answered');
+  });
   it('preserves actionable approvals across truncation but never replays settled approvals', () => {
     const run = registerActiveRun({ requestId: 'approval-replay', abort: new AbortController() });
     pushRunEvent(run, { type: 'confirm', id: 'a', command: 'bkill 123' });

@@ -5,6 +5,7 @@ import { LocaleProvider } from '../i18n';
 import AIChat, { buildConversationTimeline, extractOutputFiles } from './AIChat';
 import { saveAIProfile } from '../services/aiProfile';
 import { saveAgentWorkspace, clearAgentWorkspace } from '../services/agentWorkspace';
+import { useState } from 'react';
 
 vi.mock('../features/file-transfer/api', () => ({
   enqueueTransfer: vi.fn(async () => ({ id: 'task-1' })),
@@ -80,6 +81,69 @@ afterEach(() => {
 });
 
 describe('AIChat 对话附件', () => {
+  it('keeps a live ask dialog visible through message updates, preserves drafts after deferral, and answers the original stream', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'tool_call', name: 'ask_user_question' });
+        send({ type: 'ask', id: 'q-live', question: '确认要处理哪些样本？', options: ['样本 A', '样本 B'], multiSelect: true });
+      } }));
+      if (url === '/api/ai/question') {
+        expect(JSON.parse(String(init?.body))).toEqual({ id: 'q-live', answer: { selected: ['样本 A', '样本 B'], custom: '保留对照' } });
+        send({ type: 'ask_resolved', id: 'q-live', reason: 'answered', answered: true });
+        return Response.json({ success: true, reason: 'answered' });
+      }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    function Controlled() {
+      const [messages, setMessages] = useState<any[]>([]);
+      return <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only" activeConversationId="qa-only"
+        messages={messages} onMessagesChange={setMessages} onSkillsChange={() => {}} /></LocaleProvider>;
+    }
+    render(<Controlled />);
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '继续处理样本' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Agent 需要你回答' });
+    expect(dialog).toBeVisible();
+    await act(async () => send({ type: 'tool_result', name: 'run_command', result: 'QA ONLY' }));
+    expect(dialog).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '样本 A' })); fireEvent.click(screen.getByRole('button', { name: '样本 B' }));
+    fireEvent.change(screen.getByLabelText('你的回答 / 补充说明'), { target: { value: '保留对照' } });
+    fireEvent.click(screen.getByRole('button', { name: '稍后回答' }));
+    expect(screen.queryByTestId('ai-question-dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '回答问题' }));
+    expect(screen.getByLabelText('你的回答 / 补充说明')).toHaveValue('保留对照');
+    fireEvent.click(screen.getByRole('button', { name: '提交回答' }));
+    await waitFor(() => expect(screen.queryByTestId('ai-question-dialog')).toBeNull());
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/stream')).toHaveLength(1);
+    expect(fetch.mock.calls.some(call => String(call[0]) === '/api/ai/abort')).toBe(false);
+    await act(async () => { send({ type: 'done', content: '仅模拟问答完成，未操作集群。' }); stream.close(); });
+    expect(await screen.findByText('仅模拟问答完成，未操作集群。')).toBeVisible();
+  });
+
+  it('restores an unanswered question on reattach and only clears it on a real conversation switch', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/active')) return Response.json({ success: true, running: url.includes('conversationId=old'), requestId: 'q-old' });
+      if (url.includes('/api/ai/stream/attach')) return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'ask', id: 'q-old', question: '旧任务缺少哪个参数？', options: [] }) + '\n\n'));
+      } }));
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    }));
+    const chat = (id: string, messages: any[]) => <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only"
+      activeConversationId={id} messages={messages} onMessagesChange={vi.fn()} onSkillsChange={() => {}} /></LocaleProvider>;
+    const view = render(chat('old', []));
+    await screen.findByTestId('ai-question-dialog');
+    view.rerender(chat('old', [{ role: 'assistant', content: '后台新增记录' }]));
+    expect(screen.getByTestId('ai-question-dialog')).toHaveTextContent('旧任务缺少哪个参数？');
+    view.rerender(chat('new', []));
+    await waitFor(() => expect(screen.queryByTestId('ai-question-dialog')).toBeNull());
+  });
+
   it('discards a delayed completion reload after switching conversations', async () => {
     let resolve!: (value: Response) => void;
     let requested = false;

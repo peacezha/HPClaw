@@ -29,6 +29,7 @@ import { formatLoginFailure } from './server/loginDiagnostics';
 import { verifySSHCredentials } from './server/sshAuthenticator';
 import { runAgent, type AgentCtx } from './server/ai/agentRunner';
 import { CommandApprovals } from './server/ai/commandApprovals';
+import { UserQuestions } from './server/ai/userQuestions';
 import {
   resolveAccountScheduler,
   clearSchedulerTag,
@@ -173,10 +174,7 @@ interface ActiveSession {
 const sessions = new Map<string, ActiveSession>();
 
 const pendingAiConfirmations = new CommandApprovals();
-const pendingAiQuestions = new Map<string, {
-  resolve: (answer: string | null) => void;
-  timer: ReturnType<typeof setTimeout>;
-}>();
+const pendingAiQuestions = new UserQuestions();
 const formalWorkflowResumeLocks = new Set<string>();
 
 function createSessionId(): string {
@@ -1722,47 +1720,15 @@ app.post('/api/ai/stream', async (req, res) => {
                 .map(value => typeof value === 'string' ? value.trim() : '')
                 .filter(Boolean)
                 .join('\n');
-              send({
-                type: 'ask',
-                id,
+              const answer = await pendingAiQuestions.request({ id, signal: requestAbort.signal, send, requestId: aiRequestId,
                 question: prompt || (requestLocale === 'en-US' ? 'Please provide the information required for this task.' : '请补充本次任务所需信息。'),
-                options: labels,
-                multiSelect: question.multiSelect === true,
-                source: 'dsh',
-              });
-
-              const answer = await new Promise<string | null>((resolve) => {
-                let settled = false;
-                const finish = (value: string | null) => {
-                  if (settled) return;
-                  settled = true;
-                  requestAbort.signal.removeEventListener('abort', onAbort);
-                  send({ type: 'ask_resolved', id, answered: value !== null });
-                  resolve(value);
-                };
-                const onAbort = () => {
-                  const pending = pendingAiQuestions.get(id);
-                  if (pending) clearTimeout(pending.timer);
-                  pendingAiQuestions.delete(id);
-                  finish(null);
-                };
-                const timer = setTimeout(() => {
-                  pendingAiQuestions.delete(id);
-                  finish(null);
-                }, 14 * 60_000);
-                timer.unref?.();
-                pendingAiQuestions.set(id, { resolve: finish, timer });
-                requestAbort.signal.addEventListener('abort', onAbort, { once: true });
-                if (requestAbort.signal.aborted) onAbort();
-              });
+                options: labels.map(label => ({ label, description: question.options?.find(option => option.label === label)?.description })),
+                multiSelect: question.multiSelect === true });
               dshQuestionIds.delete(id);
               if (answer === null) return null;
-              const trimmed = answer.trim();
-              const selected = labels.includes(trimmed) ? [trimmed] : [];
               answers.push({
                 id: String(question.id || ''),
-                selected,
-                ...(selected.length === 0 && trimmed ? { custom: trimmed } : {}),
+                ...answer,
               });
             }
             return { answers };
@@ -1778,11 +1744,7 @@ app.post('/api/ai/stream', async (req, res) => {
           pendingAiConfirmations.cancel(id);
         }
         for (const id of dshQuestionIds) {
-          const pending = pendingAiQuestions.get(id);
-          if (!pending) continue;
-          clearTimeout(pending.timer);
-          pending.resolve(null);
-          pendingAiQuestions.delete(id);
+          pendingAiQuestions.cancel(id);
         }
       }
     }
@@ -2201,21 +2163,12 @@ app.post('/api/ai/confirm', (req, res) => {
 
 app.post('/api/ai/question', (req, res) => {
   const id = String(req.body?.id || '');
-  const pending = pendingAiQuestions.get(id);
-  if (!pending) {
-    res.status(404).json({ success: false, error: '反问已超时或已回答' });
+  if (!id || (req.body?.cancelled !== undefined && typeof req.body.cancelled !== 'boolean')) {
+    res.status(400).json({ success: false, error: 'invalid_question_response' });
     return;
   }
-  const cancelled = req.body?.cancelled === true;
-  const answer = typeof req.body?.answer === 'string' ? req.body.answer.trim() : '';
-  if (!cancelled && !answer) {
-    res.status(400).json({ success: false, error: '回答不能为空' });
-    return;
-  }
-  clearTimeout(pending.timer);
-  pendingAiQuestions.delete(id);
-  pending.resolve(cancelled ? null : answer);
-  res.json({ success: true });
+  const receipt = pendingAiQuestions.respond(id, req.body?.answer, req.body?.cancelled === true);
+  res.status(receipt.success ? 200 : receipt.error === 'invalid_question_answer' ? 400 : 409).json(receipt);
 });
 
 // ── Remote file download (used by AI chat output file links) ─────────
