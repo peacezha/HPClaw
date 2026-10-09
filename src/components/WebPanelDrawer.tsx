@@ -17,6 +17,8 @@ export interface WebPanelRequest {
   /** remotePath 所属的集群会话；本地工作台为 null（远程模式不会出现） */
   sessionId?: string | null;
   workspace?: string;
+  /** Known project/run directories for resolving a relative cluster report. */
+  remoteBasePaths?: string[];
 }
 
 interface WebPanelDrawerProps {
@@ -277,7 +279,7 @@ function DesktopWebViewContent({ url }: { url: string }) {
  *  默认启用脚本——这是用户自己的结果网页，交互图表需要 JS；CSP 仍禁外部网络，可手动关闭。 */
 function RemoteHtmlContent({ panel }: { panel: WebPanelRequest }) {
   if (!panel.remotePath) return <LoadError detail="未提供报告路径" onRetry={() => {}} />;
-  return <HtmlReportFrame path={panel.remotePath} sessionId={panel.sessionId} workspace={panel.workspace} />;
+  return <HtmlReportFrame path={panel.remotePath} sessionId={panel.sessionId} workspace={panel.workspace} remoteBasePaths={panel.remoteBasePaths} />;
 }
 function LoadError({ detail, onRetry }: { detail?: string; onRetry: () => void }) {
   return (

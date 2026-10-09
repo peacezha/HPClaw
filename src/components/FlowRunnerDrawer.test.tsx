@@ -59,6 +59,20 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 describe('FlowRunnerDrawer', () => {
+  it('only sends the failed-QC override flag after explicit risk confirmation', async () => {
+    const runDir = '/home/u/hpclaw_flows/test/03_workspace/runs/qc-failed';
+    vi.mocked(fetchWorkflowRuns).mockResolvedValueOnce([{
+      runId: 'qc-failed', revision: 4, workflowId: 'wf-test', runDir,
+      status: 'waiting_user', currentStep: 1, totalSteps: 2,
+      steps: [{ n: 1, title: 'QC', status: 'done', qc: { status: 'fail', metrics: { FRiP: '0.005' } } },
+        { n: 2, title: 'Next', status: 'pending' }],
+    }]);
+    render(<FlowRunnerDrawer workflow={makeWorkflow()} sessionId="s1" onClose={() => {}} onRun={() => {}} />);
+    fireEvent.click(await screen.findByText('仍要继续（不推荐）'));
+    expect(resumeWorkflowRun).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('确认风险并继续'));
+    await waitFor(() => expect(resumeWorkflowRun).toHaveBeenCalledWith(runDir, 4, 's1', true));
+  });
   it('默认突出专属工作目录，并把按需检查与高级设置折叠', () => {
     render(<FlowRunnerDrawer workflow={makeWorkflow()} onClose={() => {}} onRun={() => {}} />);
     expect(screen.getByText('测试流程')).toBeInTheDocument();

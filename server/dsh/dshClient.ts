@@ -21,27 +21,48 @@ function newRpcId(): string {
 
 export class DshClient {
   private readonly baseUrl: string;
+  private readonly requestSignal?: AbortSignal;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, requestSignal?: AbortSignal) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.requestSignal = requestSignal;
+  }
+
+  /** Bound both headers and response-body reads; cancellation must not hang behind an RPC. */
+  private async post(endpoint: string, body: unknown, independent = false): Promise<any> {
+    const controller = new AbortController();
+    const abort = () => controller.abort(this.requestSignal?.reason);
+    if (!independent) {
+      this.requestSignal?.addEventListener('abort', abort, { once: true });
+      if (this.requestSignal?.aborted) abort();
+    }
+    const timer = setTimeout(() => controller.abort(new Error('DSH_RPC_TIMEOUT')), 30_000);
+    timer.unref?.();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/${endpoint}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: controller.signal,
+      });
+      const envelope = await res.json();
+      if (!res.ok) throw new Error(`http_${res.status}: dsh ${endpoint} failed`);
+      return envelope;
+    } finally {
+      clearTimeout(timer);
+      this.requestSignal?.removeEventListener('abort', abort);
+    }
   }
 
   /** 一元 RPC：返回 result.value；ok:false 或传输失败时 throw（Error.code 带 dsh 错误码）。 */
   async rpc<T = any>(method: string, payload: unknown): Promise<T> {
-    let res: Response;
+    let envelope: any;
     try {
-      res = await fetch(`${this.baseUrl}/api/${method}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'client-request', rpcId: newRpcId(), method, payload }),
-      });
+      envelope = await this.post(method, { type: 'client-request', rpcId: newRpcId(), method, payload }, method === 'session.cancel');
     } catch (err) {
       throw new Error(`network_error: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const envelope: any = await res.json().catch(() => undefined);
     const result = envelope?.result;
     if (result?.ok === true) return result.value as T;
-    const code = typeof result?.error?.code === 'string' ? result.error.code : `http_${res.status}`;
+    const code = typeof result?.error?.code === 'string' ? result.error.code : 'invalid_response';
     const message = typeof result?.error?.message === 'string' ? result.error.message : `dsh rpc ${method} failed`;
     const err = new Error(`${code}: ${message}`) as Error & { code?: string };
     err.code = code;
@@ -79,6 +100,16 @@ export class DshClient {
     await this.rpc('session.cancel', { sessionId });
   }
 
+  /** Official dsh unary APIs (bundled dsh-client-connection contract). Read-only. */
+  async sessionStatus(sessionId: string): Promise<{ running: boolean } | undefined> {
+    const value = await this.rpc<{ items: Array<{ sessionId: string; running: boolean }> }>('session.list', {});
+    return value.items.find(item => item.sessionId === sessionId);
+  }
+
+  async history(sessionId: string, beforeSeq?: number): Promise<{ events: Array<{ event: any }>; hasMore: boolean }> {
+    return this.rpc('session.history', { sessionId, maxMessages: 50, ...(beforeSeq === undefined ? {} : { beforeSeq }) });
+  }
+
   /** 审批应答：POST {base}/api/respond，client-response 信封。返回服务端是否 accepted。 */
   async respondApproval(opts: {
     rpcId: string;
@@ -86,26 +117,20 @@ export class DshClient {
     approvalId: string;
     outcome: 'allowed-once' | 'rejected';
   }): Promise<boolean> {
-    let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/api/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const body = await this.post('respond', {
           type: 'client-response',
           rpcId: opts.rpcId,
           result: {
             ok: true,
             value: { sessionId: opts.sessionId, approvalId: opts.approvalId, outcome: opts.outcome },
           },
-        }),
       });
+      return body?.accepted === true;
     } catch (err) {
       console.warn('[dsh] 审批应答传输失败: %s', err instanceof Error ? err.message : String(err));
       return false;
     }
-    const body: any = await res.json().catch(() => undefined);
-    return body?.accepted === true;
   }
 
   /**
@@ -117,26 +142,20 @@ export class DshClient {
     sessionId: string;
     answer: { answers: Array<{ id: string; selected: string[]; custom?: string }> };
   }): Promise<boolean> {
-    let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/api/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const body = await this.post('respond', {
           type: 'client-response',
           rpcId: opts.rpcId,
           result: {
             ok: true,
             value: { sessionId: opts.sessionId, answer: opts.answer },
           },
-        }),
       });
+      return body?.accepted === true;
     } catch (err) {
       console.warn('[dsh] 反问应答传输失败: %s', err instanceof Error ? err.message : String(err));
       return false;
     }
-    const body: any = await res.json().catch(() => undefined);
-    return body?.accepted === true;
   }
 
   /** 连接事件多路复用 WS。断线只回调 onClosed，是否重连由调用方决定。 */

@@ -10,7 +10,9 @@
 
 > 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
 
-v0.4.43 提供 Windows、Mac（Apple 芯片 / Intel）和公共 Linux 网页包，保留经典界面。文献学习自动查询 GEO/ENA 原始数据清单、生成 FASTQ 下载及 MD5 校验步骤，并分批补齐分析流程，避免截断成两步草稿。详见 [更新说明](v0.4.43_更新说明.md) 和 [Mac 安装说明](docs/MAC_WEB_DEPLOYMENT.md)。
+v0.4.46 本次仅更新 Windows：正式流程 QC 未通过时醒目提示“质量不佳，不建议继续下游分析”，暂停自动推进；用户明确确认风险后可继续，失败指标仍保留。警告与失败分别显示，中英文同步。保留 v0.4.45 报告预览和英文流程、v0.4.44 双语安装与 DSH 恢复修复，以及经典界面。详见 [Windows 更新说明](docs/WINDOWS_0.4.46.md) · [报告与英文修复](docs/WINDOWS_0.4.45.md)。
+
+Mac（Apple 芯片 / Intel）和公共 Linux 网页包仍使用 [v0.4.43](https://github.com/peacezha/HPClaw/releases/tag/v0.4.43)。文献学习的数据下载和完整流程修复继续包含在 Windows 新版本中。[上一版说明](v0.4.43_更新说明.md) · [Mac 安装说明](docs/MAC_WEB_DEPLOYMENT.md)。
 
 面向大众的网页服务请选择 **public-web-linux-x64-node20** 包（Node.js 20.19.5+）：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
 

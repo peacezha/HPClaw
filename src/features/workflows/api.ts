@@ -195,6 +195,8 @@ export interface WorkflowRunStep {
   jobIds?: string[];
   summary?: string;
   qc?: { status: 'pass' | 'warn' | 'fail'; metrics?: Record<string, string> };
+  qcCriteria?: import('@/shared/flowManifest').QcGate[];
+  qcOverride?: { approvedAt: number; revision: number };
   outputs?: string[];
   evidence?: string[];
   scriptPath?: string;
@@ -290,11 +292,12 @@ export async function resumeWorkflowRun(
   runDir: string,
   expectedRevision: number | undefined,
   sessionId?: string | null,
+  acknowledgeFailedQc = false,
 ): Promise<WorkflowRun> {
   const data = await request('/api/workflow-runs/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-SSH-Session-Id': sessionId } : {}) },
-    body: JSON.stringify({ runDir, expectedRevision }),
+    body: JSON.stringify({ runDir, expectedRevision, ...(acknowledgeFailedQc ? { acknowledgeFailedQc: true } : {}) }),
   });
   return data.run;
 }
@@ -324,6 +327,7 @@ function workflowRunFingerprint(run: WorkflowRun): string {
       step.n, step.status, step.startedAt, step.finishedAt, step.jobIds,
       step.summary, step.qc, step.outputs, step.scriptPath, step.scriptUpdatedAt, step.scriptUserModified,
       step.evidence, step.scriptHash, step.submittedScriptHash,
+      step.qcCriteria, step.qcOverride,
     ]),
   ]);
 }

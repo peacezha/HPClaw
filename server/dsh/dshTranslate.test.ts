@@ -17,6 +17,23 @@ function sessionEvent(event: unknown, sessionId = 'sess-1', rpcId = 'rpc-1') {
 }
 
 describe('dshTranslate', () => {
+  it('pairs parallel run_command results with their own commands, not the last command issued', () => {
+    const { sent, translator, state } = setup();
+    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { callId: 'submit', name: 'run_command', arguments: '{"command":"bsub < step-03.lsf"}' } }), state);
+    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { callId: 'read', name: 'run_command', arguments: '{"command":"cat logs/old.submit.txt"}' } }), state);
+    translator.translateFrame(sessionEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'submit', content: [{ type: 'text', text: 'Job <12345> is submitted' }] }] } } }), state);
+    expect(sent.at(-1)).toMatchObject({ type: 'tool_result', command: 'bsub < step-03.lsf' });
+  });
+  it('uses English for new engine errors and never presents an aborted partial turn as successful', () => {
+    const sent: any[] = [];
+    const translator = createTranslator({ send: e => sent.push(e), locale: 'en-US' });
+    const state = createTranslateState('sess-1');
+    state.accumulatedText = 'In progress…';
+    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { reason: { kind: 'aborted' } } }), state);
+    expect(sent).toEqual([{ type: 'done', content: '__CANCELLED__' }]);
+    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'QUOTA', message: 'Insufficient Balance' } } } }), state);
+    expect(sent.at(-1)?.error).toBe('DSH execution failed (QUOTA): Insufficient Balance');
+  });
   it('translates text-delta chunks into content events and accumulates text', () => {
     const { sent, translator, state } = setup();
     translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: '你好' } } }), state);

@@ -25,6 +25,10 @@ interface UpdateSettings {
 }
 
 interface HpclawDesktop {
+  locale?: {
+    get(): Promise<'zh-CN' | 'en-US'>;
+    set(locale: 'zh-CN' | 'en-US'): Promise<'zh-CN' | 'en-US'>;
+  };
   /** 从 <input type="file"> 的 File 对象取回磁盘绝对路径（浏览器模式无此能力） */
   getPathForFile?(file: File): string;
   clipboard: {

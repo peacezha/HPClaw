@@ -9,7 +9,10 @@ export const EMPTY_WEB_PANEL_TABS: WebPanelTabsState = { tabs: [], active: 0 };
 
 /** 同一 URL/远程路径（且同会话）视为同一标签，重复打开时聚焦既有标签 */
 export function webPanelTabKey(tab: WebPanelRequest): string {
-  return `${tab.url ?? ''}|${tab.remotePath ?? ''}|${tab.sessionId ?? ''}`;
+  const identity = `${tab.url ?? ''}|${tab.remotePath ?? ''}|${tab.sessionId ?? ''}`;
+  // Relative report paths in different projects are not the same file.
+  const relative = tab.remotePath && !/^(?:\/|[A-Za-z]:[\\/])/.test(tab.remotePath);
+  return relative ? `${identity}|${JSON.stringify([tab.workspace || '', tab.remoteBasePaths || []])}` : identity;
 }
 
 /** 追加标签；已存在同目标标签时只切换焦点，不重复打开 */

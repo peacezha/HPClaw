@@ -22,6 +22,15 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 }
 
 describe('流程运行实时增量合并', () => {
+  it('QC criteria and user risk acknowledgement changes are not swallowed as duplicate snapshots', () => {
+    const original = makeRun({ steps: [{ n: 1, title: 'QC', status: 'done', qc: { status: 'fail' } }] });
+    const before = [original];
+    const withCriteria = makeRun({ steps: original.steps?.map(step => ({ ...step, qcCriteria: [{ afterStep: 1, metric: 'FRiP', pass: '>=0.01' }] })) });
+    expect(mergeWorkflowRunUpdate(before, withCriteria)).not.toBe(before);
+    const acknowledged = { ...withCriteria, steps: withCriteria.steps?.map(step => ({ ...step, qcOverride: { approvedAt: 1000, revision: 4 } })) };
+    expect(reconcileWorkflowRunSnapshot([withCriteria], [acknowledged])).toEqual([acknowledged]);
+    expect(reconcileWorkflowRunSnapshot([withCriteria], [acknowledged])[0].steps?.[0].qc?.status).toBe('fail');
+  });
   it('同一运行的步骤事件原位更新，不产生重复卡片', () => {
     const before = [makeRun()];
     const after = mergeWorkflowRunUpdate(before, makeRun({

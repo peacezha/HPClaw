@@ -5,6 +5,7 @@ import { appPath } from '../paths';
 import { renderWorkflowCommand, type Workflow } from './workflowTypes';
 import { translateSchedulerDirectives } from '../notifications/scheduler';
 import { workflowSlug } from '../../shared/flowManifest';
+import { qcPauseReason, unresolvedQcFailures, QC_FAILURE_MESSAGE, QC_WARNING_MESSAGE } from '../../shared/workflowQc';
 import type {
   WorkflowRun,
   WorkflowRunConfig,
@@ -296,6 +297,7 @@ function markdownCell(value: unknown): string {
 
 /** 不调用模型，直接从已验证的运行证据生成轻量报告，避免额外 Token。 */
 export function buildWorkflowRunSummary(run: WorkflowRun): string {
+  const issues = run.steps.filter(step => step.qc?.status === 'fail' || step.qc?.status === 'warn');
   const stepRows = run.steps.map(step => [
     step.n,
     markdownCell(step.title),
@@ -313,6 +315,15 @@ export function buildWorkflowRunSummary(run: WorkflowRun): string {
     `- 完成时间：${new Date(run.endedAt || run.updatedAt).toISOString()}`,
     `- 工作目录：\`${run.runDir}\``,
     '',
+    ...(issues.length ? ['## 质控风险提醒', '', ...issues.flatMap(step => [
+      `### ${step.n}. ${step.title} — QC ${step.qc!.status}`,
+      '',
+      step.qc!.status === 'fail' ? QC_FAILURE_MESSAGE.replace('；自动推进已暂停。', '。') : QC_WARNING_MESSAGE,
+      ...(step.qcOverride ? [`用户已于 ${new Date(step.qcOverride.approvedAt).toISOString()} 明确确认继续；这不代表质控通过。`] : []),
+      ...Object.entries(step.qc!.metrics || {}).map(([key, value]) => `- ${markdownCell(key)}: ${markdownCell(value)}`),
+      ...(step.summary ? [markdownCell(step.summary)] : []),
+      '',
+    ])] : []),
     '## 步骤与证据',
     '',
     '序号 | 步骤 | 状态 | 结果摘要 | 输出 | QC',
@@ -363,6 +374,7 @@ export async function createWorkflowRun(
       dependsOn: graph[index].dependsOn,
       phase: step.phase,
       title: step.title,
+      qcCriteria: workflow.manifest?.qcGates.filter(gate => gate.afterStep === index + 1),
       status: config.skippedSteps.includes(index + 1) ? 'skipped' : 'pending',
       scriptPath: workflowStepScriptPath(runDir, index + 1),
       scriptUpdatedAt: now,
@@ -484,6 +496,7 @@ export async function updateWorkflowRun(
   home: string,
   runDir: string,
   patch: WorkflowRunPatch,
+  options: { acknowledgeFailedQc?: boolean } = {},
 ): Promise<WorkflowRun> {
   const safeDir = resolveWorkflowRunDir(home, runDir);
   if (!safeDir) throw new Error('非法流程运行目录');
@@ -509,6 +522,7 @@ export async function updateWorkflowRun(
       delete step.jobIds;
       delete step.summary;
       delete step.qc;
+      delete step.qcOverride;
       delete step.outputs;
       delete step.evidence;
       delete step.submittedScriptHash;
@@ -521,6 +535,11 @@ export async function updateWorkflowRun(
     delete run.endedAt;
     delete run.error;
     delete run.reportPath;
+  }
+
+  if (options.acknowledgeFailedQc) {
+    if (!Number.isInteger(patch.expectedRevision)) throw new Error('确认质控风险前必须刷新运行状态并提供 revision');
+    for (const step of unresolvedQcFailures(run)) step.qcOverride = { approvedAt: now, revision: run.revision };
   }
 
   if (patch.status && RUN_STATUSES.has(patch.status)) run.status = patch.status;
@@ -539,6 +558,7 @@ export async function updateWorkflowRun(
     if (patch.step.status && STEP_STATUSES.has(patch.step.status)) {
       assertWorkflowStepTransition(step.status, patch.step.status);
       if (patch.step.status === 'running') {
+        if (unresolvedQcFailures(run).length) throw new Error(qcPauseReason(run));
         const dependencies = Array.isArray(step.dependsOn)
           ? step.dependsOn
           : run.steps.filter(s => s.n < step.n).map(s => s.stepId);
@@ -553,11 +573,16 @@ export async function updateWorkflowRun(
       if (patch.step.status === 'done' && !completionSummary) {
         throw new Error(`步骤 ${step.n} 完成时必须提供基于真实输出的 summary`);
       }
+      const completionQc = patch.step.qc ?? step.qc;
+      const validCompletionQc = completionQc && ['pass', 'warn', 'fail'].includes(completionQc.status);
+      if (patch.step.status === 'done' && step.qcCriteria?.length && !validCompletionQc) {
+        throw new Error(`步骤 ${step.n} 声明了质控标准，完成前必须读取实际指标并记录 qc（pass/warn/fail），不能把命令退出成功当作质控通过`);
+      }
       const completionEvidence = [
         ...(Array.isArray(patch.step.evidence) ? patch.step.evidence : step.evidence || []),
         ...(Array.isArray(patch.step.outputs) ? patch.step.outputs : step.outputs || []),
         ...(Array.isArray(patch.step.jobIds) ? patch.step.jobIds : step.jobIds || []),
-        ...(patch.step.qc || step.qc ? ['QC'] : []),
+        ...(validCompletionQc ? ['QC'] : []),
       ].map(String).map(item => item.trim()).filter(Boolean);
       if (patch.step.status === 'done' && completionEvidence.length === 0) {
         throw new Error(`步骤 ${step.n} 完成时必须提供命令、日志、输出文件、作业号或 QC 证据`);
@@ -572,6 +597,8 @@ export async function updateWorkflowRun(
     const evidence = cleanStringList(patch.step.evidence);
     if (evidence) step.evidence = evidence.map(item => item.slice(0, 4000));
     if (patch.step.qc && ['pass', 'warn', 'fail'].includes(patch.step.qc.status)) {
+      // A fresh QC verdict must be reviewed anew, even after an earlier override.
+      delete step.qcOverride;
       step.qc = {
         status: patch.step.qc.status,
         metrics: patch.step.qc.metrics ? cleanRecord(patch.step.qc.metrics) : undefined,
@@ -591,7 +618,14 @@ export async function updateWorkflowRun(
   }
 
   if (run.status === 'done' || run.status === 'failed' || run.status === 'cancelled') run.endedAt ??= now;
-  if (run.steps.length > 0 && run.steps.every(s => s.status === 'done' || s.status === 'skipped')) {
+  const qcBlocked = unresolvedQcFailures(run).length > 0;
+  if (!qcBlocked && run.error?.startsWith(QC_FAILURE_MESSAGE)) delete run.error;
+  if (qcBlocked && !['failed', 'cancelled', 'blocked_env'].includes(run.status)) {
+    run.status = 'waiting_user';
+    run.error = qcPauseReason(run);
+    delete run.endedAt;
+  }
+  if (!qcBlocked && run.steps.length > 0 && run.steps.every(s => s.status === 'done' || s.status === 'skipped')) {
     run.status = 'done';
     run.currentStep = run.totalSteps;
     run.endedAt ??= now;

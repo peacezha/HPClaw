@@ -24,6 +24,7 @@ import { preflightJobSubmission, type JobSubmissionClaim, type JobSubmissionGuar
 import { stripDsmlMarkup } from '../../shared/dsml';
 import type { WorkflowExecutionContext } from '../../shared/workflowExecution';
 import type { WorkflowRunPatch } from '../../shared/workflowRun';
+import { qcPauseReason, unresolvedQcFailures } from '../../shared/workflowQc';
 import { ensureUserChoiceOptions } from '../../shared/askOptions';
 import { searchPublicResource } from './publicResourceSearch';
 import { readWebPage, searchWeb } from './webAccess';
@@ -323,6 +324,7 @@ INTERACTION - 与用户交流的方式:
 - 确实需要用户选择时，用 ask_user 给出 2-6 个通俗选项；第一个选项是推荐项并说明一句理由。
 - 等待用户时立即停下，不要边等边做别的。
 - ${userLanguageRule}
+- Report an explicit outcome: completed and validated, submitted and awaiting jobs, failed, or not yet verified. A generated report card is not measurement evidence. For each QC number, cite the exact source file and field read in this turn; distinguish reads from fragments and pre-filter from post-filter counts. Narrative, tables and visualizations must agree. A submission receipt is not analysis completion, and a transport timeout is not evidence that a cluster job failed. Never silently substitute an assumed parameter for a paper-reported parameter.
 
 SHOWING FILES - 在对话中展示文件:
 - 答复里要展示图片或图表时，直接写标准 Markdown 图片语法加文件路径：![描述](路径)。集群绝对路径、本地绝对路径（C:\...）和工作区相对路径都会被客户端自动内联渲染。
@@ -364,7 +366,7 @@ RULES:
 4. module av then module load. Never assume PATH. Before bsub/sbatch/qsub, make the script pass \`bash -n\` and validate every exact \`module load Name/Version\`; the runtime also enforces this preflight and will return a repairable error without submitting.
 5. One command per run_command call. Wait for result.
 6. After bsub/sbatch returns a Job ID, the runtime automatically records it, moves the formal workflow to waiting_jobs, marks the active plan step waiting, and ends this Agent turn. Do NOT poll bjobs/squeue in a loop and do not mark the step done. The background watcher owns monitoring and automatically wakes an Agent to verify outputs and continue after the job reaches a terminal state.
-6.1 文件/日志里的提交回执（如 "Job <id> is submitted"、logs/*.submit.txt）只代表「曾经提交过」，不代表作业此刻在跑。向用户报告「作业已提交/在跑/交后台监控」之前，必须用 bjobs/sacct/qstat 核实该作业号的当前真实状态；查不到就是已结束，按产物证据判断成败，不得凭旧回执宣布等待。
+6.1 文件/日志里的提交回执（如 "Job <id> is submitted"、logs/*.submit.txt）只代表「曾经提交过」，不代表作业此刻在跑。向用户报告「作业已提交/在跑/交后台监控」之前，必须用 bjobs/sacct/qstat 核实该作业号的当前真实状态。查不到作业不等于 DONE，也不能单凭此断定已结束或失败：先检查同一集群/账号、调度器历史记录和输出证据；仍无法确认则明确报告「状态尚未核验」，不得凭旧回执宣布等待或重复提交。
 7. Safety budget: use at most ${config.maxCommands} run_command calls and ${config.maxSteps} model/tool steps. If ${MAX_CONSECUTIVE_COMMAND_FAILURES} commands fail or time out in a row, or you would repeat the same command a third time, stop and summarize what you learned.
 8. Dangerous commands (killing jobs, wiping data, piping to shell, chmod 777) will be shown to the user for confirmation before execution. Do not retry them if rejected.
 9. When a command fails, do NOT retry it as-is. Diagnose first with ls -ld <dir>, stat <file>, or namei -l <path> to find whether the cause is a missing path or a permission problem, then adapt.
@@ -668,7 +670,8 @@ FAST EXECUTION:
 1. The current run and current-step script are already loaded below. Do not call get_workflow_step or read the script again for this first step unless the packet says it is missing/truncated.
 2. If the saved script is executable and has no HPCLAW_REVIEW_REQUIRED/unresolved placeholder, update the step to running and execute that script directly. Do not search skills or explain the plan again.
 3. Use bash code/step-NN.sh for short login-node checks; submit compute work via this cluster's scheduler (see the SCHEDULER note: bsub/sbatch/qsub, or nohup when there is none). Never poll a submitted job; the watcher takes over.
-4. After real output verifies success, immediately update_workflow_run(step=done, summary, outputs, qc). Then continue to the next pending step.
+4. Verify real outputs, then update_workflow_run(step=done, summary, outputs, qc). For declared QC gates, read measured metrics, evaluate the saved assay-specific criteria and record qc.status=pass/warn/fail. Exit code 0 is not QC pass. Never invent/lower thresholds or blame sequencing depth without evidence.
+4.1 On QC failure, warn "质量不佳，不建议继续下游分析 / QC failed: poor quality; downstream analysis is not recommended" with metrics, criteria and source files. The server pauses at waiting_user. Do not submit downstream jobs or change failed QC to bypass the pause. Only a recorded user risk acknowledgement permits continuation; keep the failure in the report. Warn alone is not fail: show caution without a false failure label. Read-only diagnosis is allowed. Re-run QC only on explicit remediation/rerun requests; scientific cutoff changes need approval.
 5. Only use search_skills when the current saved step has no executable command. Ask once if a required parameter/review decision is missing.
 6. ${pathAccess} Cleanup/overwrite follows the selected confirmation policy. Avoid aimless broad scans, extra inventory, duplicate preflight, or unsolicited reports.
 6.1 Environment handling: do NOT burn commands probing software versions one by one (module av loops, Rscript -e requireNamespace loops, conda env archaeology). Trust the manifest's module declarations (module load X) if present. If required software is missing and cannot be resolved within 2 commands, stop exploring: update_workflow_run(status=blocked_env) with a precise summary of the missing packages so the user can use one-click deploy, then ask the user how to proceed.
@@ -1042,6 +1045,11 @@ export async function runAgent(
               return msg;
             }
 
+            if (workflowExecutor && activeWorkflowRun && isSubmissionCommand(command) && unresolvedQcFailures(activeWorkflowRun).length) {
+              const msg = `Workflow submission blocked: ${qcPauseReason(activeWorkflowRun)}`;
+              cb.onToolResult('run_command', msg);
+              return msg;
+            }
             if (workflowExecutor && risk === 'job' && activeWorkflowRun) {
               const current = selectCurrentWorkflowRunStep(activeWorkflowRun);
               if (!current || current.status !== 'running' || Number(current.n) !== Number(activeWorkflowRun.currentStep)) {

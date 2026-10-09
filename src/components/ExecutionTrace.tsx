@@ -1,4 +1,4 @@
-// 对话时间线里的"执行过程"卡片：命令/计划/工具调用记录汇总展示（默认展开，可折叠）。
+// Technical details remain available, but are collapsed and unmounted by default.
 // 工具结果等条目里的图片/表格路径渲染成紧凑卡片（复用 RichContentMessage，
 // 仅限 image/table 类型，避免输出里的 .py/.log 路径刷屏）。
 // 性能：折叠时条目不挂载（受控 details），展开（默认）才渲染内容与卡片。
@@ -25,9 +25,10 @@ function executionTraceBody(content: string): string {
 
 export const ExecutionTrace = React.memo(function ExecutionTrace({ items, sessionId, workspace }: { items: ExecutionTraceItem[]; sessionId?: string | null; workspace?: string }) {
   const [open, setOpen] = useState(false);
-  const commandCount = items.filter(item => /^\[AI 执行命令\]/.test(item.message.content)).length;
+  const commandCount = items.filter(item => /^\[(?:AI 执行命令|AI command)\]/.test(item.message.content)).length;
   const planCount = items.filter(item => /^\[(?:Agent step|Agent 计划|计划进度)/.test(item.message.content)).length;
-  const toolCount = items.filter(item => /^\[(?:📋|技能搜索|搜索技能|技能结果|工具|已保存技能)/.test(item.message.content)).length;
+  const toolCalls = items.filter(item => /^\[(?:🔧|Tool call)/.test(item.message.content)).length;
+  const toolCount = toolCalls || items.filter(item => /^\[(?:📋|📄|技能搜索|搜索技能|技能结果|工具|已保存技能)/.test(item.message.content)).length;
   const details = [
     planCount > 0 ? `${planCount} 个步骤` : '',
     commandCount > 0 ? `${commandCount} 条命令` : '',
@@ -64,7 +65,7 @@ export const ExecutionTrace = React.memo(function ExecutionTrace({ items, sessio
             return (
               <div key={item.absoluteIndex} className="grid grid-cols-[88px_minmax(0,1fr)] gap-2">
                 <span className="pt-1 text-[10px] font-medium text-scholar-500">{label}</span>
-                <div className="min-w-0">
+                <div data-user-content="true" className="min-w-0">
                   {dshUiSpec ? (
                     <DshUiSpecCard spec={dshUiSpec} sessionId={isRemote ? sessionId : undefined} local={!isRemote} workspace={workspace} />
                   ) : isCommand || isOutput ? (

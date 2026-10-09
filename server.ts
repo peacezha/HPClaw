@@ -67,6 +67,7 @@ import { clusterContext } from './server/ai/clusterContext';
 import { resolveRequestSessionId } from './server/cluster/sessionRequest';
 import { annotateRuns, collectActiveJobIds, parseBjobsStates, reconcileRunsWithScheduler } from './server/workflows/runAnnotate';
 import { readWorkflowRun, updateWorkflowRun, writeWorkflowRun } from './server/workflows/workflowRunService';
+import { unresolvedQcFailures } from './shared/workflowQc';
 import { importLegacyWorkflowRunIndex, readIndexedWorkflowRuns } from './server/workflows/workflowRunIndex';
 import {
   addFormalWorkflowContinuations,
@@ -230,6 +231,7 @@ function restoreFormalWorkflowMonitoring(sessionId: string, session: ActiveSessi
 
 async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobId: string): Promise<void> {
   if (!run?.runDir || run.status !== 'waiting_user' || formalWorkflowResumeLocks.has(run.runDir)) return;
+  if (unresolvedQcFailures(run).length) return; // QC failure is a scientific pause, not a job-completion wake-up.
   const s = getSession(sessionId);
   if (!s) return;
   const profile = loadServerAiProfile();
@@ -252,6 +254,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       error: '',
     });
     emitWorkflowRunChanged(sessionId, resumed);
+    if (unresolvedQcFailures(resumed).length) return;
     await runAgent({
       sid: sessionId,
       run: (_sid, command, timeout) => s.cluster.exec(command, timeout),
@@ -1481,6 +1484,7 @@ app.post('/api/ai/stream', async (req, res) => {
   if (s && sessionId) refreshClusterSkillsInBackground(s.cluster.exec.bind(s.cluster), sessionId);
   const aiRequestId = createSessionId();
   const aiStartedAt = Date.now();
+  const requestLocale: 'zh-CN' | 'en-US' = req.body?.locale === 'en-US' ? 'en-US' : 'zh-CN';
   const requestAbort = new AbortController();
   let terminalEvent = 'none';
   // 登记在途运行：对话带 conversationId 时，客户端断连不再杀任务——
@@ -1496,7 +1500,7 @@ app.post('/api/ai/stream', async (req, res) => {
       type: 'error',
       code: 'already_running',
       requestId: existingConversationRun.requestId,
-      error: '这个对话已有 Agent 正在执行。已阻止第二个执行器启动；原任务仍在后台继续，请稍后查看实时进度。',
+      error: requestLocale === 'en-US' ? 'An agent is already running in this conversation. A duplicate executor was prevented; the existing task continues in the background.' : '这个对话已有 Agent 正在执行。已阻止第二个执行器启动；原任务仍在后台继续，请稍后查看实时进度。',
     })}\n\n`);
     res.end();
     return;
@@ -1539,7 +1543,7 @@ app.post('/api/ai/stream', async (req, res) => {
     profile.model,
     sessionId ? 'connected' : 'none',
   );
-  send({ type: 'status', phase: 'preparing', message: '正在整理对话、集群环境和相关技能…', requestId: aiRequestId });
+  send({ type: 'status', phase: 'preparing', message: requestLocale === 'en-US' ? 'Preparing the conversation, cluster context and relevant skills…' : '正在整理对话、集群环境和相关技能…', requestId: aiRequestId });
 
   // 防止模型供应商或工具等待永不收尾。看门狗必须独立关闭 SSE，
   // 不能把收尾寄托在供应商是否正确响应 AbortSignal。
@@ -1551,7 +1555,7 @@ app.post('/api/ai/stream', async (req, res) => {
     console.error('[AI:%s] hard watchdog fired after %dms', aiRequestId, Date.now() - aiStartedAt);
     send({
       type: 'error',
-      error: `AI 本轮已达 ${Math.round(requestHardLimitMs / 60_000)} 分钟硬上限，已明确暂停。集群 SSH 连接不会因此断开，已提交的后台作业仍会继续监控。`,
+      error: requestLocale === 'en-US' ? 'This agent turn reached the 15-minute limit and has been stopped. SSH stays connected; submitted cluster jobs continue to be monitored. Outputs have not been verified.' : `AI 本轮已达 ${Math.round(requestHardLimitMs / 60_000)} 分钟硬上限，已明确暂停。集群 SSH 连接不会因此断开，已提交的后台作业仍会继续监控；产物尚未核验。`,
       requestId: aiRequestId,
     });
     requestAbort.abort();
@@ -1560,7 +1564,6 @@ app.post('/api/ai/stream', async (req, res) => {
 
   try {
       const rawMessages: AIMessage[] = messagesFromBody(req.body);
-      const requestLocale: 'zh-CN' | 'en-US' = req.body?.locale === 'en-US' ? 'en-US' : 'zh-CN';
       const languageInstruction: AIMessage = {
         role: 'system',
         content: requestLocale === 'en-US'
@@ -1658,7 +1661,7 @@ app.post('/api/ai/stream', async (req, res) => {
     }
     if (dshDecision.engine === 'dsh') {
       console.log('[AI:%s] engine=dsh reason=%s', aiRequestId, dshDecision.reason);
-      send({ type: 'status', phase: 'preparing', message: '正在接入 dsh 引擎…', requestId: aiRequestId });
+      send({ type: 'status', phase: 'preparing', message: requestLocale === 'en-US' ? 'Connecting to the DSH engine…' : '正在接入 dsh 引擎…', requestId: aiRequestId });
       const dshConfirmIds = new Set<string>();
       const dshQuestionIds = new Set<string>();
       // 用户在前端选择的本地工作区（无效则忽略，dsh 会话回退 DATA_ROOT）
@@ -1705,7 +1708,7 @@ app.post('/api/ai/stream', async (req, res) => {
           onConfirm: ({ command, risk }) => {
             const id = `confirm-${createSessionId()}`;
             dshConfirmIds.add(id);
-            send({ type: 'confirm', id, command, risk, title: 'Agent 请求执行命令' });
+            send({ type: 'confirm', id, command, risk, title: requestLocale === 'en-US' ? 'Agent requests permission to run a command' : 'Agent 请求执行命令' });
             return new Promise<boolean>((resolve) => {
               const finish = (approved: boolean) => {
                 requestAbort.signal.removeEventListener('abort', onAbort);
@@ -1741,7 +1744,7 @@ app.post('/api/ai/stream', async (req, res) => {
               send({
                 type: 'ask',
                 id,
-                question: prompt || '请补充本次任务所需信息。',
+                question: prompt || (requestLocale === 'en-US' ? 'Please provide the information required for this task.' : '请补充本次任务所需信息。'),
                 options: labels,
                 multiSelect: question.multiSelect === true,
                 source: 'dsh',
@@ -1786,7 +1789,7 @@ app.post('/api/ai/stream', async (req, res) => {
         handledByDsh = outcome === 'completed';
         if (!handledByDsh) {
           console.warn('[AI:%s] dsh engine unavailable, falling back to legacy', aiRequestId);
-          send({ type: 'status', phase: 'preparing', message: 'dsh 引擎不可用，已回退内置引擎…', requestId: aiRequestId });
+          send({ type: 'status', phase: 'preparing', message: requestLocale === 'en-US' ? 'DSH is unavailable; switching to the built-in engine…' : 'dsh 引擎不可用，已回退内置引擎…', requestId: aiRequestId });
         }
       } finally {
         for (const id of dshConfirmIds) {
@@ -2157,9 +2160,11 @@ app.post('/api/ai/stream', async (req, res) => {
     finishActiveRun(activeRun, terminalKind, activeRun.text);
     if (activeRun.detached && runConversationId) {
       const text = activeRun.text.trim();
+      const failure = [...activeRun.events].reverse().find(event => event.type === 'error');
+      const failureText = String(failure?.error || (requestLocale === 'en-US' ? 'The background task was interrupted. Check existing jobs and outputs before resuming.' : '后台任务中断，请先检查现有作业与产物后再恢复。'));
       const content = terminalKind === 'done'
-        ? (text || '(后台任务已结束，未产生文本)')
-        : `${text ? `${text}\n\n` : ''}(后台任务中断：${terminalEvent === 'watchdog' ? '达到 15 分钟硬上限' : '出错或被停止'}，可点击“继续”接着做)`;
+        ? (text || (requestLocale === 'en-US' ? '(The background turn ended without text.)' : '(后台任务已结束，未产生文本)'))
+        : `${text ? `${text}\n\n` : ''}${failureText}`;
       void appendJobResumeConversation(runConversationId, [{ role: 'assistant', content }], activeRun.sessionId);
       const sid = activeRun.sessionId || 'local-workbench';
       io.to(workflowRunRoom(sid)).emit('ai:resumed', {

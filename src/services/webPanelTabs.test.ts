@@ -32,6 +32,14 @@ describe('webPanelTabs', () => {
     );
   });
 
+  it('keeps relative reports from different projects separate, but deduplicates absolute files', () => {
+    const report = { remotePath: '07_report/report.html', sessionId: 'sess-1', remoteBasePaths: ['/project/a'] };
+    const state = addWebPanelTab({ tabs: [report], active: 0 }, { ...report, remoteBasePaths: ['/project/b'] });
+    expect(state.tabs).toHaveLength(2);
+    expect(addWebPanelTab(state, { ...report, title: 'Same report' }).active).toBe(0);
+    expect(webPanelTabKey({ ...tabC, remoteBasePaths: ['/project/a'] })).toBe(webPanelTabKey(tabC));
+  });
+
   it('keeps the active tab valid when closing a tab before it', () => {
     const state = removeWebPanelTab({ tabs: [tabA, tabB, tabC], active: 2 }, 0);
     expect(state.tabs).toEqual([tabB, tabC]);

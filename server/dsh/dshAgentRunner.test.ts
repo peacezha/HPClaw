@@ -8,7 +8,12 @@ const harness = vi.hoisted(() => ({
   hooks: undefined as any,
   replayQuestion: false,
   questionResponse: undefined as any,
+  answerAccepted: true,
   lastPromptText: undefined as string | undefined,
+  promptCompletes: true,
+  running: false,
+  probeError: false,
+  historyEvents: [] as any[],
 }));
 
 vi.mock('./dshSidecar', () => ({
@@ -22,6 +27,11 @@ vi.mock('./dshClient', () => ({
     }
 
     async selectModel() {}
+    async sessionStatus() {
+      if (harness.probeError) throw new Error('connection refused');
+      return { running: harness.running };
+    }
+    async history() { return { events: harness.historyEvents.map(event => ({ event })), hasMore: false }; }
 
     connectMux(hooks: any) {
       harness.calls.push('connect');
@@ -48,6 +58,7 @@ vi.mock('./dshClient', () => ({
     async prompt(opts: any) {
       harness.calls.push('prompt');
       harness.lastPromptText = opts?.text;
+      if (!harness.promptCompletes) { harness.running = true; return { accepted: true }; }
       queueMicrotask(() => harness.hooks.onFrame({
         type: 'server-request',
         method: 'session/event',
@@ -67,9 +78,10 @@ vi.mock('./dshClient', () => ({
       return { accepted: true };
     }
 
-    async cancel() {}
+    async cancel() { harness.calls.push('cancel'); }
 
     async respondApproval() {
+      harness.calls.push('respond-approval');
       return true;
     }
 
@@ -77,7 +89,7 @@ vi.mock('./dshClient', () => ({
       harness.calls.push('respond-question');
       harness.questionResponse = opts;
       harness.replayQuestion = false;
-      return true;
+      return harness.answerAccepted;
     }
   },
 }));
@@ -91,7 +103,132 @@ afterEach(() => {
   harness.hooks = undefined;
   harness.replayQuestion = false;
   harness.questionResponse = undefined;
+  harness.answerAccepted = true;
+  harness.promptCompletes = true;
+  harness.running = false;
+  harness.probeError = false;
+  harness.historyEvents = [];
+  vi.useRealTimers();
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function pendingRun(overrides: Record<string, any> = {}) {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-recovery-'));
+  tempDirs.push(dataRoot);
+  const sent: any[] = [];
+  const abort = new AbortController();
+  const promise = runDshAgent({
+    send: event => sent.push(event), requestAbort: abort.signal, requestId: 'recovery-test',
+    profile: { provider: 'deepseek', model: 'test', apiKey: 'sk-test-only' },
+    userText: '继续', locale: 'zh-CN', sshSessionId: 'ssh-test', conversationKey: 'test-recovery',
+    dataRoot, pluginSourceDir: '/plugin', skillDirs: [],
+    onConfirm: async () => false, onQuestion: async () => null, ...overrides,
+  });
+  return { promise, sent, abort };
+}
+
+describe('DSH recovery without duplicate execution', () => {
+  it('reports an unacknowledged answer without encouraging duplicate execution', async () => {
+    vi.useFakeTimers();
+    harness.replayQuestion = true;
+    harness.answerAccepted = false;
+    const run = pendingRun({ locale: 'en-US', onQuestion: async () => ({ answers: [{ id: 'sequence', selected: [], custom: 'fixture' }] }) });
+    await vi.advanceTimersByTimeAsync(80);
+    await run.promise;
+    expect(harness.calls).not.toContain('prompt');
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('This turn was not resubmitted') }));
+  });
+  it('deduplicates replayed frames and replaces partial text with the recovered authoritative answer', async () => {
+    vi.useFakeTimers();
+    harness.promptCompletes = false;
+    const run = pendingRun();
+    await vi.advanceTimersByTimeAsync(80);
+    const delta = { seq: 11, type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: 'partial ' } } };
+    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: delta } });
+    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: delta } });
+    harness.running = false;
+    harness.historyEvents = [delta,
+      { seq: 12, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'complete answer with verified evidence' }] } } },
+      { seq: 13, type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    ];
+    harness.hooks.onClosed();
+    await vi.advanceTimersByTimeAsync(0);
+    await run.promise;
+    expect(run.sent.filter(e => e.type === 'content')).toEqual([{ type: 'content', content: 'partial ' }]);
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'done', authoritative: true, content: 'complete answer with verified evidence' }));
+    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+  });
+  it('keeps a confirmed-running worker alive beyond two old 90-second idle windows', async () => {
+    vi.useFakeTimers();
+    harness.promptCompletes = false;
+    const run = pendingRun();
+    await vi.advanceTimersByTimeAsync(80);
+    await vi.advanceTimersByTimeAsync(185_000);
+    expect(run.sent.filter(e => e.type === 'error')).toEqual([]);
+    expect(run.sent.some(e => String(e.message).includes('已确认仍在执行'))).toBe(true);
+    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+    run.abort.abort();
+    await run.promise;
+  });
+
+  it('recovers a missing end record and full answer from durable history', async () => {
+    vi.useFakeTimers();
+    harness.promptCompletes = false;
+    harness.historyEvents = [{ seq: 20, type: 'turn/end', data: { reason: { kind: 'completed' } } }];
+    const run = pendingRun();
+    await vi.advanceTimersByTimeAsync(80);
+    harness.running = false;
+    harness.historyEvents.push(
+      { seq: 21, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '已核验：5 个产物，来源 results/qc.tsv。' }] } } },
+      { seq: 22, type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    );
+    await vi.advanceTimersByTimeAsync(90_000);
+    await run.promise;
+    expect(run.sent.filter(e => e.type === 'done')).toEqual([expect.objectContaining({ content: '已核验：5 个产物，来源 results/qc.tsv。' })]);
+    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+  });
+
+  it('does not enqueue a retry behind a surviving worker', async () => {
+    vi.useFakeTimers();
+    harness.running = true;
+    const run = pendingRun();
+    await vi.advanceTimersByTimeAsync(80);
+    await run.promise;
+    expect(harness.calls).not.toContain('prompt');
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('未重复提交') }));
+  });
+
+  it('reports two failed probes as unverified, not success or a cluster job failure', async () => {
+    vi.useFakeTimers();
+    harness.promptCompletes = false;
+    const run = pendingRun({ locale: 'en-US' });
+    await vi.advanceTimersByTimeAsync(80);
+    harness.probeError = true;
+    await vi.advanceTimersByTimeAsync(185_000);
+    await run.promise;
+    expect(run.sent.filter(e => e.type === 'done')).toHaveLength(0);
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('may still be running') }));
+    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
+  });
+
+  it('registers approvals before callbacks and pauses the idle timer while awaiting a decision', async () => {
+    vi.useFakeTimers();
+    harness.promptCompletes = false;
+    let decide!: (approved: boolean) => void;
+    const run = pendingRun({ onConfirm: () => new Promise<boolean>(resolve => { decide = resolve; }) });
+    await vi.advanceTimersByTimeAsync(80);
+    harness.hooks.onFrame({ method: 'approval/requested', rpcId: 'approval-test', payload: {
+      sessionId: 'dsh-session-test', approvalId: 'a1', reason: 'HPClaw 命令确认\n风险级: write\n命令: echo test',
+    } });
+    await vi.advanceTimersByTimeAsync(185_000);
+    expect(run.sent.filter(e => e.type === 'error')).toHaveLength(0);
+    expect(harness.calls.filter(call => call === 'connect')).toHaveLength(1);
+    decide(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.calls).toContain('respond-approval');
+    run.abort.abort();
+    await run.promise;
+  });
 });
 
 describe('runDshAgent mux ordering', () => {

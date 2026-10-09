@@ -66,6 +66,20 @@
   !endif
 !macroend
 
+; The selected wizard language seeds the first launch. Silent online updates
+; preserve it; explicit in-app preferences live in userData and take priority.
+!macro customInstall
+  ${IfNot} ${Silent}
+    FileOpen $R0 "$INSTDIR\hpclaw-install-locale.json" w
+    ${If} $LANGUAGE == 1033
+      FileWrite $R0 '{$\"locale$\":$\"en-US$\"}'
+    ${Else}
+      FileWrite $R0 '{$\"locale$\":$\"zh-CN$\"}'
+    ${EndIf}
+    FileClose $R0
+  ${EndIf}
+!macroend
+
 !macro customCheckAppRunning
   ; HPClaw may be running without a visible/login window because Electron keeps
   ; the backend and renderer as HPClaw.exe child processes. Use the native

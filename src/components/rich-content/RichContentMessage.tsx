@@ -17,6 +17,7 @@ interface RichContentMessageProps {
   workspace?: string;
   /** 裸相对路径（results/x.png）的解析基准（如流程 RUN 目录）；未提供时按服务端默认解析 */
   pathBase?: string | null;
+  remoteBasePaths?: string[];
   /** 提供时，.html 交互卡保留"在侧边预览"入口（仅集群会话：侧边网页栏只支持集群读取） */
   onOpenWebPanel?: (request: WebPanelRequest) => void;
   /** 限定卡片类型（如 ['image','table']）：执行过程等紧凑场景只出图/表，不给代码文件出卡 */
@@ -33,7 +34,7 @@ function resolveWithBase(path: string, pathBase?: string | null): string {
 /** 交互式网页文件：.html/.htm/.xhtml 由 HtmlArtifactCard 原地渲染，不再出代码卡 */
 const HTML_PATH_RE = /\.(html?|xhtml)$/i;
 
-export function RichContentMessage({ children: text, className = '', sessionId, workspace, pathBase, onOpenWebPanel, onlyTypes }: RichContentMessageProps) {
+export function RichContentMessage({ children: text, className = '', sessionId, workspace, pathBase, remoteBasePaths, onOpenWebPanel, onlyTypes }: RichContentMessageProps) {
   const [cards, setCards] = useState<CardContent[]>([]);
   const [loading, setLoading] = useState<Set<string>>(new Set());
   // 当前放大的图片卡片（ImageCard 的放大按钮/图片点击触发）
@@ -45,7 +46,7 @@ export function RichContentMessage({ children: text, className = '', sessionId, 
   // .html/.htm/.xhtml 路径（集群或本地）：渲染成交互式 HTML 卡（默认收起，展开才拉取）
   const htmlPaths = useMemo(
     () => ((!onlyTypes || onlyTypes.includes('log'))
-      ? [...new Set(extractFilePaths(text).filter(p => HTML_PATH_RE.test(p)).map(p => resolveWithBase(p, pathBase)))].slice(0, 3)
+      ? [...new Set(extractFilePaths(text).filter(p => HTML_PATH_RE.test(p)))].slice(0, 3)
       : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [text, onlyKey, pathBase],
@@ -61,7 +62,7 @@ export function RichContentMessage({ children: text, className = '', sessionId, 
       // 裸相对路径（results/x.png）先按基准（如流程 RUN 目录）解析，否则只能显示文本链接
       const resolvedPath = resolveWithBase(path, pathBase);
       // 网页文件交给 HtmlArtifactCard（默认收起、展开时才拉取），不再出代码卡
-      if (htmlPaths.includes(resolvedPath)) continue;
+      if (HTML_PATH_RE.test(path)) continue;
       setLoading(prev => new Set(prev).add(path));
       const fileType = detectFileType(resolvedPath);
       const entry = RendererRegistry.get(fileType);
@@ -104,6 +105,7 @@ export function RichContentMessage({ children: text, className = '', sessionId, 
           path={path}
           sessionId={sessionId}
           workspace={workspace}
+          remoteBasePaths={remoteBasePaths || (pathBase ? [pathBase] : undefined)}
           onOpenWebPanel={isRemote ? onOpenWebPanel : undefined}
         />
       ))}

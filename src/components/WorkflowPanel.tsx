@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { paperPageText, selectPaperPages } from '../features/workflows/paperPdf';
+import { useWorkflowText } from '../i18n';
 import type { Socket } from 'socket.io-client';
 import {
   Search, Plus, Sparkles, ChevronDown, ChevronRight, Play, Pencil, Trash2,
@@ -111,6 +112,7 @@ const emptyEditor = (): EditorState => ({
 });
 
 export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, sessionId, socket }: WorkflowPanelProps) {
+  const displayText = useWorkflowText();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -251,8 +253,10 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
     return workflows.filter(w => !query
       || w.name.toLowerCase().includes(query)
       || w.description.toLowerCase().includes(query)
+      || displayText(w.name).toLowerCase().includes(query)
+      || displayText(w.description).toLowerCase().includes(query)
       || w.keywords.some(k => k.toLowerCase().includes(query)));
-  }, [workflows, search]);
+  }, [workflows, search, displayText]);
 
   // 分类分组：按 category 分组渲染组头；类别筛选只影响展示不影响搜索
   const groupedWorkflows = useMemo(() => {
@@ -710,11 +714,11 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
           </div>
         )}
 
-        <input value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })}
+        <input value={editor.source === 'builtin' ? displayText(editor.name) : editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })}
           placeholder="流程名称 *" className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent" />
-        <input value={editor.description} onChange={e => setEditor({ ...editor, description: e.target.value })}
+        <input value={editor.source === 'builtin' ? displayText(editor.description) : editor.description} onChange={e => setEditor({ ...editor, description: e.target.value })}
           placeholder="一句话描述用途" className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent" />
-        <input value={editor.keywords} onChange={e => setEditor({ ...editor, keywords: e.target.value })}
+        <input value={editor.source === 'builtin' ? editor.keywords.split(/[,，]/).map(k => displayText(k.trim())).join(', ') : editor.keywords} onChange={e => setEditor({ ...editor, keywords: e.target.value })}
           placeholder="触发关键词，用逗号分隔（如：转录组, rnaseq, 质控）" className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent" />
         <CategoryPicker value={editor.category} onChange={category => setEditor({ ...editor, category })} />
 
@@ -731,7 +735,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                 const params = [...editor.params]; params[i] = { ...p, name: e.target.value };
                 setEditor({ ...editor, params });
               }} className="w-24 bg-scholar-950 border border-scholar-600 rounded px-2 py-1 text-xs focus:outline-none" />
-              <input value={p.label} placeholder="说明" onChange={e => {
+              <input value={editor.source === 'builtin' ? displayText(p.label) : p.label} placeholder="说明" onChange={e => {
                 const params = [...editor.params]; params[i] = { ...p, label: e.target.value };
                 setEditor({ ...editor, params });
               }} className="flex-1 bg-scholar-950 border border-scholar-600 rounded px-2 py-1 text-xs focus:outline-none" />
@@ -794,7 +798,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             </div>
             {editableManifest.references.map((item, i) => (
               <div key={i} className="flex gap-1.5">
-                <input value={item.name} placeholder="名称" onChange={e => {
+                <input value={editor.source === 'builtin' ? displayText(item.name) : item.name} placeholder="名称" onChange={e => {
                   const references = [...editableManifest.references]; references[i] = { ...item, name: e.target.value }; setManifest({ ...editableManifest, references });
                 }} className="w-28 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-[10px]" />
                 <input value={item.path} placeholder="绝对路径或 {{参数}}" onChange={e => {
@@ -825,13 +829,13 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                 <input type="number" min={1} value={item.afterStep} title="在哪一步之后检查" onChange={e => {
                   const qcGates = [...editableManifest.qcGates]; qcGates[i] = { ...item, afterStep: Number(e.target.value) }; setManifest({ ...editableManifest, qcGates });
                 }} className="w-14 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-[10px]" />
-                <input value={item.metric} placeholder="指标" onChange={e => {
+                <input value={editor.source === 'builtin' ? displayText(item.metric) : item.metric} placeholder="指标" onChange={e => {
                   const qcGates = [...editableManifest.qcGates]; qcGates[i] = { ...item, metric: e.target.value }; setManifest({ ...editableManifest, qcGates });
                 }} className="w-28 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-[10px]" />
-                <input value={item.pass} placeholder="通过标准，如 >80%" onChange={e => {
+                <input value={editor.source === 'builtin' ? displayText(item.pass) : item.pass} placeholder="通过标准，如 >80%" onChange={e => {
                   const qcGates = [...editableManifest.qcGates]; qcGates[i] = { ...item, pass: e.target.value }; setManifest({ ...editableManifest, qcGates });
                 }} className="flex-1 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-[10px]" />
-                <input value={item.warn || ''} placeholder="警告标准" onChange={e => {
+                <input value={editor.source === 'builtin' ? displayText(item.warn || '') : item.warn || ''} placeholder="警告标准" onChange={e => {
                   const qcGates = [...editableManifest.qcGates]; qcGates[i] = { ...item, warn: e.target.value }; setManifest({ ...editableManifest, qcGates });
                 }} className="w-28 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-[10px]" />
                 <button onClick={() => setManifest({ ...editableManifest, qcGates: editableManifest.qcGates.filter((_, j) => j !== i) })}
@@ -852,7 +856,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             <div key={i} className="bg-scholar-950 border border-scholar-700 rounded-lg p-2 space-y-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] text-scholar-400 w-4 shrink-0">{i + 1}.</span>
-                <input value={s.title} placeholder="步骤标题 *" onChange={e => {
+                <input value={editor.source === 'builtin' ? displayText(s.title) : s.title} placeholder="步骤标题 *" onChange={e => {
                   const steps = [...editor.steps]; steps[i] = { ...s, title: e.target.value };
                   setEditor({ ...editor, steps });
                 }} className="flex-1 bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-xs focus:outline-none" />
@@ -870,7 +874,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                   const steps = [...editor.steps]; steps[i] = { ...s, command: e.target.value };
                   setEditor({ ...editor, steps });
                 }} className="w-full bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-xs font-mono focus:outline-none resize-y" />
-              <input value={s.notes || ''} placeholder="备注（可选）" onChange={e => {
+              <input value={editor.source === 'builtin' ? displayText(s.notes || '') : s.notes || ''} placeholder="备注（可选）" onChange={e => {
                 const steps = [...editor.steps]; steps[i] = { ...s, notes: e.target.value };
                 setEditor({ ...editor, steps });
               }} className="w-full bg-scholar-900 border border-scholar-600 rounded px-2 py-1 text-xs focus:outline-none" />
@@ -889,7 +893,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                       const steps = [...editor.steps]; const params = [...(s.params || [])];
                       params[paramIndex] = { ...param, name: event.target.value }; steps[i] = { ...s, params }; setEditor({ ...editor, steps });
                     }} className="w-20 bg-scholar-900 border border-scholar-600 rounded px-1.5 py-1 text-[10px]" />
-                    <input value={param.label} placeholder="说明" onChange={event => {
+                    <input value={editor.source === 'builtin' ? displayText(param.label) : param.label} placeholder="说明" onChange={event => {
                       const steps = [...editor.steps]; const params = [...(s.params || [])];
                       params[paramIndex] = { ...param, label: event.target.value }; steps[i] = { ...s, params }; setEditor({ ...editor, steps });
                     }} className="flex-1 bg-scholar-900 border border-scholar-600 rounded px-1.5 py-1 text-[10px]" />
@@ -1123,11 +1127,11 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
               <GitBranch className="w-4 h-4 text-accent shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-medium text-scholar-100 truncate">{w.name}</span>
+                  <span data-user-content={w.source !== 'builtin' ? 'true' : undefined} className="text-xs font-medium text-scholar-100 truncate">{w.name}</span>
                   <span className="text-[9px] px-1 rounded bg-accent/10 text-accent shrink-0">
                     {workflowSourceLabel(w)}
                   </span>
-                  <span className="text-[9px] text-scholar-500 shrink-0">{w.steps.length} 步</span>
+                  <span className="text-[9px] text-scholar-500 shrink-0">{`${w.steps.length} 个步骤`}</span>
                   {w.paperImport && (
                     <span className={`text-[9px] px-1 rounded shrink-0 ${w.paperImport.quality.score >= 75 ? 'bg-emerald-500/10 text-emerald-500' : w.paperImport.quality.score >= 45 ? 'bg-amber-500/10 text-amber-500' : 'bg-red-500/10 text-red-500'}`}>
                       文献审计 {w.paperImport.quality.score}
@@ -1139,7 +1143,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                       : <span className="text-[9px] px-1 rounded bg-orange-500/10 text-orange-500 shrink-0 flex items-center gap-0.5"><ShieldAlert className="w-2.5 h-2.5" />有缺失</span>
                   )}
                 </div>
-                {w.description && <p className="text-[11px] text-scholar-400 truncate mt-0.5">{w.description}</p>}
+                {w.description && <p data-user-content={w.source !== 'builtin' ? 'true' : undefined} className="text-[11px] text-scholar-400 truncate mt-0.5">{w.description}</p>}
                 <div className="flex flex-wrap gap-1 mt-1">
                   {w.keywords.slice(0, 5).map(k => (
                     <span key={k} className="text-[9px] px-1.5 py-0.5 rounded-full bg-scholar-700/60 text-scholar-300">{k}</span>
@@ -1242,7 +1246,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                     />
                     {w.steps.map((s, i) => (
                       <div key={i} className="mt-1.5">
-                    <p className="text-[11px] text-scholar-200">{i + 1}. {s.title}{s.optional ? <span className="text-scholar-500">（可选）</span> : null}</p>
+                    <p className="text-[11px] text-scholar-200">{i + 1}. <span>{s.title}</span>{s.optional ? <span className="text-scholar-500">（可选）</span> : null}</p>
                     {s.agent?.sourceSection && (
                       <p className="text-[9px] text-scholar-500 mt-0.5">
                         来源：{s.agent.sourceSection}
@@ -1479,7 +1483,7 @@ function RunCard({ run, expanded, onToggle, sessionId }: { run: WorkflowRun; exp
                   : s.status === 'running' ? <Loader2 className="w-3.5 h-3.5 text-sky-600 animate-spin shrink-0" />
                   : <Circle className="w-3.5 h-3.5 text-scholar-600 shrink-0" />}
                 <span className={`flex-1 min-w-0 truncate ${s.status === 'running' ? 'text-scholar-100 font-medium' : 'text-scholar-300'}`}>
-                  {s.n}. {s.title}
+                  {s.n}. <span>{s.title}</span>
                 </span>
                 {s.qc && (
                   <span className={`text-[9px] px-1 rounded shrink-0 ${(QC_BADGE[s.qc.status] || QC_BADGE.pass).cls}`}>

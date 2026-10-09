@@ -4,10 +4,16 @@ import {
   findLatestAgentPlanCheckpoint,
   latestUserMessage,
   prepareMessagesForAiTransport,
+  resolveAgentDoneText,
+  isAgentDoneCancelled,
   upsertAgentPlanCheckpoint,
 } from './chatFlow';
 
 describe('chat flow helpers', () => {
+  it('does not mistake a cancelled partial response for completed analysis', () => {
+    expect(resolveAgentDoneText('partial in-progress report', '__CANCELLED__')).toBe('');
+    expect(isAgentDoneCancelled('partial in-progress report', '__CANCELLED__')).toBe(true);
+  });
   it('appends manual user input to the outgoing AI request history', () => {
     const messages = [
       { role: 'user' as const, content: '第一轮问题' },

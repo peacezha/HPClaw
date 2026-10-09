@@ -147,6 +147,15 @@ describe('RichContentMessage', () => {
       title: 'report.html',
     });
   });
+  it('keeps the relative HTML path and forwards verified-directory hints to the side panel', async () => {
+    const onOpenWebPanel = vi.fn();
+    render(<RichContentMessage sessionId={SESSION} pathBase="/run" remoteBasePaths={['/project', '/run']} onOpenWebPanel={onOpenWebPanel}>{'报告 07_report/report.html'}</RichContentMessage>);
+    const card = await screen.findByTestId('html-artifact-card');
+    expect(within(card).getByText('07_report/report.html')).toBeTruthy();
+    fireEvent.click(within(card).getByRole('button', { name: '在侧边预览' }));
+    expect(onOpenWebPanel).toHaveBeenCalledWith({ remotePath: '07_report/report.html', remoteBasePaths: ['/project', '/run'], sessionId: SESSION, title: 'report.html' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it('renders an interactive card for local .html paths and fetches on expand', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(

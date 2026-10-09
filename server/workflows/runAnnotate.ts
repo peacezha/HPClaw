@@ -2,6 +2,8 @@
 // 运行会永远显示"运行中"。这里在服务端做客观判定——
 // 活动状态超过阈值未更新（含心跳）即标记 stalled，并可用 bjobs 核实作业真实状态。
 
+import { qcPauseReason, unresolvedQcFailures } from '../../shared/workflowQc';
+
 export const STALE_AFTER_MS = 10 * 60 * 1000; // 10 分钟无更新视为停顿
 
 const ACTIVE_STATUSES = new Set(['running', 'waiting_user', 'waiting_jobs', 'blocked_env']);
@@ -24,6 +26,9 @@ export interface RawRun {
     jobIds?: string[];
     startedAt?: number;
     finishedAt?: number;
+    qc?: { status: string; metrics?: Record<string, string> };
+    qcOverride?: { approvedAt: number; revision: number };
+    title?: string;
   }>;
   [key: string]: unknown;
 }
@@ -101,7 +106,7 @@ export function reconcileRunsWithScheduler<T extends RawRun>(
     const jobStates: Record<string, string> = {};
     const steps = (original.steps || []).map(step => {
       const ids = step.jobIds || [];
-      if (ids.length === 0) return step;
+      if (ids.length === 0 || step.status === 'done' || step.status === 'skipped') return step;
       const known = ids.map(id => states.get(id)).filter((s): s is string => !!s).map(s => s.toUpperCase().split(/[+\s]/)[0]);
       ids.forEach(id => { jobStates[id] = states.get(id) || 'UNKNOWN'; });
       if (known.length === 0) return step;
@@ -132,6 +137,14 @@ export function reconcileRunsWithScheduler<T extends RawRun>(
       next.endedAt = original.endedAt || now;
       next.updatedAt = now;
       changed = true;
+    } else if (unresolvedQcFailures(next).length) {
+      next.status = 'waiting_user';
+      next.error = qcPauseReason(next);
+      delete next.endedAt;
+      if (original.status !== next.status || original.error !== next.error || original.endedAt) {
+        next.updatedAt = now;
+        changed = true;
+      }
     } else if (steps.length > 0 && steps.every(s => s.status === 'done' || s.status === 'skipped')) {
       next.status = 'done';
       next.currentStep = original.totalSteps || steps.length;

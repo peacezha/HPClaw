@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { isPublicWeb, readPublicPreference, savePublicPreference } from '../services/publicWeb';
 import {
   Bot, Settings, Send, Brain, Loader2, ChevronDown, ChevronRight, Save, Check, FolderOpen, Folder, FolderTree,
@@ -73,7 +73,8 @@ import {
 } from '../services/agentWorkspace';
 
 import { NCPGR_SYSTEM_PROMPT_CN } from '@/shared/ncpgrRules';
-import { useI18n } from '../i18n';
+import { LanguageToggle, useI18n } from '../i18n';
+import { reportBasePaths } from '@/shared/reportPaths';
 import {
   MAX_AGENT_COMMANDS,
   MAX_AGENT_STEPS,
@@ -162,10 +163,10 @@ function textSimilarity(a: string, b: string): number {
 }
 
 //  Extract file paths for result detection 
-function extractOutputFiles(text: string): string[] {
+export function extractOutputFiles(text: string): string[] {
   const patterns = [
-    /(?:\/[\w.-]+)+\.(?:png|jpg|jpeg|gif|svg|bmp|webp|csv|tsv|pdf|html)/gi,
-    /~(?:\/[\w.-]+)+\.(?:png|jpg|jpeg|gif|svg|bmp|webp|csv|tsv|pdf|html)/gi,
+    /(?<![\w./~:\\-])(?:\/[\w.-]+)+\.(?:png|jpg|jpeg|gif|svg|bmp|webp|csv|tsv|pdf|html)\b/gi,
+    /(?<![\w./:\\-])~(?:\/[\w.-]+)+\.(?:png|jpg|jpeg|gif|svg|bmp|webp|csv|tsv|pdf|html)\b/gi,
   ];
   const paths = new Set<string>();
   for (const p of patterns) {
@@ -183,7 +184,7 @@ export type ConversationTimelineItem =
 
 function isExecutionTraceMessage(message: Message): boolean {
   if (message.role !== 'system') return false;
-  return /^\[(?:AI 执行命令|命令输出|命令执行结果|命令输出已隐藏|Agent step|Agent 计划|计划进度|📋|技能搜索|搜索技能|技能结果|工具|监控作业|已保存技能)/.test(message.content.trim());
+  return /^\[(?:AI 执行命令|命令输出|命令执行结果|命令输出已隐藏|Agent step|Agent 计划|计划进度|🔧|📄|📋|技能搜索|搜索技能|技能结果|工具|监控作业|已保存技能|AI command|Command output|Tool call|Tool result)/.test(message.content.trim());
 }
 
 export function buildConversationTimeline(messages: Message[], absoluteStart: number): ConversationTimelineItem[] {
@@ -271,7 +272,7 @@ function buildFollowUpSuggestions(content: string, isEnglish: boolean, contextTe
 //  Message Bubble 
 // React.memo：流式期间每个 token 都触发 AIChat 整体重渲染；消息列表不可变追加、msg 引用稳定，
 // memo 后历史气泡跳过渲染体内的 thought 正则、extractOutputFiles 与逐行 split 等重计算
-const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId, workspace, workflowRunDir, onOpenWebPanel }: { msg: Message; index: number; sessionId?: string | null; workspace?: string; workflowRunDir?: string | null; onOpenWebPanel?: (request: WebPanelRequest) => void }) {
+const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId, workspace, workflowRunDir, remoteBasePaths, onOpenWebPanel }: { msg: Message; index: number; sessionId?: string | null; workspace?: string; workflowRunDir?: string | null; remoteBasePaths?: string[]; onOpenWebPanel?: (request: WebPanelRequest) => void }) {
   const [thoughtExpanded, setThoughtExpanded] = useState(false);
 
   // Parse thought steps
@@ -299,9 +300,16 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
     if (!text || !shouldRenderSystemMessage(text)) {
       return null; // Don't render noisy progress messages
     }
+    if (/^\[❌ Error\]/.test(text.trim())) {
+      return (
+        <div role="alert" data-user-content="true" className="mx-1 mb-3 max-w-[95%] rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm leading-6 text-red-400 whitespace-pre-wrap break-words">
+          {text.replace(/^\[❌ Error\]\s*/, '')}
+        </div>
+      );
+    }
     return (
       <div className="flex items-start mb-1.5">
-        <div className="text-scholar-400 text-xs italic px-2 py-0.5 opacity-80 max-w-[95%]">
+        <div data-user-content="true" className="text-scholar-400 text-xs px-2 py-0.5 max-w-[95%]">
           {text}
           {/* system 通知里的图片路径同样内联出图（其余类型保持路径 + 下载） */}
           <DetectedFilesStrip files={outputFiles} role="system" sessionId={sessionId} workspace={workspace} />
@@ -363,7 +371,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
             {/* RichContent cards: auto-detect and display file outputs */}
             {msg.role === 'assistant' && (
               <div data-user-content="true">
-                <RichContentMessage className="mt-2" sessionId={sessionId} workspace={workspace} pathBase={workflowRunDir} onOpenWebPanel={onOpenWebPanel}>
+                <RichContentMessage className="mt-2" sessionId={sessionId} workspace={workspace} pathBase={workflowRunDir} remoteBasePaths={remoteBasePaths} onOpenWebPanel={onOpenWebPanel}>
                   {dshUi.strippedText}
                 </RichContentMessage>
               </div>
@@ -1160,7 +1168,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 setAiStatus(workflowRunContext ? '流程执行器正在核对当前步骤…' : 'AI 正在推理和规划…');
                 break;
               case 'tool_call':
-                setAiStatus(event.name === 'run_command' ? 'AI 正在执行计算资源命令…' : `AI 正在使用 ${event.name || '工具'}…`);
+                setAiStatus(event.name === 'run_command' ? t('AI 正在执行计算资源命令…') : (isEnglish ? `AI is using ${event.name || 'a tool'}…` : `AI 正在使用 ${event.name || '工具'}…`));
                 // 保留“显示 AI 正在运行什么代码”的能力：run_command 在聊天中显示命令
                 if (event.name === 'run_command') {
                   const args = typeof event.args === 'string' ? event.args : JSON.stringify(event.args);
@@ -1268,8 +1276,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 aiRunningRef.current = false;
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
                 setStreamingContent('');
-                setAiStatus('AI 已完成');
-                const finalText = resolveAgentDoneText(fullText, event.content);
+                setAiStatus(isEnglish ? 'Agent turn ended' : 'Agent 本轮已结束');
+                const finalText = resolveAgentDoneText(event.authoritative ? '' : fullText, event.content);
                 if (finalText) {
                   addMessage({ role: 'assistant', content: finalText });
                 } else if (isAgentDoneCancelled(fullText, event.content)) {
@@ -1416,7 +1424,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 setStreamingContent('');
                 // detached 运行的终态由服务端追加进对话存档：这里重新拉取，
                 // 避免与服务端回写重复；拉取失败才退回本地追加
-                const fallbackText = fullText.trim() || String(event.content || '');
+                const fallbackText = resolveAgentDoneText(event.authoritative ? '' : fullText, event.content);
                 const convId = activeConversationId;
                 void (async () => {
                   await new Promise(r => setTimeout(r, 400));
@@ -1435,7 +1443,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   } catch { /* fall through to local append */ }
                   if (fallbackText) addMessage({ role: 'assistant', content: fallbackText });
                 })();
-                setAiStatus('AI 已完成');
+                setAiStatus(isEnglish ? 'Agent turn ended' : 'Agent 本轮已结束');
                 break;
               }
               case 'error':
@@ -1792,9 +1800,14 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   };
   const renderedMessageStart = Math.max(0, messages.length - MAX_RENDERED_MESSAGES);
   const renderedMessages = messages.slice(renderedMessageStart);
+  const reportContexts = useMemo(() => new Map(messages.slice(Math.max(0, messages.length - MAX_RENDERED_MESSAGES)).flatMap((message, offset) => {
+    if (!/\.x?html?\b/i.test(message.content)) return [];
+    const i = Math.max(0, messages.length - MAX_RENDERED_MESSAGES) + offset;
+    return [[i, reportBasePaths(messages.slice(0, i + 1))] as const];
+  })), [messages]);
   const conversationTimeline = buildConversationTimeline(renderedMessages, renderedMessageStart);
   // 流程上下文：裸相对路径(results/x.png)的解析基准 + 建议选项的状态感知来源
-  const workflowRunDir = findLatestWorkflowExecutionContext(renderedMessages)?.runDir ?? null;
+  const workflowRunDir = findLatestWorkflowExecutionContext(messages)?.runDir ?? null;
   const lastConversationalMessage = [...messages].reverse().find(message => message.role !== 'system' && message.content.trim());
   const suggestionContextText = renderedMessages.slice(-8).map(m => m.content).join('\n');
   const followUpSuggestions = !isAiLoading && !isStreaming && !pendingAsk && lastConversationalMessage?.role === 'assistant'
@@ -1849,6 +1862,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
         </div>
         )}
         <div className="flex items-center gap-0.5 shrink-0">
+          <LanguageToggle />
           {workspaceLayout && onOpenComputeBackend && (
             <button
               type="button"
@@ -2125,7 +2139,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   const remainder = stripWorkflowConfigureDirectives(message.content);
                   return (
                     <div key={absoluteIndex} className="mx-1 mb-3 max-w-[95%] space-y-1.5">
-                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} onOpenWebPanel={handleOpenWebPanel} />}
+                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} />}
                       <WorkflowConfigCard
                         workflowId={directive.workflowId}
                         sessionId={clusterSessionId}
@@ -2137,7 +2151,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   );
                 }
               }
-              return <MessageBubble key={absoluteIndex} msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} onOpenWebPanel={handleOpenWebPanel} />;
+              return <MessageBubble key={absoluteIndex} msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} />;
             })}
 
             {/* Streaming preview */}

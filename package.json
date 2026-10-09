@@ -1,7 +1,7 @@
 {
   "name": "hpclaw",
   "private": true,
-  "version": "0.4.43",
+  "version": "0.4.46",
   "productName": "HPClaw",
   "type": "module",
   "main": "electron/main.cjs",
@@ -62,6 +62,8 @@
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
+      "installerLanguages": ["en_US", "zh_CN"],
+      "displayLanguageSelector": true,
       "oneClick": false,
       "include": "build/installer.nsh",
       "allowToChangeInstallationDirectory": true,

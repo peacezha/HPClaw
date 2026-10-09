@@ -296,7 +296,7 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
     ].join('\n'));
   }, [onSendMessage, workflow]);
 
-  const handleResume = useCallback(async () => {
+  const handleResume = useCallback(async (acknowledgeFailedQc = false) => {
     if (!sessionId || !run) return;
     if (!workflow) {
       setError('流程定义缺失，无法续跑');
@@ -305,9 +305,11 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
     setResuming(true);
     setError('');
     try {
-      const updated = await resumeWorkflowRun(run.runDir, run.revision, sessionId);
+      const updated = acknowledgeFailedQc
+        ? await resumeWorkflowRun(run.runDir, run.revision, sessionId, true)
+        : await resumeWorkflowRun(run.runDir, run.revision, sessionId);
       setRun(updated);
-      onSendMessage(composeResumeRunMessage(workflow, updated));
+      if (updated.status !== 'done') onSendMessage(composeResumeRunMessage(workflow, updated));
     } catch (e: any) {
       setError(e?.message || '继续流程失败，请刷新状态后重试');
     } finally {
@@ -323,9 +325,10 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
 
   // 查看报告：有侧边网页栏回调时优先走侧边栏，否则回退 ReportDialog 弹窗
   const openReport = useCallback((path: string) => {
-    if (onOpenReport) onOpenReport(path);
-    else setReportPath(path);
-  }, [onOpenReport]);
+    const resolved = resolveRunOutputPath(path, run?.runDir || context.runDir);
+    if (onOpenReport) onOpenReport(resolved);
+    else setReportPath(resolved);
+  }, [onOpenReport, run?.runDir, context.runDir]);
 
   return (
     <div className="space-y-1.5">
@@ -372,7 +375,7 @@ export default function WorkflowRunCard({ context, sessionId, socket, onOpenRemo
           onShowReport={() => run.reportPath && openReport(run.reportPath)}
           onShowCode={() => setCodeRun(run)}
           onOpenFolder={() => onOpenRemoteFolder?.(run.runDir)}
-          onResume={() => void handleResume()}
+          onResume={acknowledgeFailedQc => void handleResume(acknowledgeFailedQc)}
           resuming={resuming}
         />
       )}

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useWorkflowText } from '../i18n';
 import type { WorkflowRunStep } from '../features/workflows/api';
 
 // 双主题配色：文字走 scholar 语义变量（明暗主题自动切换），
@@ -89,6 +90,7 @@ export default function WorkflowFlowChart({ steps, currentStep, onSelectStep }: 
   currentStep?: number;
   onSelectStep?: (n: number) => void;
 }) {
+  const displayText = useWorkflowText();
   const [zoom, setZoom] = useState<'fit' | number>('fit');
 
   const layout = useMemo(() => {
@@ -391,9 +393,10 @@ export default function WorkflowFlowChart({ steps, currentStep, onSelectStep }: 
           const style = STATUS_COLORS[node.status] || STATUS_COLORS.pending;
           const isCurrent = node.n === currentStep || node.status === 'running';
           const isEndpoint = node.n <= 0;
-          const label = node.n > 0 ? `${node.n}. ${node.title}` : node.title;
+          const translatedTitle = displayText(node.title);
+          const label = node.n > 0 ? `${node.n}. ${translatedTitle}` : translatedTitle;
           const title = node.n > 0
-            ? `步骤 ${node.n}：${node.title}${node.phase ? ` · ${node.phase}` : ''}（${node.status}）`
+            ? `${displayText('步骤')} ${node.n}: ${translatedTitle}${node.phase ? ` · ${displayText(node.phase)}` : ''} (${node.status})`
             : node.title;
           const [line1, line2] = isEndpoint ? [label, null] : wrapLabel(label, 26);
           const shape = (
@@ -439,7 +442,7 @@ export default function WorkflowFlowChart({ steps, currentStep, onSelectStep }: 
                     fontSize={10.5} fill={phaseColor(node.phase)}
                     style={{ userSelect: 'none', letterSpacing: 0.4 }}
                   >
-                    {node.phase || ''}
+                    {displayText(node.phase || '')}
                   </text>
                 </>
               )}

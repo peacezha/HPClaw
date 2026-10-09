@@ -4,7 +4,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import WorkflowRunCard from './WorkflowRunCard';
 import type { Workflow } from '@/shared/workflow';
 import type { WorkflowExecutionContext } from '@/shared/workflowExecution';
-import { fetchWorkflowRuns, getCachedPreflight, listWorkflows, type WorkflowRun } from '../features/workflows/api';
+import { fetchWorkflowRuns, getCachedPreflight, listWorkflows, resumeWorkflowRun, type WorkflowRun } from '../features/workflows/api';
 
 vi.mock('../features/workflows/api', async () => {
   const actual = await vi.importActual<typeof import('../features/workflows/api')>('../features/workflows/api');
@@ -67,6 +67,25 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 }
 
 describe('WorkflowRunCard', () => {
+  it('keeps QC warnings visible when folded and requires confirmation before continuing', async () => {
+    const failed = makeRun({ revision: 4, status: 'waiting_user', steps: [
+      { n: 1, title: 'QC', status: 'done', qc: { status: 'fail', metrics: { FRiP: '0.005' } } },
+      { n: 2, title: 'Next', status: 'pending' },
+    ] });
+    vi.mocked(fetchWorkflowRuns).mockResolvedValue([failed]);
+    vi.mocked(listWorkflows).mockResolvedValue([makeWorkflow()]);
+    vi.mocked(resumeWorkflowRun).mockResolvedValue({ ...failed, status: 'running', revision: 5,
+      steps: failed.steps?.map(step => step.qc?.status === 'fail' ? { ...step, qcOverride: { approvedAt: 1000, revision: 4 } } : step) });
+    const onSendMessage = vi.fn();
+    render(<WorkflowRunCard context={CONTEXT} sessionId="s1" onSendMessage={onSendMessage} />);
+    fireEvent.click(await screen.findByText('仍要继续（不推荐）'));
+    expect(resumeWorkflowRun).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('不建议继续下游分析');
+    fireEvent.click(screen.getByText('确认风险并继续'));
+    await waitFor(() => expect(resumeWorkflowRun).toHaveBeenCalledWith(CONTEXT.runDir, 4, 's1', true));
+    expect(onSendMessage).toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('这不代表质控通过');
+  });
   it('默认紧凑：显示流程名与状态徽章，步骤时间线折叠', async () => {
     vi.mocked(fetchWorkflowRuns).mockResolvedValue([makeRun()]);
     vi.mocked(listWorkflows).mockResolvedValue([makeWorkflow()]);

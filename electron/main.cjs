@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('node:crypto');
 const { createProfileStore } = require('./profile-store.cjs');
 const { createSecretStore } = require('./secret-store.cjs');
+const { createLocaleStore } = require('./locale-store.cjs');
 const { generateTotp } = require('./totp.cjs');
 const { createLocalFileService } = require('./local-files.cjs');
 const { createRemoteEditSessionManager } = require('./remote-edit-sessions.cjs');
@@ -29,6 +30,8 @@ if (IS_COMPETITION_EDITION) {
   app.setName('HPClaw Competition');
   app.setPath('userData', path.join(app.getPath('appData'), 'HPClaw Competition'));
 }
+const localeStore = createLocaleStore({ userData: app.getPath('userData'), installDir: path.dirname(process.execPath) });
+const desktopText = (zh, en) => localeStore.get() === 'en-US' ? en : zh;
 
 // The Windows GPU process is the most frequent source of renderer loss in the
 // field logs (exit -2147483645). HPClaw is a text/terminal application, so the
@@ -272,7 +275,7 @@ function createSplash() {
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
   splashWindow.setMenu(null);
-  splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'), { query: { locale: localeStore.get() } });
   splashWindow.on('closed', () => { splashWindow = null; });
 }
 
@@ -497,12 +500,12 @@ async function promptBeforeClose(port, token) {
 
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'question',
-      buttons: ['关闭窗口', '取消'],
+      buttons: [desktopText('关闭窗口', 'Close window'), desktopText('取消', 'Cancel')],
       defaultId: 1,
-      title: unsyncedCount > 0 ? '远程文件尚未同步' : '文件传输进行中',
+      title: unsyncedCount > 0 ? desktopText('远程文件尚未同步', 'Unsynced remote files') : desktopText('文件传输进行中', 'File transfers in progress'),
       message: unsyncedCount > 0
-        ? `仍有 ${unsyncedCount} 个远程文件修改未同步。强制关闭不会删除本地恢复副本。`
-        : '有活动的文件传输任务正在进行。关闭窗口将取消所有未完成的传输。',
+        ? desktopText(`仍有 ${unsyncedCount} 个远程文件修改未同步。强制关闭不会删除本地恢复副本。`, `${unsyncedCount} remote file edits have not been synced. Closing will preserve local recovery copies.`)
+        : desktopText('有活动的文件传输任务正在进行。关闭窗口将取消所有未完成的传输。', 'File transfers are in progress. Closing will cancel unfinished transfers.'),
     });
     return response === 0;
   } catch {
@@ -511,6 +514,8 @@ async function promptBeforeClose(port, token) {
 }
 
 function registerIpcHandlers(port, desktopToken) {
+  ipcMain.handle('hpclaw:locale:get', () => localeStore.get());
+  ipcMain.handle('hpclaw:locale:set', (_event, locale) => localeStore.set(locale));
   // Profile IPC handlers
   ipcMain.handle('hpclaw:profiles:list', () => {
     return profileStore.list();

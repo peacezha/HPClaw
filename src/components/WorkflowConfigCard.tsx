@@ -149,7 +149,7 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
         <GitBranch className="w-3.5 h-3.5 text-accent shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium text-scholar-100 truncate">
-            流程配置 · {workflow.name}
+            <span>流程配置</span> · <span>{workflow.name}</span>
             <span className="ml-1.5 text-[10px] font-normal text-scholar-500">{workflow.steps.length} 个步骤</span>
           </p>
           {workflow.description && <p className="text-[10px] text-scholar-400 truncate">{workflow.description}</p>}

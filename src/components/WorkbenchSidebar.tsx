@@ -28,6 +28,7 @@ import { listWorkflows } from '../features/workflows/api';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
 import ConversationList from './ConversationList';
 import ClusterFileTree from './ClusterFileTree';
+import { LanguageToggle, useWorkflowText } from '../i18n';
 
 export type WorkbenchSidebarTab = 'conversations' | 'compute' | 'files' | 'workflows' | 'webapis';
 
@@ -129,6 +130,7 @@ export default function WorkbenchSidebar({
   onAddCluster,
   onOpenComputeBackend,
 }: WorkbenchSidebarProps) {
+  const displayText = useWorkflowText();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loadingWorkflows, setLoadingWorkflows] = useState(false);
   const [workflowError, setWorkflowError] = useState('');
@@ -155,7 +157,7 @@ export default function WorkbenchSidebar({
   const visibleWorkflows = workflows.filter(workflow => {
     const query = workflowSearch.trim().toLowerCase();
     if (!query) return true;
-    return `${workflow.name} ${workflow.description} ${workflow.keywords.join(' ')}`.toLowerCase().includes(query);
+    return `${workflow.name} ${workflow.description} ${workflow.keywords.join(' ')} ${displayText(workflow.name)} ${displayText(workflow.description)}`.toLowerCase().includes(query);
   });
   // 按分类分组（搜索筛选在前，空组不渲染）；组顺序与流程管理页一致
   const byCategory = new Map<string, Workflow[]>();
@@ -371,6 +373,7 @@ export default function WorkbenchSidebar({
                           type="button"
                           onClick={() => onSelectWorkflow(workflow)}
                           title={workflow.description || `${workflow.steps.length} 个步骤`}
+                          data-user-content={workflow.source !== 'builtin' ? 'true' : undefined}
                           className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
                         >
                           <span className="block text-xs font-medium text-scholar-100 truncate">{workflow.name}</span>
@@ -400,7 +403,8 @@ export default function WorkbenchSidebar({
 
       {/* 底部工具：主题 / QQ / 更新 / 数据资源——与主导航同款（图标在上、小字在下），
           避免窄空间下文字被挤成竖排 */}
-      <div className="grid shrink-0 grid-cols-4 gap-1 border-t border-scholar-700 px-2 py-1.5">
+      <div className="grid shrink-0 grid-cols-5 items-center gap-1 border-t border-scholar-700 px-2 py-1.5">
+        <LanguageToggle />
         <button type="button" onClick={onToggleTheme} className="btn-ghost !px-1 !py-1.5 flex-col" title="切换主题" aria-label="切换主题">
           {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           <span className="text-[10px] leading-tight">主题</span>

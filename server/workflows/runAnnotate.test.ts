@@ -58,6 +58,30 @@ describe('parseBjobsStates / attachJobStates', () => {
 });
 
 describe('调度器主动对账', () => {
+  it('scheduler success cannot bypass a failed QC verdict or roll completed steps back to running', () => {
+    const runs = [{
+      runDir: 'qc', status: 'waiting_jobs', currentStep: 1, totalSteps: 2,
+      steps: [
+        { n: 1, title: 'QC', status: 'done', jobIds: ['100'], qc: { status: 'fail' } },
+        { n: 2, status: 'running', jobIds: ['101'] },
+      ],
+    }];
+    const result = reconcileRunsWithScheduler(runs, parseBjobsStates('100 DONE\n101 DONE\n'), NOW);
+    expect(result[0].steps?.[0].status).toBe('done');
+    expect(result[0].status).toBe('waiting_user');
+    expect((result[0] as any).error).toContain('不建议继续');
+    expect((result[0] as any).endedAt).toBeUndefined();
+    const allDone = reconcileRunsWithScheduler([{ ...runs[0], steps: [runs[0].steps[0]] }], new Map(), NOW);
+    expect(allDone[0].status).toBe('waiting_user');
+  });
+  it('an acknowledged failure does not block scheduler reconciliation but remains failed QC', () => {
+    const result = reconcileRunsWithScheduler([{
+      runDir: 'qc', status: 'waiting_jobs', currentStep: 1, totalSteps: 1,
+      steps: [{ n: 1, status: 'done', qc: { status: 'fail' }, qcOverride: { approvedAt: 1000, revision: 4 } }],
+    }], new Map(), NOW);
+    expect(result[0].status).toBe('done');
+    expect(result[0].steps?.[0].qc?.status).toBe('fail');
+  });
   it('收集活动运行作业；DONE 等待 Agent 验收，EXIT 直接失败', () => {
     const runs = [
       { runDir: 'a', status: 'running', totalSteps: 1, currentStep: 1, steps: [{ n: 1, status: 'running', jobIds: ['101'] }] },

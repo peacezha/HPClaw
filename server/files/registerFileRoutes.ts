@@ -7,6 +7,7 @@ import { assertSafeRemoteMutation } from './pathSafety';
 import { SftpFileService } from './sftpFileService';
 import { classifyPreview } from '../../shared/filePreview';
 import { streamHtmlReport } from './htmlReportStream';
+import { remoteReportCandidates } from './resolveReportPath';
 
 const MAX_SEARCH_RESULTS = 5_000;
 /** /api/files/read(+batch) 单文件读取上限：AI 回答内联卡片只承载小结果文件 */
@@ -44,9 +45,6 @@ function requestError(error: unknown): { status: number; code: string; message: 
   const errorCode = typeof error === 'object' && error !== null && 'code' in error
     ? (error as { code?: unknown }).code
     : undefined;
-  if (/path|mode|query|preview limit|protected remote| is required|recursive must|must be an integer|positive integer/i.test(message)) {
-    return { status: 400, code: 'INVALID_REMOTE_FILE_REQUEST', message };
-  }
   if (errorCode === 'ENOENT' || errorCode === 2 || /no such file|not found/i.test(message)) {
     return { status: 404, code: 'REMOTE_FILE_NOT_FOUND', message };
   }
@@ -55,6 +53,9 @@ function requestError(error: unknown): { status: number; code: string; message: 
   }
   if (errorCode === 'EEXIST' || errorCode === 'ENOTEMPTY' || errorCode === 11 || /already exists|not empty/i.test(message)) {
     return { status: 409, code: 'REMOTE_FILE_CONFLICT', message };
+  }
+  if (/path|mode|query|preview limit|protected remote| is required|recursive must|must be an integer|positive integer/i.test(message)) {
+    return { status: 400, code: 'INVALID_REMOTE_FILE_REQUEST', message };
   }
   return { status: 500, code: 'REMOTE_FILE_OPERATION_FAILED', message };
 }
@@ -402,7 +403,19 @@ export function registerFileRoutes(app: Express, resolveSession: ResolveRemoteFi
     const session = withSession(req, res);
     if (!session) return;
     try {
-      const entry = await serviceFor(session).stat(requiredString(req.body?.path, 'path'));
+      const service = serviceFor(session);
+      const candidates = remoteReportCandidates(requiredString(req.body?.path, 'path'), session.home, req.body?.basePaths);
+      const matches = [];
+      for (const candidate of candidates) {
+        try { matches.push(await service.stat(candidate)); }
+        catch (error) { if (requestError(error).status !== 404) throw error; }
+      }
+      if (!matches.length) throw new HttpFileError(404, 'REMOTE_FILE_NOT_FOUND', 'Report not found in the supplied project directories. Provide its full cluster path.');
+      if (matches.length > 1) {
+        res.status(409).json({ error: { code: 'REMOTE_REPORT_AMBIGUOUS', message: 'Multiple reports match this relative path. Select the exact report.', candidates: matches.map(entry => entry.path) } });
+        return;
+      }
+      const entry = matches[0];
       if (entry.kind === 'directory' || !/\.x?html?$/i.test(entry.name)) throw new HttpFileError(415, 'REMOTE_HTML_REQUIRED', 'path is not an HTML document');
       res.json({ filePath: entry.path, metadata: { size: entry.size, mime: 'text/html' } });
     } catch (error) { sendRouteError(res, error); }

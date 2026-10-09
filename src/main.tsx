@@ -2,7 +2,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import AppErrorBoundary from './components/AppErrorBoundary';
-import { LocaleProvider } from './i18n';
+import { hydrateDesktopLocale, LocaleProvider } from './i18n';
 import { hydrateAIProfile } from './services/aiProfile';
 import { hydrateTotpStorage } from './services/totpStorage';
 import './index.css';
@@ -32,7 +32,7 @@ window.addEventListener('unhandledrejection', event => {
 
 // 首帧渲染前从桌面端加密存储水合密钥缓存。桌面 IPC 偶发无响应时
 // 最多等待 4 秒，保证主界面始终能够出现，而不是无限停在空白页面。
-const hydration = initializePublicWeb().then(() => Promise.allSettled([hydrateAIProfile(), hydrateTotpStorage()]));
+const hydration = initializePublicWeb().then(() => Promise.allSettled([hydrateAIProfile(), hydrateTotpStorage(), hydrateDesktopLocale()]));
 const hydrationTimeout = new Promise<'timeout'>(resolve => {
   window.setTimeout(() => resolve('timeout'), 4_000);
 });

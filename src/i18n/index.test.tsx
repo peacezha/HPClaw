@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { LanguageToggle, LocaleProvider, getStoredLocale, translateUiText } from './index';
+import { LanguageToggle, LocaleProvider, getStoredLocale, hydrateDesktopLocale, translateUiText } from './index';
+import { BIOINFORMATICS_PHRASES } from './bioinformatics';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); delete window.hpclawDesktop; });
 
 describe('global bilingual UI', () => {
   beforeEach(() => {
@@ -89,5 +90,40 @@ describe('global bilingual UI', () => {
     expect(screen.getByText('文件传输')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
     await waitFor(() => expect(screen.getByText('保存设置')).toBeTruthy());
+  });
+
+  it('hydrates the Windows installer choice and persists an explicit in-app switch', async () => {
+    const set = vi.fn(async () => 'zh-CN' as const);
+    window.hpclawDesktop = { locale: { get: async () => 'en-US', set } } as any;
+    await hydrateDesktopLocale();
+    render(<LocaleProvider><LanguageToggle /><span>正式流程</span></LocaleProvider>);
+    expect(screen.getByText('Saved workflows')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    expect(set).toHaveBeenCalledWith('zh-CN');
+    await waitFor(() => expect(screen.getByText('正式流程')).toBeTruthy());
+  });
+
+  it('uses professional scientific terms without rewriting metric names or evidence', () => {
+    for (const [zh, en] of BIOINFORMATICS_PHRASES) expect(translateUiText(zh, 'en-US')).toBe(en);
+    expect(translateUiText('基序富集', 'en-US')).toBe('Motif enrichment');
+    expect(translateUiText('有效基因组大小', 'en-US')).toBe('Effective genome size');
+    expect(translateUiText('3 个步骤 · 12 条命令 · 3 次工具调用', 'en-US')).toBe('3 steps · 12 commands · 3 tool calls');
+    expect(translateUiText('转录组与表观调控（27）', 'en-US')).toBe('Transcriptomics & Epigenomic Regulation (27)');
+  });
+
+  it('round-trips interface copy from its original source, not an ambiguous reverse lookup', async () => {
+    render(<LocaleProvider><LanguageToggle /><span>必填</span><span>必需</span></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    await waitFor(() => expect(screen.getAllByText('Required')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    await waitFor(() => expect(screen.getByText('必填')).toBeTruthy());
+    expect(screen.getByText('必需')).toBeTruthy();
+  });
+
+  it('translates textarea interface labels while keeping the user-entered value verbatim', async () => {
+    render(<LocaleProvider><LanguageToggle /><textarea placeholder="输入任务描述..." defaultValue="质控 /data/样本.fq.gz" /></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Describe a task…')).toBeTruthy());
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('质控 /data/样本.fq.gz');
   });
 });

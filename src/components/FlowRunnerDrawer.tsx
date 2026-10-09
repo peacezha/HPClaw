@@ -9,6 +9,10 @@ import {
   GitBranch, Bot,
 } from 'lucide-react';
 import WorkflowFlowGraph from './WorkflowFlowGraph';
+import HtmlReportFrame from './rich-content/HtmlReportFrame';
+import WorkflowQcNotice from './WorkflowQcNotice';
+import { unresolvedQcFailures } from '@/shared/workflowQc';
+import { useWorkflowText } from '../i18n';
 import { buildDataPrepGuide } from '../features/workflows/dataPrepGuide';
 import { encodeExampleFor } from '../features/workflows/encodeExample';
 import type { Workflow } from '@/shared/workflow';
@@ -472,14 +476,16 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
     }
   }, [sessionId, workflow]);
 
-  const handleResumeRun = useCallback(async (candidate: WorkflowRun) => {
+  const handleResumeRun = useCallback(async (candidate: WorkflowRun, acknowledgeFailedQc = false) => {
     if (!sessionId) return;
     setResumingRunDir(candidate.runDir);
     setFormError('');
     try {
-      const run = await resumeWorkflowRun(candidate.runDir, candidate.revision, sessionId);
+      const run = acknowledgeFailedQc
+        ? await resumeWorkflowRun(candidate.runDir, candidate.revision, sessionId, true)
+        : await resumeWorkflowRun(candidate.runDir, candidate.revision, sessionId);
       setRuns(current => mergeWorkflowRunUpdate(current, run));
-      onRun(composeResumeRunMessage(workflow, run), { dedicatedConversation: true });
+      if (run.status !== 'done') onRun(composeResumeRunMessage(workflow, run), { dedicatedConversation: true });
       if (!embedded) onClose();
     } catch (error: any) {
       setFormError(error?.message || '继续流程失败，请刷新状态后重试');
@@ -767,7 +773,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                   className={`rounded-md border p-2 transition-colors ${openCodeSteps.includes(i + 1) ? 'border-accent/50 bg-scholar-950/60' : 'border-scholar-700/40 bg-scholar-950/40'}`}
                 >
                   <div className="flex items-center gap-2 mb-1.5">
-                    <p className="text-[10px] font-medium text-scholar-300 flex-1">{i + 1}. {s.title}</p>
+                    <p className="text-[10px] font-medium text-scholar-300 flex-1">{i + 1}. <span>{s.title}</span></p>
                     {s.agent?.confidence && (
                       <span className={`text-[9px] px-1 rounded ${s.agent.confidence === 'high' ? 'bg-emerald-500/10 text-emerald-500' : s.agent.confidence === 'medium' ? 'bg-amber-500/10 text-amber-500' : 'bg-red-500/10 text-red-500'}`}>
                         {s.agent.confidence === 'high' ? '高可信' : s.agent.confidence === 'medium' ? '中可信' : '低可信'}
@@ -897,7 +903,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                 onShowReport={() => run.reportPath && setReportPath(run.reportPath)}
                 onShowCode={() => setCodeRun(run)}
                 onOpenFolder={() => handleOpenRunFolder(run.runDir)}
-                onResume={() => void handleResumeRun(run)}
+                onResume={acknowledgeFailedQc => void handleResumeRun(run, acknowledgeFailedQc)}
                 resuming={resumingRunDir === run.runDir}
               />
             ))}
@@ -1063,9 +1069,14 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
   onShowReport: () => void;
   onShowCode: () => void;
   onOpenFolder: () => void;
-  onResume: () => void;
+  onResume: (acknowledgeFailedQc?: boolean) => void;
   resuming: boolean;
 }) {
+  const t = useWorkflowText();
+  const [reviewQc, setReviewQc] = useState(false);
+  // A changed verdict/revision must be reviewed again, not acknowledged by a stale dialog.
+  useEffect(() => setReviewQc(false), [run.revision]);
+  const qcBlocked = unresolvedQcFailures(run).length > 0;
   const st = run.stale
     ? { label: '疑似中断', cls: 'bg-gray-500/20 text-gray-400' }
     : RUN_STATUS[run.status] || RUN_STATUS.unknown;
@@ -1099,6 +1110,19 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
           <span className="text-[9px] text-scholar-500 shrink-0">{current}/{total} {started}</span>
         </div>
       </button>
+      <WorkflowQcNotice run={run} />
+      {qcBlocked && canResume && <div className="mx-2 mb-2 space-y-2 text-sm">
+        {!reviewQc ? <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={onShowLog} className="btn-ghost !text-sm">{t('先检查质控日志')}</button>
+          <button type="button" onClick={() => setReviewQc(true)} disabled={resuming} className="btn-ghost !text-sm" style={{ color: 'var(--color-danger)' }}>{t('仍要继续（不推荐）')}</button>
+        </div> : <div className="rounded-lg border border-red-500/40 p-3">
+          <p>{t('继续可能降低结论可靠性。请先核对质控报告；确认后仅允许推进，不会把 QC 改为通过。')}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" onClick={() => setReviewQc(false)} disabled={resuming} className="btn-ghost !text-sm">{t('取消')}</button>
+            <button type="button" onClick={() => { setReviewQc(false); onResume(true); }} disabled={resuming} className="btn-ghost !text-sm" style={{ color: 'var(--color-danger)' }}>{t('确认风险并继续')}</button>
+          </div>
+        </div>}
+      </div>}
       {expanded && (
         <div className="px-3 pb-2 pt-1 space-y-1 border-t border-scholar-700/40">
           <p className="text-[9px] text-scholar-500 font-mono break-all" title={run.runDir}>工作目录：{run.runDir}</p>
@@ -1122,7 +1146,7 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
                   : s.status === 'failed' ? <XCircle className="w-3 h-3 text-red-400 shrink-0" />
                   : s.status === 'running' ? <Loader2 className="w-3 h-3 text-sky-500 animate-spin shrink-0" />
                   : <Circle className="w-3 h-3 text-scholar-600 shrink-0" />}
-                <span className="flex-1 min-w-0 truncate text-scholar-300">{s.n}. {s.title}</span>
+                <span className="flex-1 min-w-0 truncate text-scholar-300">{s.n}. <span>{s.title}</span></span>
                 {(s.startedAt || s.finishedAt) && (
                   <span className="text-[9px] text-scholar-500 shrink-0">
                     {fmtTime(s.startedAt)}{s.finishedAt ? `–${fmtTime(s.finishedAt)}` : ''}
@@ -1156,8 +1180,8 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
             <button onClick={onOpenFolder} className="btn-ghost !text-[10px] !px-2">
               <FolderOpen className="w-3 h-3" /> 打开运行文件夹
             </button>
-            {canResume && (
-              <button onClick={onResume} disabled={resuming} className="btn-primary !text-[10px] !px-2">
+            {canResume && !qcBlocked && (
+              <button onClick={() => onResume()} disabled={resuming} className="btn-primary !text-[10px] !px-2">
                 {resuming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                 {run.status === 'blocked_env' ? '处理并继续' : '从断点继续'}
               </button>
@@ -1268,7 +1292,7 @@ export function RunCodeDialog({ run, sessionId, onClose, onRunUpdated }: {
                 className={`w-full text-left rounded-lg px-2.5 py-2 border ${selectedStep === step.n
                   ? 'border-accent/60 bg-accent/10 text-scholar-100'
                   : 'border-transparent hover:bg-scholar-800 text-scholar-300'}`}>
-                <span className="block text-[11px] font-medium">步骤 {step.n} · {step.title}</span>
+                <span className="block text-[11px] font-medium"><span>步骤</span> {step.n} · <span>{step.title}</span></span>
                 <span className="block mt-0.5 text-[9px] text-scholar-500 font-mono">
                   step-{String(step.n).padStart(2, '0')}.sh{step.scriptUserModified ? ' · 用户已修改' : ''}
                 </span>
@@ -1355,29 +1379,6 @@ export function LogDialog({ runDir, sessionId, onClose }: { runDir: string; sess
 
 /** 报告弹窗：iframe 渲染自包含 report.html */
 export function ReportDialog({ reportPath, sessionId, onClose }: { reportPath: string; sessionId: string; onClose: () => void }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let stopped = false;
-    (async () => {
-      try {
-        const qs = new URLSearchParams({ path: reportPath, sessionId });
-        const res = await fetch(`/api/files/download?${qs}`);
-        if (!res.ok) {
-          // 读出服务端返回的具体原因（文件不存在/会话失效/SFTP 未就绪等）
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body?.error ? `${body.error}（HTTP ${res.status}）` : `HTTP ${res.status}`);
-        }
-        const text = await res.text();
-        if (!stopped) setHtml(text);
-      } catch (e: any) {
-        if (!stopped) setError(e.message || String(e));
-      }
-    })();
-    return () => { stopped = true; };
-  }, [reportPath, sessionId]);
-
   return (
     <div className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
       <div className="w-full max-w-5xl h-[86vh] bg-white rounded-lg border border-scholar-700 flex flex-col overflow-hidden"
@@ -1391,19 +1392,7 @@ export function ReportDialog({ reportPath, sessionId, onClose }: { reportPath: s
           </a>
           <button onClick={onClose} className="btn-icon" aria-label="关闭"><X className="w-4 h-4" /></button>
         </div>
-        {error && (
-          <div className="p-4">
-            <p className="text-sm text-red-500">{error}</p>
-            <p className="mt-1 text-[11px] text-scholar-500">
-              若提示"文件不存在"：报告可能还在生成中（AI 收尾阶段才写入），稍后重试；
-              若提示会话问题：请确认计算资源连接未断开。
-            </p>
-          </div>
-        )}
-        {!error && html === null && (
-          <div className="flex-1 flex items-center justify-center text-scholar-400"><Loader2 className="w-5 h-5 animate-spin" /></div>
-        )}
-        {html !== null && <iframe title="分析报告" srcDoc={html} className="flex-1 w-full border-0" sandbox="allow-same-origin" />}
+        <HtmlReportFrame path={reportPath} sessionId={sessionId} title="分析报告" />
       </div>
     </div>
   );

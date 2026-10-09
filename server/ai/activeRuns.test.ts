@@ -12,6 +12,12 @@ import {
 import { filterConversationsByScope } from '../conversations/localConversations';
 
 describe('activeRuns（后台 AI 运行登记处）', () => {
+  it('stores the recovered authoritative answer instead of a partial streamed preview', () => {
+    const run = registerActiveRun({ requestId: 'recovered-r44', abort: new AbortController() });
+    pushRunEvent(run, { type: 'content', content: 'partial' });
+    pushRunEvent(run, { type: 'done', content: 'complete recovered answer', authoritative: true });
+    expect(run.text).toBe('complete recovered answer');
+  });
   it('registers, buffers events, and accumulates visible text', () => {
     const run = registerActiveRun({ requestId: 'r1', conversationId: 'c1', abort: new AbortController() });
     pushRunEvent(run, { type: 'status', message: 'preparing' });

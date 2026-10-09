@@ -905,6 +905,21 @@ describe('formal workflow command budget', () => {
     return { clusterRun, toolResults, dones, errors, start, workflowCommands, getRun: () => authoritativeRun };
   }
 
+  it('blocks new submissions in the same model round after failed QC, while allowing read-only diagnostics', async () => {
+    const env = setup(async function* (_round, options) {
+      await options.tools.update_workflow_run.execute({ runDir, step: { n: 1, qc: { status: 'fail', metrics: { FRiP: '0.005' } } } });
+      await options.tools.run_command.execute({ command: 'bsub < code/step-01.sh' });
+      await options.tools.run_command.execute({ command: 'cat results/qc.tsv' });
+      yield { type: 'text-delta', text: 'QC failed; downstream analysis is not recommended.' };
+    });
+    await env.start();
+    expect(env.getRun().status).toBe('waiting_user');
+    expect(env.workflowCommands().some(command => command.includes('bsub'))).toBe(false);
+    expect(env.workflowCommands().some(command => command.includes('cat results/qc.tsv'))).toBe(true);
+    expect(env.toolResults.join('\n')).toContain('Workflow submission blocked');
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+  });
+
   it('resets the per-round command budget across auto-continuations', async () => {
     const env = setup(async function* (round, options) {
       if (round === 0) {

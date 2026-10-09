@@ -80,6 +80,19 @@
   <div class="status" id="status">正在启动…</div>
   <div class="pct" id="pct"></div>
   <script>
+    var english = new URLSearchParams(location.search).get('locale') === 'en-US';
+    if (english) {
+      document.documentElement.lang = 'en-US';
+      document.title = 'Starting HPClaw';
+      document.querySelector('.sub').textContent = 'Intelligent HPC workspace · Starting';
+      document.getElementById('status').textContent = 'Starting…';
+    }
+    var statusText = {
+      '完成': 'Ready', '正在启动 HPClaw…': 'Starting HPClaw…',
+      '正在启动后台服务…': 'Starting the backend…',
+      '正在初始化组件…': 'Initializing components…',
+      '后台已就绪，正在加载界面…': 'Backend ready; loading the interface…'
+    };
     // 主进程经 executeJavaScript 调用：window.setProgress(0-100, '状态文本')
     window.setProgress = function (pct, text) {
       var fill = document.getElementById('fill');
@@ -87,7 +100,7 @@
       var pctEl = document.getElementById('pct');
       var v = Math.max(0, Math.min(100, Math.round(pct)));
       fill.style.width = v + '%';
-      if (text) status.textContent = text;
+      if (text) status.textContent = english ? (statusText[text] || text) : text;
       pctEl.textContent = v > 0 && v < 100 ? v + '%' : '';
     };
   </script>

@@ -8,10 +8,22 @@ import {
   type ReactNode,
 } from 'react';
 import { Languages } from 'lucide-react';
+import { BIOINFORMATICS_PHRASES } from './bioinformatics';
+import { WORKFLOW_PHRASES, translateWorkflowTemplate } from './workflowCopy';
 
 export type AppLocale = 'zh-CN' | 'en-US';
 
 const LANGUAGE_STORAGE_KEY = 'hpclaw_language';
+
+/** Apply the Windows install/user preference before rendering; browser mode is unchanged. */
+export async function hydrateDesktopLocale(): Promise<void> {
+  const api = window.hpclawDesktop?.locale;
+  if (!api) return;
+  try {
+    const locale = await api.get();
+    if (locale === 'zh-CN' || locale === 'en-US') window.localStorage.setItem(LANGUAGE_STORAGE_KEY, locale);
+  } catch { /* Old desktop versions have no locale IPC; keep the existing choice. */ }
+}
 
 /**
  * HPClaw 的界面短语表。左侧是默认中文，右侧是英文。
@@ -19,6 +31,64 @@ const LANGUAGE_STORAGE_KEY = 'hpclaw_language';
  * 不在这里自动改写，避免科研内容失真。
  */
 const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
+  ...BIOINFORMATICS_PHRASES,
+  ...WORKFLOW_PHRASES,
+  ['质控未通过：质量不佳，不建议继续下游分析', 'QC failed: poor quality; downstream analysis is not recommended'],
+  ['质控警告：请谨慎继续分析', 'QC warning: proceed with caution'],
+  ['自动推进已暂停。建议先检查质控报告和原始数据，处理未达标项目。', 'Automatic progression is paused. Review the QC report and raw data, and address the failed checks first.'],
+  ['已确认继续，但质控仍未通过；下游结果需要谨慎解释。', 'Continuation was acknowledged, but QC still failed; interpret downstream results with caution.'],
+  ['质控存在警告，继续分析前请检查相关指标，谨慎解释下游结果。', 'QC warnings were reported. Review the relevant metrics before proceeding and interpret downstream results with caution.'],
+  ['其余指标请查看质控日志。', 'See the QC log for additional metrics.'],
+  ['用户已确认风险；这不代表质控通过。', 'The user acknowledged the risk; this does not mean QC passed.'],
+  ['先检查质控日志', 'Review the QC log first'], ['仍要继续（不推荐）', 'Continue anyway (not recommended)'],
+  ['继续可能降低结论可靠性。请先核对质控报告；确认后仅允许推进，不会把 QC 改为通过。', 'Continuing may reduce the reliability of your conclusions. Review the QC report first. Confirmation allows progression; it does not change QC to passed.'],
+  ['确认风险并继续', 'Acknowledge risk and continue'],
+  ['通过标准', 'Acceptance criterion'],
+  ['（可选）', '(Optional)'], ['工作区', 'Workspace'], ['（尚未运行）', '(Not run yet)'],
+  ['固定版本：', 'Pinned version:'], ['入口：', 'Entry point:'], ['选择数据并运行', 'Select data and run'],
+  ['ENCODE-DCC 官方包装', 'ENCODE-DCC official pipeline wrapper'], ['ENCODE 合作方协议', 'ENCODE partner protocol'],
+  ['编辑流程', 'Edit workflow'], ['NSC≥1.05、RSC≥0.8、NRF≥0.8', 'NSC≥1.05, RSC≥0.8, NRF≥0.8'],
+  ['FRiP≥1%，IDR rescue ratio<2', 'FRiP≥1%, IDR rescue ratio<2'],
+  ['参数（命令里用', 'Parameters (use'], ['占位）', 'as placeholders in commands)'],
+  ['，留空由 AI 处理', '; leave empty for AI to prepare'], ['（可选', '(Optional'], ['，默认', '; default:'],
+  ['集群报告完整路径', 'Absolute cluster report path'], ['按完整路径打开', 'Open absolute path'],
+  ['例如 /project/07_report/report.html', 'e.g. /project/07_report/report.html'],
+  ['报告传输失败，请重试', 'Report transfer failed. Please retry.'],
+  ['module/版本或留空', 'Module/version or leave empty'], ['绝对路径或 {{参数}}', 'Absolute path or {{PARAMETER}}'],
+  ['命令模板 *（如：bsub -q normal -n 8 "fastqc {{SAMPLE}}.fq.gz"）', 'Command template * (e.g. bsub -q normal -n 8 "fastqc {{SAMPLE}}.fq.gz")'],
+  ['指定的项目目录中未找到报告，请填写集群上的完整路径。', 'Report not found in the supplied project directories. Provide its full cluster path.'],
+  ['多个报告与此相对路径匹配，请选择要打开的报告。', 'Multiple reports match this relative path. Select the exact report.'],
+  ['AI 工作台', 'AI workspace'], ['流程管理', 'Workflow management'],
+  ['管理流程', 'Manage workflows'], ['正式流程', 'Saved workflows'],
+  ['选择后在主页面配置', 'Select a workflow to configure it in the main panel'],
+  ['对话、文件与流程保持在同一个任务上下文中', 'Conversations, files and workflows share one task context'],
+  ['执行过程', 'Execution details'], ['执行记录', 'Execution record'],
+  ['思考过程', 'Reasoning details'], ['思考过程（点击展开）', 'Reasoning details (expand)'],
+  ['智能体引擎', 'Agent engine'], ['智能选择（推荐）', 'Automatic selection (recommended)'],
+  ['HPClaw 原生智能体', 'HPClaw native agent'], ['DSH 智能体', 'DSH agent'],
+  ['AI 与执行设置', 'AI and execution settings'], ['模型、规划和命令确认策略', 'Model, planning and command approval policy'],
+  ['达到上限时会暂停当前任务，不会删除对话；已保存流程会自动使用 200 步执行档，通常可一轮跑完整个流程。', 'Reaching the limit pauses the task without deleting the conversation. Saved workflows automatically use the 200-step execution preset.'],
+  ['已信任全部命令：AI 的命令不再逐条确认（硬性安全拦截仍生效）', 'All commands are trusted: individual approval is disabled; mandatory safety checks remain active'],
+  ['取消信任', 'Revoke trust'], ['⚠ 命令可能访问工作目录以外的路径', '⚠ Commands may access paths outside the working directory'],
+  ['修订中…', 'Revising…'], ['已参考代码仓库：', 'Code repositories consulted:'],
+  ['只改你指出的问题，其余步骤原样保留；修订后质量审计会重新计算，需重新勾选复核。', 'Only the issues you identify will be revised. Other steps remain unchanged. The audit will be recalculated and requires a new review confirmation.'],
+  ['论文 ↔ 代码工具对照（CoPaLink 思路）', 'Paper-to-code tool mapping (CoPaLink approach)'],
+  ['+ 参数', '+ Parameter'], ['+ 软件', '+ Software'], ['+ 参考数据', '+ Reference data'], ['+ 步骤', '+ Step'],
+  ['运行前必须由用户确认本步骤', 'User confirmation is required before running this step'],
+  ['从文献生成可审计流程：提取 Methods 主路径，对齐论文与仓库工具，再检查完整度', 'Create an auditable workflow: extract the Methods workflow, map paper tools to repository code, and check completeness'],
+  ['或直接粘贴方法学文本（推荐：只贴生信分析部分，湿实验操作会自动排除）', 'Or paste the Methods text (preferably the computational analysis section; wet-lab procedures are excluded)'],
+  ['DOI 优先取 PMC 开放全文；非开放论文请上传 PDF（最多 50 页）。低可信步骤、未匹配工具和缺失参数会明确标出，必须人工确认后才能保存。', 'DOIs resolve to PMC open-access full text when available. Otherwise, upload a PDF (up to 50 pages). Low-confidence steps, unmatched tools and missing parameters are flagged for review before saving.'],
+  ['学习草稿箱（自动保存，最多保留 20 条）：', 'Learning drafts (autosaved; up to 20 retained):'],
+  ['专属目录 · 每次运行独立 RUN', 'Dedicated workspace · Separate RUN directory for each execution'],
+  ['禁止全局扫描', 'Global scans are prohibited'], ['查看上游源码', 'View upstream source code'],
+  ['（无依赖）', '(No dependencies)'], ['（暂无报告）', '(No report yet)'],
+  ['个匹配流程', 'matching workflows'],
+  ['资源', 'Resources'], ['更新', 'Updates'], ['技能库 (', 'Skills ('],
+  ['刷新流程', 'Refresh workflows'], ['搜索流程...', 'Search workflows…'], ['主导航', 'Main navigation'],
+  ['内置', 'Built-in'], ['运行', 'Run'], ['修改', 'Edit'],
+  ['打开运行配置', 'Open run configuration'], ['修改流程', 'Edit workflow'],
+  ['删除流程定义（不会删除已有运行文件夹）', 'Delete workflow definition (existing run directories are preserved)'],
+  ['转录组与表观调控', 'Transcriptomics & Epigenomic Regulation'],
   ['当前任务执行位置', 'Execution target'],
   ['收起导航', 'Collapse navigation'], ['展开导航', 'Expand navigation'], ['关闭导航', 'Close navigation'],
   ['高级执行设置', 'Advanced execution settings'], ['今天想完成什么任务？', 'What would you like to accomplish?'],
@@ -728,6 +798,27 @@ function translateUiTextUncached(value: string, locale: AppLocale): string {
   // Chinese hybrid). Exact phrases and typed templates keep the boundary
   // between interface copy and domain/user content auditable.
   if (locale === 'en-US') {
+    const workflowTemplate = translateWorkflowTemplate(core);
+    if (workflowTemplate !== undefined) return `${leading}${workflowTemplate}${trailing}`;
+    const submit = core.match(/^写成 ([\w.-]+\.lsf) 后 bsub 提交(；先看报告再决定后续|；单端数据只传 R1 一个文件)?$/);
+    if (submit) return `${leading}Write ${submit[1]} and submit with bsub${submit[2] === '；先看报告再决定后续' ? '; review the report before proceeding' : submit[2] ? '; pass only R1 for single-end data' : ''}${trailing}`;
+    const reference = core.match(/^可留空：AI 运行时协助查找或(?:在 02_reference\/ 下)?构建（([^\n]+)）$/);
+    if (reference) return `${leading}May be left empty; AI can help locate or build it${core.includes('02_reference/') ? ' under 02_reference/' : ''} (${reference[1]})${trailing}`;
+    const details = core.split(' · ');
+    if (details.length > 1 && details.every(part => /^\d+\s*(个步骤|条命令|次工具调用|条记录)$/.test(part))) {
+      return `${leading}${details.map(part => translateUiText(part, locale)).join(' · ')}${trailing}`;
+    }
+    const count = core.match(/^(\d+)\s*(个步骤|条命令|次工具调用|条记录|个匹配流程)$/);
+    if (count) {
+      const labels: Record<string, [string, string]> = { '个步骤': ['step', 'steps'], '条命令': ['command', 'commands'], '次工具调用': ['tool call', 'tool calls'], '条记录': ['record', 'records'], '个匹配流程': ['matching workflow', 'matching workflows'] };
+      return `${leading}${count[1]} ${labels[count[2]][Number(count[1]) === 1 ? 0 : 1]}${trailing}`;
+    }
+    const group = core.match(/^(.+?)（(\d+)）$/);
+    if (group && ZH_TO_EN.has(group[1])) return `${leading}${ZH_TO_EN.get(group[1])} (${group[2]})${trailing}`;
+    const skills = core.match(/^技能库\s*\((\d+)\)$/);
+    if (skills) return `${leading}Skills (${skills[1]})${trailing}`;
+    const usingTool = core.match(/^AI 正在使用 ([A-Za-z0-9_.-]+)…$/);
+    if (usingTool) return `${leading}AI is using ${usingTool[1]}…${trailing}`;
     const deleteItems = core.match(/^确定要删除\s+(.+?)\s+个项目吗？$/);
     if (deleteItems) return `${leading}Delete ${deleteItems[1]} item(s)?${trailing}`;
     const messages = core.match(/^(\d+)\s*条消息(.*)$/);
@@ -751,6 +842,31 @@ interface LocaleContextValue {
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 
+// Keep the source copy, not an inverse lookup of a previous translation. This
+// avoids collisions such as two different Chinese labels both rendered as “Run”.
+const SOURCE_TEXT = new WeakMap<Node, { source: string; rendered: string }>();
+function localizeText(node: Node, locale: AppLocale): void {
+  if (shouldSkipNode(node) || !node.nodeValue) return;
+  const previous = SOURCE_TEXT.get(node);
+  const source = previous && previous.rendered === node.nodeValue ? previous.source : node.nodeValue;
+  const rendered = translateUiText(source, locale);
+  SOURCE_TEXT.set(node, { source, rendered });
+  if (rendered !== node.nodeValue) node.nodeValue = rendered;
+}
+const SOURCE_ATTRIBUTES = new WeakMap<Element, Map<string, { source: string; rendered: string }>>();
+function localizeAttribute(element: Element, attribute: string, locale: AppLocale): void {
+  if (shouldSkipAttribute(element)) return;
+  const value = element.getAttribute(attribute);
+  if (!value) return;
+  const attributes = SOURCE_ATTRIBUTES.get(element) || new Map();
+  const previous = attributes.get(attribute);
+  const source = previous && previous.rendered === value ? previous.source : value;
+  const rendered = translateUiText(source, locale);
+  attributes.set(attribute, { source, rendered });
+  SOURCE_ATTRIBUTES.set(element, attributes);
+  if (rendered !== value) element.setAttribute(attribute, rendered);
+}
+
 function shouldSkipNode(node: Node): boolean {
   const element = node instanceof Element ? node : node.parentElement;
   if (!element) return false;
@@ -759,14 +875,17 @@ function shouldSkipNode(node: Node): boolean {
   ));
 }
 
+function shouldSkipAttribute(element: Element): boolean {
+  // Textarea values are user content; placeholder/title/aria-label are interface copy.
+  if (element.tagName === 'TEXTAREA' && element.parentElement) return shouldSkipNode(element.parentElement);
+  return shouldSkipNode(element);
+}
+
 function localizeElement(root: ParentNode, locale: AppLocale): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let current = walker.nextNode();
   while (current) {
-    if (!shouldSkipNode(current) && current.nodeValue) {
-      const next = translateUiText(current.nodeValue, locale);
-      if (next !== current.nodeValue) current.nodeValue = next;
-    }
+    localizeText(current, locale);
     current = walker.nextNode();
   }
 
@@ -774,12 +893,9 @@ function localizeElement(root: ParentNode, locale: AppLocale): void {
   if (root instanceof Element) elements.push(root);
   elements.push(...Array.from(root.querySelectorAll('*')));
   for (const element of elements) {
-    if (shouldSkipNode(element)) continue;
+    if (shouldSkipAttribute(element)) continue;
     for (const attribute of ['title', 'aria-label', 'placeholder']) {
-      const value = element.getAttribute(attribute);
-      if (!value) continue;
-      const next = translateUiText(value, locale);
-      if (next !== value) element.setAttribute(attribute, next);
+      localizeAttribute(element, attribute, locale);
     }
   }
 }
@@ -788,11 +904,13 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<AppLocale>(getStoredLocale);
 
   const setLocale = useCallback((next: AppLocale) => {
-    setLocaleState(next === 'en-US' ? 'en-US' : 'zh-CN');
+    const valid = next === 'en-US' ? 'en-US' : 'zh-CN';
+    setLocaleState(valid);
+    void window.hpclawDesktop?.locale?.set(valid).catch(() => console.warn('[i18n] desktop language preference could not be saved'));
   }, []);
   const toggleLocale = useCallback(() => {
-    setLocaleState(current => current === 'zh-CN' ? 'en-US' : 'zh-CN');
-  }, []);
+    setLocale(locale === 'zh-CN' ? 'en-US' : 'zh-CN');
+  }, [locale, setLocale]);
   const t = useCallback((value: string) => translateUiText(value, locale), [locale]);
 
   useLayoutEffect(() => {
@@ -805,10 +923,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       for (const record of records) {
         if (record.type === 'characterData') {
           const node = record.target;
-          if (!shouldSkipNode(node) && node.nodeValue) {
-            const next = translateUiText(node.nodeValue, locale);
-            if (next !== node.nodeValue) node.nodeValue = next;
-          }
+          localizeText(node, locale);
           continue;
         }
         if (record.type === 'attributes') {
@@ -816,11 +931,8 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
           // 写回 setAttribute 会再次触发本 observer，靠"翻译后无变化则不写"自然终止。
           const attribute = record.attributeName;
           const element = record.target;
-          if (!(element instanceof Element) || !attribute || shouldSkipNode(element)) continue;
-          const value = element.getAttribute(attribute);
-          if (!value) continue;
-          const next = translateUiText(value, locale);
-          if (next !== value) element.setAttribute(attribute, next);
+          if (!(element instanceof Element) || !attribute || shouldSkipAttribute(element)) continue;
+          localizeAttribute(element, attribute, locale);
           continue;
         }
         for (const node of Array.from(record.addedNodes)) {
@@ -829,7 +941,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
             if (node instanceof Element && shouldSkipNode(node)) continue;
             localizeElement(node, locale);
           } else if (node.nodeType === Node.TEXT_NODE && !shouldSkipNode(node) && node.nodeValue) {
-            node.nodeValue = translateUiText(node.nodeValue, locale);
+            localizeText(node, locale);
           }
         }
       }
@@ -859,6 +971,14 @@ export function useI18n(): LocaleContextValue {
   const context = useContext(LocaleContext);
   if (!context) throw new Error('useI18n must be used inside LocaleProvider');
   return context;
+}
+
+/** Display-only metadata translation; standalone component tests default to
+ * the stored language. Controlled inputs retain their original backing value. */
+export function useWorkflowText(): (value: string) => string {
+  const context = useContext(LocaleContext);
+  const locale = context?.locale || getStoredLocale();
+  return useCallback((value: string) => translateUiText(value, locale), [locale]);
 }
 
 export function LanguageToggle({ floating = false }: { floating?: boolean }) {

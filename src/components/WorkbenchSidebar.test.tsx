@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render as renderWithoutLocale, screen, fireEvent, cleanup } from '@testing-library/react';
+import { LocaleProvider } from '../i18n';
+import type { ReactNode } from 'react';
+const render = (node: ReactNode) => renderWithoutLocale(node, { wrapper: LocaleProvider });
 import WorkbenchSidebar, { type WorkbenchSidebarTab } from './WorkbenchSidebar';
 import { listWorkflows } from '../features/workflows/api';
 import type { Workflow } from '@/shared/workflow';

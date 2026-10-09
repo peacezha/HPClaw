@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { WORKFLOW_CATEGORIES } from '../../shared/workflow';
 import type { Workflow } from './workflowTypes';
 import { resolveWorkflowStepGraph } from './workflowRunService';
+import { translateUiText } from '../../src/i18n';
 
 const { state } = vi.hoisted(() => ({ state: { tmpRoot: '' } }));
 
@@ -33,6 +34,24 @@ const storeFile = () => path.join(state.tmpRoot, 'workflows', 'workflows.json');
 const deletedFile = () => path.join(state.tmpRoot, 'workflows', 'deleted-builtin-seeds.json');
 
 describe('内置流程分类映射', () => {
+  it('covers every built-in metadata field in English without modifying scientific definitions', async () => {
+    const store = await freshStore();
+    const workflows = (await store.loadWorkflows()).filter(w => w.source === 'builtin');
+    const before = JSON.stringify(workflows);
+    const missing: string[] = [];
+    const check = (value?: string) => { if (value && /[\u3400-\u9fff]/.test(translateUiText(value, 'en-US'))) missing.push(value); };
+    for (const w of workflows) {
+      check(w.name); check(w.description); check(w.manifest?.inputHint);
+      w.keywords.forEach(check);
+      for (const p of [...w.params, ...w.steps.flatMap(s => s.params || [])]) { check(p.label); check(p.help); check(p.placeholder); }
+      for (const s of w.steps) { check(s.title); check(s.notes); check(s.phase); }
+      for (const r of w.manifest?.references || []) { check(r.name); check(r.source); }
+      for (const q of w.manifest?.qcGates || []) { check(q.metric); check(q.pass); check(q.warn); check(q.onFail); }
+    }
+    expect(workflows.length).toBeGreaterThanOrEqual(59);
+    expect([...new Set(missing)]).toEqual([]);
+    expect(JSON.stringify(workflows)).toBe(before);
+  });
   it('59 个内置流程全部有映射，且分类名都在 WORKFLOW_CATEGORIES 内', async () => {
     const store = await freshStore();
     const keys = Object.keys(store.BUILTIN_CATEGORIES);

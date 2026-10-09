@@ -33,6 +33,33 @@ async function startRoutes(service: Record<string, any>, onResponse?: (response:
 }
 
 describe('remote file routes', () => {
+  it('resolves the screenshot relative report using exact project hints only', async () => {
+    const service = { stat: vi.fn(async (target: string) => {
+      if (target !== '/project/07_report/report.html') throw Object.assign(new Error(`no such file for path ${target}`), { code: 'ENOENT' });
+      return { name: 'report.html', path: target, kind: 'file', size: 30_000_000 };
+    }), list: vi.fn(), openReadStream: vi.fn() };
+    const base = await startRoutes(service);
+    const response = await fetch(`${base}/api/files/html/resolve`, { method: 'POST', headers: { 'X-SSH-Session-Id': 'active', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: '07_report/report.html', basePaths: ['/project', '/run'] }) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).filePath).toBe('/project/07_report/report.html');
+    expect(service.stat.mock.calls.map(call => call[0])).toEqual(['/project/07_report/report.html', '/run/07_report/report.html']);
+    expect(service.list).not.toHaveBeenCalled();
+    expect(service.openReadStream).not.toHaveBeenCalled();
+  });
+  it('reports ambiguous paths rather than guessing a report', async () => {
+    const service = { stat: vi.fn(async (target: string) => ({ name: 'report.html', path: target, kind: 'file', size: 10 })) };
+    const base = await startRoutes(service);
+    const response = await fetch(`${base}/api/files/html/resolve`, { method: 'POST', headers: { 'X-SSH-Session-Id': 'active', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: '07_report/report.html', basePaths: ['/project', '/run'] }) });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatchObject({ code: 'REMOTE_REPORT_AMBIGUOUS', candidates: ['/project/07_report/report.html', '/run/07_report/report.html'] });
+  });
+  it('does not hide permission errors by trying another report directory', async () => {
+    const service = { stat: vi.fn(async (target: string) => { throw Object.assign(new Error(`permission denied for path ${target}`), { code: 'EACCES' }); }) };
+    const base = await startRoutes(service);
+    const response = await fetch(`${base}/api/files/html/resolve`, { method: 'POST', headers: { 'X-SSH-Session-Id': 'active', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: 'report.html', basePaths: ['/private', '/public'] }) });
+    expect(response.status).toBe(403);
+    expect(service.stat).toHaveBeenCalledTimes(1);
+  });
   it('streams large report documents without using the bounded text reader', async () => {
     const html = '<html><head></head><body>中文<script src="assets/plot.js"></script></body></html>';
     const bytes = Buffer.from(html);

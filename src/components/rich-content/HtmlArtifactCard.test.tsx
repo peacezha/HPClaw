@@ -2,6 +2,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import HtmlArtifactCard from './HtmlArtifactCard';
+import { LanguageToggle, LocaleProvider } from '../../i18n';
 
 const SESSION = 'cluster-session-1';
 
@@ -26,10 +27,22 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.unstubAllGlobals();
 });
 
 describe('HtmlArtifactCard', () => {
+  it('localizes preview controls inside protected chat content without translating the filename', async () => {
+    render(<LocaleProvider><LanguageToggle /><div data-user-content="true"><HtmlArtifactCard title="我的报告" html="<html><body>报告正文</body></html>" path="/run/report.html" onOpenWebPanel={vi.fn()} /></div></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    expect(screen.getByRole('button', { name: 'Preview in side panel' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand page preview' }));
+    expect(screen.getByRole('button', { name: 'Disable page scripts' })).toBeTruthy();
+    expect(screen.getByText('我的报告')).toBeTruthy();
+    expect(screen.getByTestId('html-artifact-iframe').getAttribute('srcdoc')).toContain('报告正文');
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    expect(screen.getByRole('button', { name: '关闭网页脚本' })).toBeTruthy();
+  });
   it('keeps the classic compact card and initial height while allowing manual resizing', () => {
     render(<HtmlArtifactCard html="<html><body>report</body></html>" />);
     expect(screen.getByTestId('html-artifact-card')).toHaveClass('rounded-lg', 'bg-scholar-900/60');

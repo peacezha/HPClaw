@@ -19,6 +19,10 @@ export interface WorkflowRunStep {
   jobIds?: string[];
   summary?: string;
   qc?: WorkflowRunQc;
+  /** Snapshot of declared QC criteria; no automatic interpretation of free-text thresholds. */
+  qcCriteria?: import('./flowManifest').QcGate[];
+  /** Explicit user acknowledgement through the resume endpoint, never set by agent patches. */
+  qcOverride?: { approvedAt: number; revision: number };
   outputs?: string[];
   /** 支撑完成判定的真实命令、日志、指标或文件证据。 */
   evidence?: string[];

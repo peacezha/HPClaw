@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { LocaleProvider } from '../i18n';
-import AIChat from './AIChat';
+import AIChat, { buildConversationTimeline, extractOutputFiles } from './AIChat';
 import { saveAIProfile } from '../services/aiProfile';
 import { saveAgentWorkspace, clearAgentWorkspace } from '../services/agentWorkspace';
 
@@ -18,6 +18,10 @@ function makeFile(name: string, absolutePath: string): File {
   Object.defineProperty(file, 'testPath', { value: absolutePath });
   return file;
 }
+
+it('does not turn a relative report or HTTP URL into a false absolute download path', () => {
+  expect(extractOutputFiles('07_report/report.html https://host/report.html ./results/r.tsv ~/run/a.pdf /project/07_report/report.html')).toEqual(['/project/07_report/report.html', '~/run/a.pdf']);
+});
 
 function installDesktop() {
   (window as any).hpclawDesktop = {
@@ -76,6 +80,19 @@ afterEach(() => {
 });
 
 describe('AIChat 对话附件', () => {
+  it('collapses existing DSH technical logs but keeps the answer and error visible', () => {
+    const messages = [
+      { role: 'user' as const, content: '继续' },
+      { role: 'system' as const, content: '[🔧 cluster_fs] {"action":"push","path":"/data/step-03.sh"}' },
+      { role: 'system' as const, content: '[📋 cluster_fs] copied' },
+      { role: 'assistant' as const, content: '作业已提交，产物尚未核验。' },
+      { role: 'system' as const, content: '[❌ Error] 通信中断；请核对现有作业。' },
+    ];
+    const result = buildConversationTimeline(messages, 0);
+    expect(result.map(item => item.type)).toEqual(['message', 'execution', 'message', 'message']);
+    expect(result[1]).toMatchObject({ items: [{ absoluteIndex: 1 }, { absoluteIndex: 2 }] });
+    expect(messages[1].content).toContain('cluster_fs');
+  });
   it('本地模式：选中的文件复制进工作区 attachments/，出现可移除的 chip', async () => {
     saveAgentWorkspace('E:\\work');
     renderChat('local-workbench');

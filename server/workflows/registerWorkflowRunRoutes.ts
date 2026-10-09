@@ -12,6 +12,7 @@ import {
 } from './workflowRunService';
 import type { WorkflowRunPatch } from '../../shared/workflowRun';
 import type { WorkflowRun } from '../../shared/workflowRun';
+import { qcPauseReason, unresolvedQcFailures } from '../../shared/workflowQc';
 
 export interface WorkflowRunSession {
   sessionId: string;
@@ -100,6 +101,9 @@ export function registerWorkflowRunRoutes(
       if (!session) return sendError(res, 401, '需要活跃的 SSH 会话');
       const runDir = String(req.body?.runDir || '');
       const current = await readWorkflowRun(session.exec, session.home, runDir);
+      if (unresolvedQcFailures(current).length && req.body?.acknowledgeFailedQc !== true) {
+        return sendError(res, 409, qcPauseReason(current));
+      }
       if (current.status === 'done' || current.status === 'cancelled') {
         return sendError(res, 409, '已完成或已取消的流程不能继续；请新建一次运行');
       }
@@ -112,8 +116,8 @@ export function registerWorkflowRunRoutes(
         expectedRevision: Number.isInteger(expectedRevision) ? expectedRevision : undefined,
         // 环境阻断仍保留阻断态，让 Agent 先完成环境修复；其余状态重新激活。
         status: current.status === 'blocked_env' ? 'blocked_env' : 'running',
-        error: current.status === 'failed' ? '' : current.error,
-      });
+        error: current.status === 'failed' || req.body?.acknowledgeFailedQc === true ? '' : current.error,
+      }, { acknowledgeFailedQc: req.body?.acknowledgeFailedQc === true });
       onRunChanged?.(session.sessionId, run);
       res.json({ success: true, run });
     } catch (err: any) {

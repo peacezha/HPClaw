@@ -113,6 +113,7 @@ const AGENT_ASK_SENTINEL = '__ASK__';
 const AGENT_CANCELLED_SENTINEL = '__CANCELLED__';
 
 function resolveAgentDonePayload(streamedText: string, doneContent?: string): string {
+  if (doneContent === AGENT_ASK_SENTINEL || doneContent === AGENT_CANCELLED_SENTINEL) return doneContent;
   return (streamedText.trim() || (doneContent || '').trim());
 }
 

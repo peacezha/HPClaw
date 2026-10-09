@@ -63,6 +63,7 @@ export function findActiveRunByConversation(conversationId: string): ActiveRun |
 /** 事件先落缓冲（供 attach 重放），再推给当前 attach 的订阅者。 */
 export function pushRunEvent(run: ActiveRun, event: ActiveRunEvent): void {
   if (event.type === 'content' && typeof event.content === 'string') run.text += event.content;
+  if (event.type === 'done' && event.authoritative === true && typeof event.content === 'string') run.text = event.content;
   run.events.push(event);
   if (run.events.length > MAX_BUFFERED_EVENTS) {
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS);

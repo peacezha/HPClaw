@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('hpclawDesktop', {
+  locale: {
+    get: () => ipcRenderer.invoke('hpclaw:locale:get'),
+    set: locale => ipcRenderer.invoke('hpclaw:locale:set', locale),
+  },
   // 从 <input type="file"> 的 File 对象取回磁盘绝对路径
   // （Electron 32 起移除了 File.path，官方替代即 webUtils.getPathForFile）
   getPathForFile: (file) => webUtils.getPathForFile(file),
