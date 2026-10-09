@@ -20,6 +20,8 @@ jobs:
           node-version: 22.17.1
           cache: npm
       - run: npm ci
+      - name: Download the pinned Electron runtime
+        run: node node_modules/electron/install.js
       - run: npm run lint
       - run: npm test
       - name: Build installer and verify embedded archive CRC
