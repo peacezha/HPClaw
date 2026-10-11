@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import type { WorkflowRun, WorkflowRunPatch } from '../../shared/workflowRun';
 import { buildWorkflowRunSummary, createWorkflowRun, updateWorkflowRun } from './workflowRunService';
 import { registerWorkflowRunRoutes } from './registerWorkflowRunRoutes';
+import { loadWorkflows } from './workflowStore';
 
 vi.mock('./workflowStore', () => ({ loadWorkflows: vi.fn(async () => []) }));
 
@@ -141,6 +142,21 @@ async function api(env = fixture('fail'), authenticated = true) {
 }
 
 describe('QC resume API', () => {
+  it('rejects new runs for pending-disposal definitions before any SSH access', async () => {
+    vi.mocked(loadWorkflows).mockResolvedValueOnce([{
+      id: 'discard', name: 'discard', description: '', keywords: [], params: [], steps: [], source: 'user', createdAt: 1, updatedAt: 1,
+      lifecycle: { state: 'pending_disposal', origin: 'user', updatedAt: 1 },
+    }]);
+    const env = fixture('fail');
+    const app = express(); app.use(express.json());
+    registerWorkflowRunRoutes(app, () => ({ sessionId: 's', home: '/home/qc', exec: env.exec }));
+    const server = app.listen(0, '127.0.0.1'); servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const addr = server.address() as { port: number };
+    const response = await fetch(`http://127.0.0.1:${addr.port}/api/workflows/discard/runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    expect(response.status).toBe(409); expect((await response.json()).error).toContain('待弃置');
+    expect(env.exec).not.toHaveBeenCalled();
+  });
   it('requires a cluster session', async () => {
     const { post } = await api(fixture('fail'), false);
     expect((await post({ expectedRevision: 4, acknowledgeFailedQc: true })).status).toBe(401);

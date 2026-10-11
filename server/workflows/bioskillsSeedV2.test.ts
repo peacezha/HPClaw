@@ -131,10 +131,10 @@ describe('BioSkills managed seed upgrades', () => {
     const userCopy: Workflow = { ...generated('bioskills-user-copy', 'user copy'), source: 'user' };
     const store = [legacy, customized, obsolete, userCopy];
     const result = mergeGeneratedBioskills(store, [generated('bioskills-a', 'new a'), generated('bioskills-b', 'new b')]);
-    expect(result).toMatchObject({ updated: 1, removed: 1, preserved: 1, changed: true });
+    expect(result).toMatchObject({ updated: 2, removed: 0, preserved: 1, changed: true });
     expect(store.find(item => item.id === 'bioskills-a')?.name).toBe('new a');
     expect(store.find(item => item.id === 'bioskills-b')?.name).toBe('my custom name');
-    expect(store.some(item => item.id === 'bioskills-obsolete')).toBe(false);
+    expect(store.find(item => item.id === 'bioskills-obsolete')?.lifecycle).toMatchObject({ state: 'pending_disposal', reasonCode: 'retired_seed' });
     expect(store.some(item => item.id === 'bioskills-user-copy')).toBe(true);
   });
 });

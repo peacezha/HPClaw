@@ -4,8 +4,18 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import fs from 'node:fs';
 
 const root = path.resolve(process.argv[2]);
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+if (Number(pkg.version.split('.')[2]) >= 51) {
+  const frontend = fs.readdirSync(path.join(root, 'dist/assets')).filter(name => name.endsWith('.js')).map(name => fs.readFileSync(path.join(root, 'dist/assets', name), 'utf8')).join('\n');
+  assert(frontend.includes('records · complete history'));
+  assert(frontend.includes('Expand execution details'));
+  assert(frontend.includes('Validating outputs automatically'));
+  assert(fs.existsSync(path.join(root, 'third-party/elkjs/LICENSE.md')));
+  assert(!fs.existsSync(path.join(root, 'dist/qa/chat-continuity.html')));
+}
 const reservation = net.createServer();
 await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
 const port = reservation.address().port;

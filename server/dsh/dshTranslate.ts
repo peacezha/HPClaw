@@ -46,7 +46,6 @@ export interface DshTranslator {
 }
 
 const CONFIRM_TITLE = 'Agent 请求执行命令';
-const TOOL_RESULT_MAX = 4000;
 
 /** dsh 的 plugin 审批 reason 形如："HPClaw 命令确认\n风险级: <risk>\n命令: <cmd>" */
 const CONFIRM_REASON_PATTERN = /^HPClaw 命令确认\r?\n风险级\s*[:：]\s*(.+?)\r?\n命令\s*[:：]\s*([\s\S]*)$/;
@@ -109,12 +108,6 @@ export function createTranslator(hooks: TranslatorHooks): DshTranslator {
             .map((part: any) => part.text as string)
         : [];
       let result = texts.join('\n');
-      if (result.length > TOOL_RESULT_MAX) {
-        const marker = `\n...[HPClaw display truncated: ${result.length} characters; inspect the source before drawing conclusions]...\n`;
-        const head = Math.ceil((TOOL_RESULT_MAX - marker.length) / 2);
-        const tail = TOOL_RESULT_MAX - marker.length - head;
-        result = result.slice(0, head) + marker + result.slice(-tail);
-      }
       if (item.isError || data?.isError) result = `[error] ${result}`;
       send({ type: 'tool_result', name, result, ...(name === 'run_command' && typeof args?.command === 'string' ? { command: args.command } : {}) });
     }

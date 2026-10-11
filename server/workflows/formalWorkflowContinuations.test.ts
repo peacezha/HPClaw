@@ -8,6 +8,7 @@ import {
   listPendingFormalWorkflowContinuations,
   markFormalWorkflowJobFinished,
   markFormalWorkflowResuming,
+  markFormalWorkflowWaitingUser,
   removeFormalWorkflowContinuation,
 } from './formalWorkflowContinuations';
 
@@ -48,5 +49,19 @@ describe('formal workflow continuations', () => {
     addFormalWorkflowContinuations(['1'], context);
     addFormalWorkflowContinuations(['1'], context);
     expect(listPendingFormalWorkflowContinuations(connection)).toHaveLength(1);
+  });
+  it('retains conversation metadata across restart and does not undo an explicit pause on duplicate DONE', () => {
+    const connection = setup();
+    const [record] = addFormalWorkflowContinuations(['123'], {
+      runDir: '/run', workflowId: 'wf', runId: 'r', connection,
+      conversationId: 'original-chat', locale: 'en-US', confirmationPolicy: 'dangerous',
+    });
+    markFormalWorkflowJobFinished(connection, '123', 'DONE', 'new-session');
+    expect(listPendingFormalWorkflowContinuations(connection)[0]).toMatchObject({
+      conversationId: 'original-chat', locale: 'en-US', terminalStatus: 'DONE', state: 'job_finished',
+    });
+    markFormalWorkflowWaitingUser(record.id);
+    expect(markFormalWorkflowJobFinished(connection, '123', 'DONE', 'new-session')).toEqual([]);
+    expect(listPendingFormalWorkflowContinuations(connection)).toEqual([]);
   });
 });

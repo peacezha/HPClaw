@@ -34,10 +34,14 @@ jobs:
           node-version: 22.17.1
           cache: npm
       - run: npm ci
+      - name: Download the pinned Electron runtime
+        run: node node_modules/electron/install.js
       - name: Read package version
         run: node -e "console.log('HPCLAW_PACKAGE_VERSION=' + require('./package.json').version)" >> "$GITHUB_ENV"
       - run: npm run lint
       - run: npx vitest run electron/local-files.test.ts server/webAccess.test.ts scripts/web-runtime-config.test.ts src/components/WebPanelDrawer.test.tsx src/components/Terminal.test.tsx server/workflows/paperWorkflowGeneration.test.ts server/workflows/paperPublicData.test.ts server/workflows/paperModelTransport.test.ts server/workflows/paperLearningPrompt.test.ts --maxWorkers 1 --minWorkers 1
+      - name: Verify chat, continuous execution and workflow dependencies
+        run: npx vitest run src/components/AIChat.test.tsx src/components/WorkflowRunCard.test.tsx src/components/FlowRunnerDrawer.test.tsx src/components/WorkflowFlowGraph.test.tsx src/features/workflows/flowGraphLayout.test.ts shared/workflowExecution.test.ts shared/workflowDependencies.test.ts shared/workflowCatalog.test.ts server/ai/jobWakeQueue.test.ts server/ai/legacyJobResumer.test.ts server/dsh/dshJobResumer.test.ts server/dsh/dshTranslate.test.ts server/dsh/jobAgentBindings.test.ts server/notifications/jobWatcher.test.ts server/workflows/formalWorkflowContinuations.test.ts server/workflows/runAnnotate.test.ts server/workflows/workflowRunService.test.ts server/workflows/chipseqDag.test.ts --maxWorkers 1 --minWorkers 1
       - run: npm run prepare:platform
       - run: npm run electron:mac
         env:

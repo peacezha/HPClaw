@@ -145,7 +145,7 @@ export function addBindings(jobIds: string[], ctx: JobBindingContext): number {
       existing.locale = ctx.locale;
       continue;
     }
-    list.push({ jobId, ...ctx, submittedAt: Date.now(), resumeCount: 0 });
+    list.push({ ...ctx, jobId, submittedAt: Date.now(), resumeCount: 0 });
     added += 1;
   }
   // LRU：超上限按 submittedAt 淘汰最老。

@@ -2,7 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { generateText } from 'ai';
 import { buildModel } from '../ai/agentRunner';
 import { profileFromBody } from '../ai/contextBuilder';
-import { deleteWorkflow, loadWorkflows, upsertWorkflow } from './workflowStore';
+import { deleteWorkflow, loadWorkflows, setWorkflowLifecycle, upsertWorkflow } from './workflowStore';
 import { matchWorkflows } from './workflowMatch';
 import { sanitizeManifest } from './flowManifest';
 import {
@@ -355,6 +355,19 @@ export function registerWorkflowRoutes(app: Express): void {
       const removed = await deleteWorkflow(String(req.params.id));
       if (!removed) return sendError(res, 404, 'Workflow not found');
       res.json({ success: true });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
+  app.patch('/api/workflows/:id/lifecycle', async (req, res) => {
+    try {
+      const state = req.body?.state;
+      if (state !== 'active' && state !== 'pending_disposal') return sendError(res, 400, 'Invalid workflow lifecycle state');
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 1000) : '';
+      const workflow = await setWorkflowLifecycle(String(req.params.id), state, reason);
+      if (!workflow) return sendError(res, 404, 'Workflow not found');
+      res.json({ success: true, workflow });
     } catch (err: any) {
       sendError(res, 500, err.message || String(err));
     }

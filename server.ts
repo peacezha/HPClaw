@@ -68,8 +68,9 @@ import { installSkillFromSource } from './server/ai/skillInstaller';
 import { mergeConversationMemory, type ConversationWithMemory } from './server/ai/conversationMemory';
 import { clusterContext } from './server/ai/clusterContext';
 import { resolveRequestSessionId } from './server/cluster/sessionRequest';
-import { annotateRuns, collectActiveJobIds, parseBjobsStates, reconcileRunsWithScheduler } from './server/workflows/runAnnotate';
-import { readWorkflowRun, updateWorkflowRun, writeWorkflowRun } from './server/workflows/workflowRunService';
+import { annotateRuns, collectActiveJobIds, needsAutomaticOutputReview, parseBjobsStates, reconcileRunsWithScheduler } from './server/workflows/runAnnotate';
+import { readWorkflowRun, reconcileWorkflowRunWithScheduler, updateWorkflowRun } from './server/workflows/workflowRunService';
+import { JobWakeQueue } from './server/ai/jobWakeQueue';
 import { unresolvedQcFailures } from './shared/workflowQc';
 import { importLegacyWorkflowRunIndex, readIndexedWorkflowRuns } from './server/workflows/workflowRunIndex';
 import {
@@ -108,7 +109,7 @@ import {
 import { stopSidecar } from './server/dsh/dshSidecar';
 import { normalizeWorkspace } from './server/dsh/workspace';
 import { maybeResumeAgent } from './server/dsh/dshJobResumer';
-import { getBinding, initJobAgentBindings, markResumed, rebindClusterJobs } from './server/dsh/jobAgentBindings';
+import { addBindings, getBinding, initJobAgentBindings, markResumed, rebindClusterJobs } from './server/dsh/jobAgentBindings';
 import { maybeResumeLegacyAgent } from './server/ai/legacyJobResumer';
 import { registerLegacyJobBindings } from './server/ai/legacyJobBindings';
 import { createJobEventHandler } from './server/notifications/jobEventHandler';
@@ -176,6 +177,7 @@ const sessions = new Map<string, ActiveSession>();
 const pendingAiConfirmations = new CommandApprovals();
 const pendingAiQuestions = new UserQuestions();
 const formalWorkflowResumeLocks = new Set<string>();
+const formalWorkflowWakeQueue = new JobWakeQueue();
 
 function createSessionId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -203,7 +205,7 @@ function hasSession(sessionId: string | undefined): boolean {
 
 function trackFormalWorkflowJobs(
   sessionId: string,
-  workflowRun: { workflowId: string; runId: string; runDir: string } | undefined,
+  workflowRun: { workflowId: string; runId: string; runDir: string; conversationId?: string; locale?: 'zh-CN' | 'en-US'; confirmationPolicy?: 'never' | 'dangerous' | 'state_changes' | 'every_command' } | undefined,
   jobIds: string[],
 ): void {
   jobWatcher.trackJobs(sessionId, jobIds);
@@ -215,6 +217,9 @@ function trackFormalWorkflowJobs(
     runDir: workflowRun.runDir,
     sessionId,
     connection: session.info,
+    conversationId: workflowRun.conversationId,
+    locale: workflowRun.locale,
+    confirmationPolicy: workflowRun.confirmationPolicy,
   });
 }
 
@@ -223,14 +228,19 @@ function restoreFormalWorkflowMonitoring(sessionId: string, session: ActiveSessi
   const pending = listPendingFormalWorkflowContinuations(session.info);
   if (pending.length === 0) return;
   jobWatcher.trackJobs(sessionId, pending.map(record => record.jobId));
+  for (const record of pending) {
+    if (record.terminalStatus) void reconcileFinishedWorkflowJob(sessionId, record.jobId, record.terminalStatus);
+  }
   console.log('[workflow-continuation] restored %d jobs for %s', pending.length, session.info.username);
 }
 
-async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobId: string): Promise<void> {
-  if (!run?.runDir || run.status !== 'waiting_user' || formalWorkflowResumeLocks.has(run.runDir)) return;
-  if (unresolvedQcFailures(run).length) return; // QC failure is a scientific pause, not a job-completion wake-up.
+async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobId: string): Promise<boolean> {
+  if (!run?.runDir || !needsAutomaticOutputReview(run) || formalWorkflowResumeLocks.has(run.runDir)) return false;
   const s = getSession(sessionId);
-  if (!s) return;
+  if (!s) return false;
+  const continuation = listPendingFormalWorkflowContinuations(s.info).find(record => record.runDir === run.runDir);
+  if (continuation?.conversationId && findActiveRunByConversation(continuation.conversationId)) return false;
+  if (unresolvedQcFailures(run).length) return false;
   const profile = loadServerAiProfile();
   if (!profile?.apiKey) {
     const paused = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, run.runDir, {
@@ -238,10 +248,11 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       error: `作业 ${jobId} 已完成，但未找到可用 AI 配置，无法自动验收并继续。`,
     }).catch(() => undefined);
     if (paused) emitWorkflowRunChanged(sessionId, paused);
-    return;
+    return true;
   }
 
   formalWorkflowResumeLocks.add(run.runDir);
+  if (continuation) markFormalWorkflowResuming(continuation.id);
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 10 * 60_000);
   timer.unref?.();
@@ -251,7 +262,9 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       error: '',
     });
     emitWorkflowRunChanged(sessionId, resumed);
-    if (unresolvedQcFailures(resumed).length) return;
+    if (unresolvedQcFailures(resumed).length) return true;
+    let finalText = '';
+    const statusWrites: Promise<unknown>[] = [];
     await runAgent({
       sid: sessionId,
       run: (_sid, command, timeout) => s.cluster.exec(command, timeout),
@@ -263,7 +276,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       userSkillsDir: USER_SKILLS_DIR,
       runtimeConfig: {
         planningPolicy: 'auto',
-        confirmationPolicy: 'never',
+        confirmationPolicy: continuation?.confirmationPolicy || 'dangerous',
         pathPolicy: 'full_access',
         maxCommands: 40,
         maxSteps: 200,
@@ -278,9 +291,13 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
         workflowId: resumed.workflowId,
         runId: resumed.runId,
         runDir: resumed.runDir,
+        conversationId: continuation?.conversationId,
+        locale: continuation?.locale,
+        confirmationPolicy: continuation?.confirmationPolicy,
       }, jobIds),
       jobSubmissionGuard,
-      locale: 'zh-CN',
+      conversationId: continuation?.conversationId,
+      locale: continuation?.locale || 'zh-CN',
     }, {
       onText: () => {},
       onReason: () => {},
@@ -288,25 +305,36 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
       onToolResult: () => {},
       onStep: () => {},
       onAsk: (question) => {
-        void updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
+        statusWrites.push(updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
           status: 'waiting_user',
           error: question,
-        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {});
+        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
       },
       onWorkflowRunChanged: next => emitWorkflowRunChanged(sessionId, next),
-      onDone: text => console.log('[workflow-resume:%s] done=%s', resumed.runId, text.slice(0, 200)),
+      onDone: text => { finalText = text; },
       onErr: error => {
         console.error('[workflow-resume:%s] error=%s', resumed.runId, error);
-        void updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
+        statusWrites.push(updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
           status: 'waiting_user',
           error: `自动续跑失败：${error}`,
-        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {});
+        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
       },
       sig: () => abort.signal,
     }, [{
       role: 'user',
       content: `后台监控确认作业 ${jobId} 已结束。请读取当前步骤的真实日志和预期输出，验证退出结果与 QC；证据充分后更新该步骤为 done 并继续后续步骤。若输出失败则标记 failed；若缺少决定性信息则 ask_user。`,
     }]);
+    await Promise.all(statusWrites);
+    if (continuation?.conversationId) {
+      const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir);
+      const answer = finalText && !finalText.startsWith('__') ? finalText : (latest.error || `流程当前状态：${latest.status}，步骤 ${latest.currentStep}/${latest.totalSteps}。`);
+      await appendJobResumeConversation(continuation.conversationId, [
+        { role: 'system', content: `后台作业 ${jobId} 结束，已触发同一 RUN 的输出核验与续跑；实际状态见下方。` },
+        { role: 'assistant', content: answer },
+      ], sessionId);
+      io.to(workflowRunRoom(sessionId)).emit('ai:resumed', { conversationId: continuation.conversationId, jobId, preview: answer.slice(0, 200) });
+    }
+    return true;
   } finally {
     clearTimeout(timer);
     formalWorkflowResumeLocks.delete(run.runDir);
@@ -318,56 +346,66 @@ async function reconcileFinishedWorkflowJob(sessionId: string, jobId: string, st
   const s = getSession(sessionId);
   if (!s) return;
   const continuationRecords = markFormalWorkflowJobFinished(s.info, jobId, status, sessionId);
-  try {
-    // 只读取显式注册在小型索引中的 run.json，不再遍历所有流程目录。
-    const indexed = await readIndexedWorkflowRuns(s.cluster.exec.bind(s.cluster), s.home, 100);
-    const runs: any[] = indexed.filter(run => (run.steps || []).some(step => (step.jobIds || []).includes(jobId)));
-    if (runs.length === 0) return;
-    const ids = collectActiveJobIds(runs);
-    const states = new Map<string, string>();
-    states.set(jobId, status);
-    if (ids.length > 0) {
-      const output = await s.cluster.exec(`bjobs -a -noheader -o "jobid stat" ${ids.join(' ')} 2>/dev/null; true`, 15_000).catch(() => '');
-      for (const [id, state] of parseBjobsStates(output)) states.set(id, state);
-      states.set(jobId, status);
-    }
-    const reconciled = reconcileRunsWithScheduler(runs, states);
-    for (let i = 0; i < reconciled.length; i++) {
-      const before = runs[i];
-      const after = reconciled[i];
-      const beforeSteps = (before.steps || []).map((step: any) => step.status).join(',');
-      const afterSteps = (after.steps || []).map((step: any) => step.status).join(',');
-      if (before.status !== after.status || beforeSteps !== afterSteps) {
-        (after as any).revision = (Number((before as any).revision) || 0) + 1;
-        await writeWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, after as any).catch(() => {});
-        emitWorkflowRunChanged(sessionId, after as any);
-      }
-      const continuation = continuationRecords.find(record => record.runDir === (after as any).runDir);
-      if (status === 'EXIT' && continuation) {
-        removeFormalWorkflowContinuation(continuation.id);
-      } else if (status === 'DONE' && (after as any).status === 'waiting_user') {
-        if (continuation?.resumeCount && continuation.resumeCount >= 3) {
-          markFormalWorkflowWaitingUser(continuation.id);
-          continue;
+  for (const record of continuationRecords) {
+    await formalWorkflowWakeQueue.enqueue(`${record.connectionKey}:${record.runDir}`, jobId, async () => {
+      try {
+        // Use the exact durable binding, not a truncated recent-run index.
+        const run = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir);
+        const ids = collectActiveJobIds([run]);
+        const states = new Map<string, string>();
+        for (const pending of listPendingFormalWorkflowContinuations(s.info)) {
+          if (pending.runDir === run.runDir && pending.terminalStatus) states.set(pending.jobId, pending.terminalStatus);
         }
-        if (continuation) markFormalWorkflowResuming(continuation.id);
-        void resumeFinishedFormalWorkflowRun(sessionId, after as any, jobId)
-          .then(async () => {
-            if (!continuation) return;
-            const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, (after as any).runDir).catch(() => undefined);
-            if (!latest || latest.status === 'waiting_user' || latest.status === 'blocked_env') {
-              markFormalWorkflowWaitingUser(continuation.id);
-            } else {
-              removeFormalWorkflowContinuation(continuation.id);
-            }
-          })
-          .catch(() => {
-            if (continuation) markFormalWorkflowWaitingUser(continuation.id);
+        if (ids.length) {
+          const output = await s.cluster.exec(
+            `if command -v bjobs >/dev/null 2>&1; then bjobs -a -noheader -o "jobid stat" ${ids.join(' ')} 2>/dev/null; ` +
+            `elif command -v sacct >/dev/null 2>&1; then sacct -n -X -j ${ids.join(',')} --format=JobIDRaw,State 2>/dev/null; fi; true`, 15_000,
+          ).catch(() => '');
+          for (const [id, state] of parseBjobsStates(output)) states.set(id, state);
+        }
+        states.set(jobId, status);
+        const after = await reconcileWorkflowRunWithScheduler(s.cluster.exec.bind(s.cluster), s.home, run.runDir, states);
+        emitWorkflowRunChanged(sessionId, after);
+        if (['done', 'failed', 'cancelled'].includes(after.status)) {
+          removeFormalWorkflowContinuation(record.id);
+          return;
+        }
+        if (!needsAutomaticOutputReview(after)) {
+          if (['waiting_user', 'blocked_env'].includes(after.status)) markFormalWorkflowWaitingUser(record.id);
+          return;
+        }
+        if (record.resumeCount >= 3) {
+          const paused = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir, {
+            status: 'waiting_user', error: '自动验收多次失败，已暂停。请检查具体日志与 AI 配置后从断点恢复；未重复提交作业。',
           });
+          emitWorkflowRunChanged(sessionId, paused);
+          markFormalWorkflowWaitingUser(record.id);
+          return;
+        }
+        const started = await resumeFinishedFormalWorkflowRun(sessionId, after, jobId);
+        if (!started) return; // Busy/offline: retain job_finished for the next recovery sweep.
+        const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir);
+        if (['waiting_user', 'blocked_env'].includes(latest.status)) markFormalWorkflowWaitingUser(record.id);
+        else removeFormalWorkflowContinuation(record.id);
+      } catch (err) {
+        // Keep the durable event pending. A failed read is not a request for user input.
+        console.warn('[workflow-continuation] reconciliation deferred: %s', err instanceof Error ? err.message : String(err));
+        markFormalWorkflowJobFinished(s.info, jobId, status, sessionId);
       }
-    }
-  } catch { /* 后台对账失败由下一轮列表轮询补偿 */ }
+    });
+  }
 }
+
+// Recover a terminal event lost during a disconnect, index read failure or busy foreground turn.
+const formalContinuationTimer = setInterval(() => {
+  for (const [sessionId, session] of sessions) {
+    if (session.cluster.state !== 'connected') continue;
+    for (const record of listPendingFormalWorkflowContinuations(session.info)) {
+      if (record.state === 'job_finished' && record.terminalStatus) void reconcileFinishedWorkflowJob(sessionId, record.jobId, record.terminalStatus);
+    }
+  }
+}, 45_000);
+formalContinuationTimer.unref?.();
 
 /** dsh/legacy 唤醒与后台（detached）运行共用的对话回写：把续跑系统消息与 AI 回答追加到对话存档。
  *  对话按计算目标物理分存：带 sessionId 的集群对话写到该集群的远程库，否则写本地库。 */
@@ -397,6 +435,14 @@ const appendJobResumeConversation = async (
     return false;
   }
 };
+
+async function readJobResumeConversation(conversationId: string, sessionId: string): Promise<{ messages: AIMessage[]; summary?: string } | null> {
+  const s = getSession(sessionId);
+  if (!s) return null;
+  const store = new ClusterConversationStore(new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)), s.home);
+  const record = await store.get(conversationId);
+  return record ? { messages: record.messages as AIMessage[], summary: record.summary } : null;
+}
 
 /** dsh/legacy 唤醒共用的外部通知（notify-config/飞书逻辑保持不变）。 */
 const notifyJobResume = async (title: string, content: string): Promise<void> => {
@@ -437,6 +483,10 @@ jobWatcher.configure({
             io.to(workflowRunRoom(sid)).emit('ai:resumed', payload);
           },
           notify: notifyJobResume,
+          onJobsSubmitted: (binding, jobIds) => {
+            addBindings(jobIds, binding);
+            jobWatcher.trackJobs(binding.sshSessionId, jobIds);
+          },
         },
       );
     },
@@ -454,6 +504,7 @@ jobWatcher.configure({
         lsfSkillDir: LSF_SKILLS_DIR,
         userSkillsDir: USER_SKILLS_DIR,
         appendConversation: appendJobResumeConversation,
+        loadConversation: readJobResumeConversation,
         emitToUi: (sid, payload) => {
           io.to(workflowRunRoom(sid)).emit('ai:resumed', payload);
         },
@@ -481,7 +532,9 @@ jobWatcher.configure({
   // 首轮基线例外：挂着未唤醒绑定的作业（重启恢复期间结束的）首轮即终态也要发事件。
   hasPendingBinding: (sessionId, jobId) => {
     const binding = getBinding(jobId, sessionId);
-    return Boolean(binding && binding.resumeCount === 0);
+    const session = getKnownSession(sessionId);
+    return Boolean(binding && binding.resumeCount === 0) || Boolean(session &&
+      listPendingFormalWorkflowContinuations(session.info).some(record => record.jobId === jobId));
   },
 });
 
@@ -1887,6 +1940,9 @@ app.post('/api/ai/stream', async (req, res) => {
               workflowId: workflowRunContext.workflowId,
               runId: workflowRunContext.runId,
               runDir: workflowRunContext.runDir,
+              conversationId: agentConversationId,
+              locale: requestLocale,
+              confirmationPolicy: agentConfirmationPolicy,
             } : undefined,
             jobIds,
           );
@@ -2279,9 +2335,10 @@ app.get('/api/workflow-runs', async (req, res) => {
           const after = reconciled[i];
           const beforeSteps = (before.steps || []).map((step: any) => step.status).join(',');
           const afterSteps = (after.steps || []).map((step: any) => step.status).join(',');
-          if (before.status !== after.status || beforeSteps !== afterSteps) {
-            await writeWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, after as any).catch(() => {});
-            if (sessionId) emitWorkflowRunChanged(sessionId, after);
+          if (before.status !== after.status || beforeSteps !== afterSteps || JSON.stringify(before.jobStates) !== JSON.stringify(after.jobStates)) {
+            const persisted = await reconcileWorkflowRunWithScheduler(s.cluster.exec.bind(s.cluster), s.home, after.runDir, parseBjobsStates(schedulerRaw));
+            reconciled[i] = persisted;
+            if (sessionId) emitWorkflowRunChanged(sessionId, persisted);
           }
         }
       } catch { /* 调度器核对失败不影响 run.json 基本展示 */ }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import * as asar from '@electron/asar';
 
 if (process.platform !== 'darwin' || !process.env.CI) throw new Error('Run the Mac package smoke test only on the isolated CI runner');
 const output = path.resolve(`release-mac-${process.arch}`);
@@ -11,7 +12,17 @@ const resources = path.join(app, 'Contents', 'Resources');
 const bundledNode = path.join(resources, 'app.asar.unpacked', 'vendor', 'node-runtime', 'node');
 const dshBin = path.join(resources, 'app.asar.unpacked', 'vendor', 'dsh', 'lib', 'bin.js');
 assert(fs.existsSync(bundledNode), 'Packaged standalone Node missing');
-const cli = spawnSync(bundledNode, [dshBin, '--help'], { encoding: 'utf8', timeout: 30000 });
+const archive = path.join(resources, 'app.asar');
+const packaged = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
+const frontend = asar.listPackage(archive).filter(name => /dist[\\/]assets[\\/].*\.js$/.test(name)).map(name => asar.extractFile(archive, name.replace(/^[\\/]/, '')).toString('utf8')).join('\n');
+if (Number(packaged.version.split('.')[2]) >= 51) {
+  assert(frontend.includes('records · complete history'));
+  assert(frontend.includes('Expand execution details'));
+  assert(frontend.includes('Validating outputs automatically'));
+  assert(!asar.listPackage(archive).some(name => /[\\/]qa[\\/]/.test(name)));
+  assert(asar.extractFile(archive, path.join('third-party', 'elkjs', 'LICENSE.md')).length > 0);
+}
+const cli = spawnSync(bundledNode, [dshBin, '--help'], { encoding: 'utf8', timeout: 60000 });
 assert.equal(cli.status, 0, cli.stderr);
 const port = await new Promise(resolve => {
   const server = net.createServer();

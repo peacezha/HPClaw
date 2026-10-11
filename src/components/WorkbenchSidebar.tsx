@@ -20,10 +20,13 @@ import {
   Server,
   Settings2,
   Sun,
+  Trash2,
 } from 'lucide-react';
 import type { FileEntry, PickPathKind } from '@/shared/fileTransfer';
 import type { Workflow } from '@/shared/workflow';
 import { WORKFLOW_CATEGORIES } from '@/shared/workflow';
+import { isPendingDisposal, WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
+import WorkflowCatalogActionDialog, { type WorkflowCatalogAction } from './WorkflowCatalogActionDialog';
 import { listWorkflows } from '../features/workflows/api';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
 import ConversationList from './ConversationList';
@@ -135,6 +138,8 @@ export default function WorkbenchSidebar({
   const [loadingWorkflows, setLoadingWorkflows] = useState(false);
   const [workflowError, setWorkflowError] = useState('');
   const [workflowSearch, setWorkflowSearch] = useState('');
+  const [catalogueView, setCatalogueView] = useState<'active' | 'pending_disposal'>('active');
+  const [catalogueAction, setCatalogueAction] = useState<WorkflowCatalogAction | null>(null);
   // 流程分组折叠状态：默认全部展开，记忆在组件内
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
@@ -153,8 +158,14 @@ export default function WorkbenchSidebar({
   useEffect(() => {
     if (activeTab === 'workflows' && workflows.length === 0) void refreshWorkflows();
   }, [activeTab, refreshWorkflows, workflows.length]);
+  useEffect(() => {
+    const changed = () => { void refreshWorkflows(); };
+    window.addEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+    return () => window.removeEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+  }, [refreshWorkflows]);
 
   const visibleWorkflows = workflows.filter(workflow => {
+    if (isPendingDisposal(workflow) !== (catalogueView === 'pending_disposal')) return false;
     const query = workflowSearch.trim().toLowerCase();
     if (!query) return true;
     return `${workflow.name} ${workflow.description} ${workflow.keywords.join(' ')} ${displayText(workflow.name)} ${displayText(workflow.description)}`.toLowerCase().includes(query);
@@ -170,6 +181,7 @@ export default function WorkbenchSidebar({
 
   return (
     <aside className="w-[288px] max-w-[34vw] min-w-[232px] h-full shrink-0 border-r border-scholar-700 bg-scholar-950 flex flex-col overflow-hidden">
+      {catalogueAction && <WorkflowCatalogActionDialog key={catalogueAction.workflow.id} action={catalogueAction} onClose={() => setCatalogueAction(null)} onDone={() => { void refreshWorkflows(); }} />}
       {/* 品牌块 */}
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3.5 pb-1.5">
         <span className="text-sm font-semibold tracking-wide text-scholar-50">HPClaw</span>
@@ -326,7 +338,7 @@ export default function WorkbenchSidebar({
           <div className="h-full min-h-0 flex flex-col">
             <div className="flex items-center justify-between px-3 py-2 border-b border-scholar-700/60">
               <div>
-                <p className="text-xs font-medium text-scholar-100">正式流程</p>
+                <p className="text-xs font-medium text-scholar-100">{displayText(catalogueView === 'active' ? '正式流程' : '待弃置')}</p>
                 <p className="text-[10px] text-scholar-400">选择后在主页面配置</p>
               </div>
               <div className="flex items-center gap-0.5">
@@ -334,6 +346,10 @@ export default function WorkbenchSidebar({
                   <RefreshCw className={`w-3.5 h-3.5 ${loadingWorkflows ? 'animate-spin' : ''}`} />
                 </button>
               </div>
+            </div>
+            <div className="mx-2 mt-2 grid grid-cols-2 gap-1 rounded-lg bg-scholar-800 p-1" role="group" aria-label={displayText('流程板块')}>
+              <button type="button" aria-pressed={catalogueView === 'active'} onClick={() => setCatalogueView('active')} className={`rounded-md px-1 py-1.5 text-[11px] ${catalogueView === 'active' ? 'bg-accent/15 text-accent' : 'text-scholar-400'}`}>{displayText('正式流程')} {workflows.filter(w => !isPendingDisposal(w)).length}</button>
+              <button type="button" aria-pressed={catalogueView === 'pending_disposal'} onClick={() => setCatalogueView('pending_disposal')} className={`rounded-md px-1 py-1.5 text-[11px] ${catalogueView === 'pending_disposal' ? 'bg-amber-500/15 text-amber-400' : 'text-scholar-400'}`}>{displayText('待弃置')} {workflows.filter(isPendingDisposal).length}</button>
             </div>
             <label className="relative mx-2 mt-2">
               <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-scholar-400" />
@@ -382,12 +398,13 @@ export default function WorkbenchSidebar({
                         <button
                           type="button"
                           onClick={() => onSelectWorkflow(workflow)}
-                          title="配置并运行"
-                          aria-label="配置并运行"
+                          title={displayText(isPendingDisposal(workflow) ? '查看待弃置流程' : '配置并运行')}
+                          aria-label={displayText(isPendingDisposal(workflow) ? '查看待弃置流程' : '配置并运行')}
                           className="mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-accent opacity-0 transition-opacity hover:bg-accent/15 group-hover:opacity-100 focus-visible:opacity-100"
                         >
                           <Play className="h-3 w-3" />
                         </button>
+                        <button type="button" onClick={() => setCatalogueAction({ workflow, kind: 'delete' })} title={displayText('删除流程定义')} aria-label={displayText('删除流程定义')} className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-scholar-400 hover:bg-red-500/10 hover:text-red-400"><Trash2 className="h-3 w-3" /></button>
                       </div>
                     ))}
                   </div>

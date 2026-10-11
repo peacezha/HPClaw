@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import { loadWorkflows } from './workflowStore';
+import { isPendingDisposal } from '../../shared/workflowCatalog';
 import { readCachedPreflight, runPreflight } from './preflight';
 import {
   createWorkflowRun,
@@ -40,6 +41,7 @@ export function registerWorkflowRunRoutes(
       if (!session) return sendError(res, 401, '需要活跃的 SSH 会话');
       const workflow = (await loadWorkflows()).find(w => w.id === String(req.params.id));
       if (!workflow) return sendError(res, 404, '流程不存在');
+      if (isPendingDisposal(workflow)) return sendError(res, 409, '流程在待弃置中，请先恢复到正式流程再发起新运行；已有任务不受影响。');
       const hasRequiredEnvironment = !!workflow.manifest && [
         ...workflow.manifest.software,
         ...workflow.manifest.references,

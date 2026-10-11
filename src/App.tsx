@@ -29,6 +29,7 @@ import { statRemote } from './features/file-transfer/api';
 import type { EndpointOption } from './features/file-transfer/FileTransferWorkspace';
 import type { FileEntry, PickPathKind } from '@/shared/fileTransfer';
 import type { Workflow } from '@/shared/workflow';
+import { WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
 import {
   createConversationContextId,
   deriveConversationTitle,
@@ -157,6 +158,15 @@ export default function App() {
     else if (tab === 'webapis') setWorkspaceView('webapis');
   }, []);
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ workflow?: Workflow; deletedId?: string }>).detail;
+      if (!detail) return;
+      setSelectedWorkflow(current => current?.id === detail.deletedId ? null : current?.id === detail.workflow?.id ? detail.workflow! : current);
+    };
+    window.addEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+    return () => window.removeEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+  }, []);
   const [selectedRemoteEntry, setSelectedRemoteEntry] = useState<FileEntry | null>(null);
   // 流程面板的"选择路径"请求：resolve 回传选中的集群文件/目录（取消回传 null）
   const [pathPick, setPathPick] = useState<{ kind: PickPathKind; resolve: (path: string | null) => void } | null>(null);

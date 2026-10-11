@@ -1,8 +1,8 @@
 // Technical details remain available, but are collapsed and unmounted by default.
 // 工具结果等条目里的图片/表格路径渲染成紧凑卡片（复用 RichContentMessage，
 // 仅限 image/table 类型，避免输出里的 .py/.log 路径刷屏）。
-// 性能：折叠时条目不挂载（受控 details），展开（默认）才渲染内容与卡片。
-import React, { useState } from 'react';
+// 性能：折叠时条目不挂载（受控 details），展开后才渲染内容与卡片。
+import React, { useEffect, useState } from 'react';
 import { ChevronRight, TerminalSquare } from 'lucide-react';
 import { RichContentMessage, parseDshUiSpecText, DshUiSpecCard } from './rich-content';
 
@@ -23,8 +23,9 @@ function executionTraceBody(content: string): string {
   return content.replace(/^\[[^\]]+\]\s*/, '').trim();
 }
 
-export const ExecutionTrace = React.memo(function ExecutionTrace({ items, sessionId, workspace }: { items: ExecutionTraceItem[]; sessionId?: string | null; workspace?: string }) {
+export const ExecutionTrace = React.memo(function ExecutionTrace({ items, sessionId, workspace, expandDetails = false }: { items: ExecutionTraceItem[]; sessionId?: string | null; workspace?: string; expandDetails?: boolean }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(expandDetails), [expandDetails]);
   const commandCount = items.filter(item => /^\[(?:AI 执行命令|AI command)\]/.test(item.message.content)).length;
   const planCount = items.filter(item => /^\[(?:Agent step|Agent 计划|计划进度)/.test(item.message.content)).length;
   const toolCalls = items.filter(item => /^\[(?:🔧|Tool call)/.test(item.message.content)).length;

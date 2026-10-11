@@ -113,6 +113,50 @@ function makePollHarness(options: {
 }
 
 describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
+  it('does not turn missing, unavailable or still-active LSF accounting into DONE; retries without losing the job', async () => {
+    let state = '';
+    const h = makePollHarness({ exec: cmd => {
+      if (cmd.startsWith('bjobs -w')) return bjobsRaw();
+      if (cmd.startsWith('bjobs -a')) { if (state === 'ERROR') throw new Error('connection failed'); return state; }
+      return '';
+    } });
+    h.watcher.trackJobs('sess-1', ['111']);
+    for (state of ['', 'ERROR', 'RUN']) {
+      await h.poll();
+      expect(h.events()).toHaveLength(0);
+      expect((h.watcher as any).prevJobs.get('sess-1')).toEqual([expect.objectContaining({ jobId: '111', status: 'UNKNOWN' })]);
+    }
+    state = 'DONE';
+    await h.poll();
+    expect(h.events()).toEqual([expect.objectContaining({ jobId: '111', status: 'DONE' })]);
+  });
+
+  it('requires explicit terminal Slurm/PBS accounting and serializes overlapping polls', async () => {
+    const h = makePollHarness({ exec: () => '' });
+    const watcher = h.watcher as any;
+    for (const raw of ['', 'RUNNING', 'PENDING']) {
+      h.exec.mockResolvedValue(raw);
+      expect(await watcher.resolveSlurmFinalStatus(h.session, '222')).toBeUndefined();
+    }
+    h.exec.mockResolvedValue('FAILED');
+    expect(await watcher.resolveSlurmFinalStatus(h.session, '222')).toBe('EXIT');
+    h.exec.mockResolvedValue('COMPLETED');
+    expect(await watcher.resolveSlurmFinalStatus(h.session, '222')).toBe('DONE');
+    h.exec.mockResolvedValue('job_state = R\nExit_status = 0');
+    expect(await watcher.resolvePbsFinalStatus(h.session, '222')).toBeUndefined();
+    h.exec.mockResolvedValue('job_state = F\nExit_status = 0');
+    expect(await watcher.resolvePbsFinalStatus(h.session, '222')).toBe('DONE');
+    let release!: (raw: string) => void;
+    h.exec.mockImplementation(() => new Promise<string>(resolve => { release = resolve; }));
+    const first = h.poll();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const calls = h.exec.mock.calls.length;
+    await h.poll();
+    expect(h.exec.mock.calls.length).toBe(calls);
+    release(bjobsRaw());
+    await first;
+  });
+
   it('终态事件带 bpeek 输出尾部摘要，并持久化到 job-events.json', async () => {
     const h = makePollHarness({
       exec: cmd => {

@@ -39,6 +39,12 @@ afterEach(() => {
 });
 
 describe('extractSubmittedJobIds', () => {
+  it('registers a new child job without inheriting the parent job ID or resume count', () => {
+    const parent = { ...makeCtx(), jobId: '100', resumeCount: 2, submittedAt: 1 };
+    addBindings(['101'], parent);
+    expect(getBinding('101', 'ssh-1')).toMatchObject({ jobId: '101', resumeCount: 0 });
+    expect(getBinding('100', 'ssh-1')).toBeUndefined();
+  });
   it('extracts LSF bsub and batch submit job ids', () => {
     expect(extractSubmittedJobIds('Job <424242> is submitted to queue <normal>.')).toEqual(['424242']);
     expect(extractSubmittedJobIds('Submitted batch job 7890')).toEqual(['7890']);

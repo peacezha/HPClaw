@@ -49,6 +49,13 @@ describe('workflowMatch', () => {
     const matches = matchWorkflows(workflows, '我的作业一直失败怎么排查', 3);
     expect(matches[0]?.id).toBe('w2');
   });
+
+  it('待弃置流程不参与推荐，用户恢复后重新可匹配', () => {
+    const pending: Workflow = { ...workflows[0], lifecycle: { state: 'pending_disposal', origin: 'user', updatedAt: 1 } };
+    expect(matchWorkflows([pending], 'rnaseq')).toEqual([]);
+    const restored: Workflow = { ...pending, lifecycle: { state: 'active', origin: 'user', updatedAt: 2 } };
+    expect(matchWorkflows([restored], 'rnaseq')[0]?.id).toBe('w1');
+  });
 });
 
 describe('workflowTypes', () => {

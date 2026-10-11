@@ -5,6 +5,7 @@ import {
   AlertTriangle, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Plus, Trash2,
 } from 'lucide-react';
 import type { Workflow } from '@/shared/workflow';
+import { isPendingDisposal } from '@/shared/workflowCatalog';
 import type { PickPathKind } from '@/shared/fileTransfer';
 import { createWorkflowRun, listWorkflows } from '../features/workflows/api';
 import { composeRunMessage } from '../features/workflows/compose';
@@ -84,6 +85,7 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
   }, [onPickRemoteFolder]);
 
   const handleConfirm = useCallback(async () => {
+    if (workflow && isPendingDisposal(workflow)) { setFormError('此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。'); return; }
     if (!workflow || !sessionId || started) return;
     if (needInputs && inputs.length === 0) {
       setFormError('请先选择要处理的数据目录');
@@ -229,7 +231,7 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
         )}
 
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void handleConfirm()} disabled={!sessionId || starting || started}
+          <button type="button" onClick={() => void handleConfirm()} disabled={!sessionId || starting || started || isPendingDisposal(workflow)}
             className="btn-primary flex-1 !py-2 text-xs">
             {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
             {started ? '已发起运行' : starting ? '正在创建正式运行…' : '确认运行'}

@@ -59,6 +59,13 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 describe('FlowRunnerDrawer', () => {
+  it('blocks a new run for pending-disposal workflows without interrupting history', async () => {
+    render(<FlowRunnerDrawer workflow={makeWorkflow({ lifecycle: { state: 'pending_disposal', origin: 'user', updatedAt: 1 } })} sessionId="session-test" onClose={vi.fn()} onRun={vi.fn()} />);
+    expect(screen.getByText(/此流程在待弃置中/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '运行流程' })).toBeDisabled();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchWorkflowRuns).toHaveBeenCalled());
+  });
   it('only sends the failed-QC override flag after explicit risk confirmation', async () => {
     const runDir = '/home/u/hpclaw_flows/test/03_workspace/runs/qc-failed';
     vi.mocked(fetchWorkflowRuns).mockResolvedValueOnce([{
@@ -108,7 +115,7 @@ describe('FlowRunnerDrawer', () => {
     expect(screen.getByText(/预期输出：BAM/)).toBeInTheDocument();
   });
 
-  it('流程预览保留 workflow 的显式并行依赖，不降级成线性步骤链', () => {
+  it('流程预览保留 workflow 的显式并行依赖，不降级成线性步骤链', async () => {
     const { container } = render(<FlowRunnerDrawer workflow={makeWorkflow({
       steps: [
         { id: 'prepare', title: '准备', command: 'echo prepare', dependsOn: [] },
@@ -117,7 +124,7 @@ describe('FlowRunnerDrawer', () => {
         { id: 'report', title: '报告', command: 'echo report', dependsOn: ['star', 'kallisto'] },
       ],
     })} onClose={() => {}} onRun={() => {}} />);
-    expect(container.querySelector('path[data-from="prepare"][data-to="star"]')).toBeTruthy();
+    await waitFor(() => expect(container.querySelector('path[data-from="prepare"][data-to="star"]')).toBeTruthy());
     expect(container.querySelector('path[data-from="prepare"][data-to="kallisto"]')).toBeTruthy();
     expect(container.querySelector('path[data-from="kallisto"][data-to="report"]')).toBeTruthy();
     expect(container.querySelector('path[data-from="star"][data-to="kallisto"]')).toBeNull();

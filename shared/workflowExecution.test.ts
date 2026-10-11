@@ -12,6 +12,8 @@ import {
   parseWorkflowRunDetached,
   stripWorkflowConfigureDirectives,
   stripWorkflowRunDetachedMarkers,
+  stripWorkflowExecutionMarkers,
+  workflowRunIdentity,
 } from './workflowExecution';
 
 describe('workflow execution marker', () => {
@@ -20,6 +22,14 @@ describe('workflow execution marker', () => {
     expect(parseWorkflowExecutionContext(`before\n${line}\nafter`)).toEqual({
       workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/hpclaw_flows/wf/runs/run-1', policy: 'isolated-run-v1',
     });
+  });
+  it('strips only valid run protocol lines and uses normalized run identity for breakpoint resumes', () => {
+    const marker = formatWorkflowExecutionContext({ workflowId: 'w', runId: 'r', runDir: '/home/u/runs/r/' });
+    expect(stripWorkflowExecutionMarkers(marker + '\n从断点继续。')).toBe('从断点继续。');
+    expect(stripWorkflowExecutionMarkers('[HPCLAW_WORKFLOW_RUN] malformed')).toBe('[HPCLAW_WORKFLOW_RUN] malformed');
+    expect(workflowRunIdentity(parseWorkflowExecutionContext(marker)!)).toBe(workflowRunIdentity({
+      workflowId: 'w', runId: 'r', runDir: '/home/u/runs/r', policy: 'isolated-run-v1',
+    }));
   });
 
   it('rejects traversal and malformed markers', () => {

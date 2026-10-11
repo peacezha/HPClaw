@@ -5,6 +5,8 @@
 import { qcPauseReason, unresolvedQcFailures } from '../../shared/workflowQc';
 
 export const STALE_AFTER_MS = 10 * 60 * 1000; // 10 分钟无更新视为停顿
+import { SCHEDULER_REVIEW_PENDING } from '../../shared/workflowContinuation';
+export { SCHEDULER_REVIEW_PENDING, needsAutomaticOutputReview } from '../../shared/workflowContinuation';
 
 const ACTIVE_STATUSES = new Set(['running', 'waiting_user', 'waiting_jobs', 'blocked_env']);
 
@@ -20,6 +22,7 @@ export interface RawRun {
   jobStates?: Record<string, string>;
   currentStep?: number;
   totalSteps?: number;
+  error?: string;
   steps?: Array<{
     n?: number;
     status?: string;
@@ -30,7 +33,6 @@ export interface RawRun {
     qcOverride?: { approvedAt: number; revision: number };
     title?: string;
   }>;
-  [key: string]: unknown;
 }
 
 /** 单个运行是否停顿（活动状态且超过阈值无心跳/更新） */
@@ -102,13 +104,21 @@ export function reconcileRunsWithScheduler<T extends RawRun>(
     let changed = false;
     let hasActiveJob = false;
     let completedJobStep = false;
+    let hasUnresolvedJob = false;
     let runFailed = false;
     const jobStates: Record<string, string> = {};
+    const knownState = (id: string): string | undefined => {
+      // LSF can purge a finished job before the last member of a batch ends.
+      // Only durable terminal states may be reused; never infer success from absence.
+      const stored = String(original.jobStates?.[id] || '').toUpperCase();
+      return states.get(id) || (DONE_JOB_STATES.has(stored) || FAILED_JOB_STATES.has(stored) ? stored : undefined);
+    };
     const steps = (original.steps || []).map(step => {
       const ids = step.jobIds || [];
       if (ids.length === 0 || step.status === 'done' || step.status === 'skipped') return step;
-      const known = ids.map(id => states.get(id)).filter((s): s is string => !!s).map(s => s.toUpperCase().split(/[+\s]/)[0]);
-      ids.forEach(id => { jobStates[id] = states.get(id) || 'UNKNOWN'; });
+      const known = ids.map(knownState).filter((s): s is string => !!s).map(s => s.toUpperCase().split(/[+\s]/)[0]);
+      ids.forEach(id => { jobStates[id] = knownState(id) || 'UNKNOWN'; });
+      if (known.length !== ids.length || known.some(s => !ACTIVE_JOB_STATES.has(s) && !DONE_JOB_STATES.has(s) && !FAILED_JOB_STATES.has(s))) hasUnresolvedJob = true;
       if (known.length === 0) return step;
       if (known.some(s => FAILED_JOB_STATES.has(s))) {
         runFailed = true;
@@ -151,9 +161,9 @@ export function reconcileRunsWithScheduler<T extends RawRun>(
       next.endedAt = original.endedAt || now;
       next.updatedAt = now;
       changed = true;
-    } else if (!hasActiveJob && completedJobStep && original.status === 'waiting_jobs') {
+    } else if (!hasActiveJob && !hasUnresolvedJob && completedJobStep && ['waiting_jobs', 'running'].includes(String(original.status))) {
       next.status = 'waiting_user';
-      next.error = '调度器作业已完成，正在等待 Agent 验收输出和 QC；尚未将任务标记为完成。';
+      next.error = SCHEDULER_REVIEW_PENDING;
       next.updatedAt = now;
       changed = true;
     } else {

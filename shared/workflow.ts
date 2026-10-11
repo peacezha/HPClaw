@@ -133,7 +133,7 @@ export interface WorkflowPaperImport {
 }
 
 export interface WorkflowProvenance {
-  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'hpclaw';
+  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'hpclaw' | 'hpclaw-native';
   sourcePath?: string;
   sourceName?: string;
   sourceDigest?: string;
@@ -178,6 +178,16 @@ export interface WorkflowParam {
 
 export type WorkflowSource = 'builtin' | 'user' | 'ai';
 
+/** Catalogue visibility is independent of scientific category and historical runs. */
+export interface WorkflowLifecycle {
+  state: 'active' | 'pending_disposal';
+  origin: 'automatic' | 'user';
+  reasonCode?: 'language_duplicate' | 'exact_duplicate' | 'incomplete_paper' | 'placeholder_steps' | 'unverified_dag' | 'retired_seed' | 'manual';
+  reason?: string;
+  replacementId?: string;
+  updatedAt: number;
+}
+
 /**
  * 流程分类（面板分组与筛选用）。内置流程按 id 映射到这 7 类
  * （映射表在 server/workflows/workflowStore.ts 的 BUILTIN_CATEGORIES）；
@@ -195,6 +205,8 @@ export const WORKFLOW_CATEGORIES = [
 
 export interface Workflow {
   id: string;
+  /** 待弃置只移出正常目录，不删除定义、运行记录或集群文件。 */
+  lifecycle?: WorkflowLifecycle;
   name: string;
   description: string;
   keywords: string[];

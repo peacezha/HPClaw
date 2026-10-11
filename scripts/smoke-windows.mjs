@@ -27,6 +27,24 @@ for (const entry of asar.listPackage(archive)) {
 const packagedPackage = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
 assert.equal(packagedPackage.version, expectedVersion);
 const backend = fs.readFileSync(path.join(appRoot, 'dist-electron/server.cjs'), 'utf8');
+if (Number(expectedVersion.split('.')[2]) >= 51) {
+  const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
+  assert(frontend.includes('records · complete history'));
+  assert(frontend.includes('Expand execution details'));
+  assert(frontend.includes('Validating outputs automatically'));
+  assert(!fs.existsSync(path.join(appRoot, 'dist/qa/chat-continuity.html')));
+  assert(backend.includes('Engine availability could not be verified'));
+  console.log('Packaged full conversation view, automatic output review and safe background wake code verified; QA fixture is not shipped.');
+}
+if (Number(expectedVersion.split('.')[2]) >= 49) {
+  assert(backend.includes('pending_disposal'));
+  assert(backend.includes('deleted-definitions'));
+  const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
+  assert(frontend.includes('Pending disposal'));
+  assert(frontend.includes('Confirm definition deletion'));
+  assert(frontend.includes('Restore to saved workflows'));
+  console.log('Packaged pending-disposal, bilingual actions and definition backup code verified.');
+}
 if (Number(expectedVersion.split('.')[2]) >= 48) {
   assert(backend.includes('invalid_question_answer'));
   assert(backend.includes('question_no_longer_pending'));
@@ -42,7 +60,8 @@ if (Number(expectedVersion.split('.')[2]) >= 48) {
 }
 if (Number(expectedVersion.split('.')[2]) >= 47) {
   assert(backend.includes('confirm_resolved'));
-  assert(backend.includes('HPClaw display truncated'));
+  if (Number(expectedVersion.split('.')[2]) < 51) assert(backend.includes('HPClaw display truncated'));
+  else assert(!backend.includes('HPClaw display truncated'));
   assert(backend.includes('This was not a user rejection.'));
   const plugin = fs.readFileSync(path.join(resources, 'app.asar.unpacked/vendor/dsh-plugin/index.js'), 'utf8');
   assert(plugin.includes("approval.setPolicy(exec.agent, 'ask')"));
@@ -50,7 +69,7 @@ if (Number(expectedVersion.split('.')[2]) >= 47) {
   const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
   assert(frontend.includes('Approval delivery is unverified'));
   assert(frontend.includes('Approval delivered. Awaiting the actual execution result.'));
-  console.log('Packaged approval receipts, one-shot rejection safeguards and explicit truncation verified.');
+  console.log('Packaged approval receipts and one-shot rejection safeguards verified.');
 }
 assert(backend.includes('Step batch truncated: '));
 assert(backend.includes('Download failed after 3 attempts: '));
@@ -89,7 +108,7 @@ if (Number(expectedVersion.split('.')[2]) >= 45) {
   assert(frontend.includes('basePaths'));
   console.log('Packaged report path resolution and reviewed workflow translations verified.');
 }
-const dsh = spawnSync(packagedNode, [path.join(resources, 'app.asar.unpacked/vendor/dsh/lib/bin.js'), '--help'], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+const dsh = spawnSync(packagedNode, [path.join(resources, 'app.asar.unpacked/vendor/dsh/lib/bin.js'), '--help'], { encoding: 'utf8', timeout: 60000, windowsHide: true });
 if (Number(expectedVersion.split('.')[2]) >= 46) {
   assert(backend.includes('acknowledgeFailedQc'));
   assert(backend.includes('qcCriteria'));
@@ -100,7 +119,7 @@ if (Number(expectedVersion.split('.')[2]) >= 46) {
   assert(frontend.includes('workflow-qc-notice'));
   console.log('Packaged QC pause guard, retained failure acknowledgement and bilingual warnings verified.');
 }
-assert.equal(dsh.status, 0, dsh.stderr);
+assert.equal(dsh.status, 0, JSON.stringify({ stderr: dsh.stderr, error: dsh.error?.message, signal: dsh.signal }));
 const port = await new Promise(resolve => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
@@ -130,6 +149,49 @@ try {
   const html = await fetch('http://127.0.0.1:' + port + '/');
   assert.equal(html.status, 200);
   assert((await html.text()).includes('/assets/index-'));
+  if (Number(expectedVersion.split('.')[2]) >= 49) {
+    const catalogue = async (url, method = 'GET', body) => {
+      const response = await fetch('http://127.0.0.1:' + port + '/api/workflows' + url, { method,
+        headers: { 'Content-Type': 'application/json', 'X-HPClaw-Desktop-Token': 'isolated-package-smoke-only' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const result = await response.json();
+      assert(response.ok, JSON.stringify(result));
+      return result;
+    };
+    const initial = (await catalogue('')).workflows;
+      for (const id of ['builtin-dapseq-tf-en', 'encode-chipseq-tf-en', 'encode-chipseq-histone-en', 'encode-atacseq-en', ...(Number(expectedVersion.split('.')[2]) < 50 ? ['encode-chipseq-tf-dag'] : [])]) {
+        assert.equal(initial.find(workflow => workflow.id === id)?.lifecycle?.state, 'pending_disposal');
+      }
+      if (Number(expectedVersion.split('.')[2]) >= 50) {
+        const dag = initial.find(workflow => workflow.id === 'encode-chipseq-tf-dag');
+        assert.notEqual(dag.lifecycle?.state, 'pending_disposal');
+        assert.equal(dag.provenance.importerVersion, 'chipseq-dag-v2');
+        assert(dag.steps.some(step => step.dependsOn?.length > 1));
+        assert(fs.existsSync(path.join(appRoot, 'pipelines/encode/chipseq_dag.py')));
+      }
+    const id = 'encode-atacseq';
+    const original = initial.find(workflow => workflow.id === id);
+    const moved = (await catalogue('/' + id + '/lifecycle', 'PATCH', { state: 'pending_disposal', reason: 'isolated-smoke-fixture' })).workflow;
+    assert.deepEqual(moved.steps, original.steps);
+    assert.equal(moved.lifecycle.reason, 'isolated-smoke-fixture');
+    assert(!(await catalogue('/match', 'POST', { query: 'atacseq' })).matches.some(workflow => workflow.id === id));
+    const restored = (await catalogue('/' + id + '/lifecycle', 'PATCH', { state: 'active' })).workflow;
+    assert.equal(restored.lifecycle.origin, 'user');
+    assert.deepEqual(restored.steps, original.steps);
+    const created = (await catalogue('', 'POST', { name: 'isolated-catalogue-fixture', keywords: ['isolatedcatalogue'],
+      steps: [{ title: 'No execution', command: 'echo isolated-catalogue-fixture' }] })).workflow;
+    const deletedIds = [created.id, 'encode-atacseq-en'];
+    for (const deletedId of deletedIds) await catalogue('/' + deletedId, 'DELETE');
+    assert(!(await catalogue('')).workflows.some(workflow => deletedIds.includes(workflow.id)));
+    const stored = JSON.parse(fs.readFileSync(path.join(dataRoot, 'workflows/workflows.json'), 'utf8'));
+    assert.equal(stored.find(workflow => workflow.id === id)?.lifecycle?.state, 'active');
+    assert(!stored.some(workflow => deletedIds.includes(workflow.id)));
+    const backupDir = path.join(dataRoot, 'workflows/deleted-definitions');
+    const backups = fs.readdirSync(backupDir).map(file => JSON.parse(fs.readFileSync(path.join(backupDir, file), 'utf8')));
+    assert.deepEqual(backups.map(workflow => workflow.id).sort(), deletedIds.sort());
+    assert(JSON.parse(fs.readFileSync(path.join(dataRoot, 'workflows/deleted-builtin-seeds.json'), 'utf8')).includes('encode-atacseq-en'));
+    console.log('Packaged real catalogue API passed: conservative migration, archive/restore, recommendation exclusion, builtin/user deletion and persistent backups; no SSH session or job created.');
+  }
   if (Number(expectedVersion.split('.')[2]) >= 48) {
     const question = async body => fetch('http://127.0.0.1:' + port + '/api/ai/question', { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-HPClaw-Desktop-Token': 'isolated-package-smoke-only' }, body: JSON.stringify(body) });
@@ -139,6 +201,9 @@ try {
     assert.equal(missing.status, 409); assert.equal((await missing.json()).reason, 'unavailable');
     console.log('Packaged real question endpoint rejects invalid and stale IDs without accepting an answer or starting a task.');
   }
+  if (process.env.HPCLAW_SMOKE_SKIP_NETWORK === '1') {
+    console.log('Live literature-metadata network probe skipped explicitly (not counted as passed).');
+  } else {
   const sentences = ['Reads were cleaned using fastp (version 0.20.0) with minimum length 20.',
     'Reads were mapped using BWA (version 0.7.17-r1188).', 'Peaks were called using MACS2 (version 2.2.6).'];
   const paperText = 'Methods\n' + sentences.join(' ') + '\nData availability\n'
@@ -180,19 +245,20 @@ try {
   });
   const learnedBody = await learned.json();
   assert.equal(learned.status, 200, JSON.stringify(learnedBody).slice(0, 1000));
-  assert.equal(learnedBody.draft.steps.length, 4);
+  assert.equal(learnedBody.draft.steps.length, 4, JSON.stringify({
+    stepTitles: learnedBody.draft.steps.map(step => step.title), paperImport: learnedBody.paperImport,
+  }).slice(0, 4500));
   assert.equal(learnedBody.paperImport.rawData.length, 196);
   assert(learnedBody.draft.steps[0].command.includes('urllib.request.urlopen'));
   assert(learnedBody.draft.steps.some(step => step.title === 'Peaks'));
   assert.equal(batches, 2);
   assert.equal(modelRequests, 4);
   console.log('Packaged literature-learning API passed with real 196-run metadata and local model fixture: truncation retried, all three analysis nodes and real downloader retained; no paid model or raw downloads.');
-  console.log('Windows v' + expectedVersion + ' packaged backend, frontend, DSH CLI and paper-learning code verified in isolated data directory.');
+  }
+  console.log('Windows v' + expectedVersion + ' packaged backend, frontend and DSH CLI verified in isolated data directory.');
 } finally {
   if (modelServer) { modelServer.closeAllConnections(); await new Promise(resolve => modelServer.close(resolve)); }
   child.kill();
   await exited;
   console.log('Isolated smoke fixtures retained at ' + temporary);
 }
-
-

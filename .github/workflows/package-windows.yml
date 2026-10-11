@@ -33,6 +33,9 @@ jobs:
         run: |
           $env:HPCLAW_SMOKE_VERSION = node -p "require('./package.json').version"
           $env:HPCLAW_SMOKE_RESOURCES = 'release-windows/win-unpacked/resources'
+          # The real public-web SSH integration is verified separately on Linux.
+          # Do not gate chat/installer validation on availability of ENA/GEO.
+          $env:HPCLAW_SMOKE_SKIP_NETWORK = '1'
           node scripts/smoke-windows.mjs
       - name: Record exact source and artifact checksums
         run: node scripts/record-windows-build.mjs release-windows

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { appPath } from '../paths';
 import { renderWorkflowCommand, type Workflow } from './workflowTypes';
 import { translateSchedulerDirectives } from '../notifications/scheduler';
+import { reconcileRunsWithScheduler } from './runAnnotate';
 import { workflowSlug } from '../../shared/flowManifest';
 import { qcPauseReason, unresolvedQcFailures, QC_FAILURE_MESSAGE, QC_WARNING_MESSAGE } from '../../shared/workflowQc';
 import type {
@@ -278,6 +279,21 @@ export async function writeWorkflowRun(exec: RunExec, home: string, run: Workflo
   const safeDir = resolveWorkflowRunDir(home, run.runDir);
   if (!safeDir) throw new Error('非法流程运行目录');
   await exec(atomicJsonCommand(`${safeDir}/run.json`, run), 20_000);
+}
+
+/** Scheduler reconciliation shares the same lock as Agent/user writes: never overwrite a newer step. */
+export async function reconcileWorkflowRunWithScheduler(exec: RunExec, home: string, runDir: string, states: Map<string, string>): Promise<WorkflowRun> {
+  const safeDir = resolveWorkflowRunDir(home, runDir);
+  if (!safeDir) throw new Error('流程运行目录无效');
+  return withRunUpdateLock(safeDir, async () => {
+    const before = await readWorkflowRun(exec, home, safeDir);
+    const after = reconcileRunsWithScheduler([before], states)[0];
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      after.revision = (before.revision || 0) + 1;
+      await writeWorkflowRun(exec, home, after);
+    }
+    return after;
+  });
 }
 
 export async function readWorkflowRun(exec: RunExec, home: string, runDir: string): Promise<WorkflowRun> {
@@ -608,7 +624,9 @@ export async function updateWorkflowRun(
       step.startedAt ??= now;
       step.submittedScriptHash ??= step.scriptHash;
       run.currentStep = step.n;
-      if (run.status !== 'blocked_env') run.status = 'running';
+      // A submitted step is running, but the Agent must yield to the watcher.
+      // Do not overwrite an explicit waiting_jobs/waiting_user hand-off.
+      if (run.status !== 'blocked_env' && (!patch.status || patch.status === 'running')) run.status = 'running';
     }
     if (step.status === 'done' || step.status === 'failed' || step.status === 'skipped') step.finishedAt ??= now;
     if (step.status === 'failed') {

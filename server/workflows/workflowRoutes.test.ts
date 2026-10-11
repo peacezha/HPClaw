@@ -15,6 +15,7 @@ const { storeMocks } = vi.hoisted(() => ({
     loadWorkflows: vi.fn(),
     upsertWorkflow: vi.fn(),
     deleteWorkflow: vi.fn(),
+    setWorkflowLifecycle: vi.fn(),
   },
 }));
 vi.mock('./workflowStore', () => storeMocks);
@@ -24,6 +25,7 @@ const servers: http.Server[] = [];
 beforeEach(() => {
   storeMocks.loadWorkflows.mockReset().mockResolvedValue([]);
   storeMocks.deleteWorkflow.mockReset().mockResolvedValue(true);
+  storeMocks.setWorkflowLifecycle.mockReset().mockResolvedValue({ id: 'wf', lifecycle: { state: 'pending_disposal' } });
   storeMocks.upsertWorkflow.mockReset().mockImplementation(async (input: any) => ({
     id: input.id || 'new-id',
     name: input.name,
@@ -61,6 +63,23 @@ const VALID_BODY = {
 };
 
 const HOME = '/public/home/tester';
+
+describe('catalogue lifecycle API', () => {
+  it('archives and restores without upserting scientific definitions', async () => {
+    const base = await startWorkflowRoutes();
+    const response = await fetch(`${base}/api/workflows/wf/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: 'pending_disposal', reason: ' review ' }) });
+    expect(response.status).toBe(200);
+    expect(storeMocks.setWorkflowLifecycle).toHaveBeenCalledWith('wf', 'pending_disposal', 'review');
+    expect(storeMocks.upsertWorkflow).not.toHaveBeenCalled();
+  });
+  it('rejects invalid lifecycle values and unknown IDs', async () => {
+    const base = await startWorkflowRoutes();
+    expect((await fetch(`${base}/api/workflows/wf/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"state":"deleted"}' })).status).toBe(400);
+    expect(storeMocks.setWorkflowLifecycle).not.toHaveBeenCalled();
+    storeMocks.setWorkflowLifecycle.mockResolvedValue(null);
+    expect((await fetch(`${base}/api/workflows/wf/lifecycle`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"state":"active"}' })).status).toBe(404);
+  });
+});
 
 describe('resolveRunLogDir 路径校验', () => {
   it('允许 home 下 hpclaw_flows / hpclaw_runs 内路径（含 ~ 写法）', () => {

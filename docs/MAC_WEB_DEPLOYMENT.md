@@ -1,11 +1,11 @@
-# HPClaw v0.4.43：Mac 安装与 Linux 网页部署
+# HPClaw v0.4.51：Mac 安装与 Linux 网页部署
 
-保留经典主界面，加入完整文献流程与公共原始数据下载修复。Windows、Mac 和公共 Linux 网页包均使用 v0.4.43 源码；历史安装包不覆盖。面向大众的 Linux 服务请使用 [公共网页 npm 部署说明](PUBLIC_WEB_DEPLOYMENT.md)，无需统一网站口令。下文 Docker 部分仅用于历史 v0.4.41 单用户私有服务，不是本次公共网页包的部署方式。
+保留经典主界面，同步完整聊天、连续执行、断点恢复单卡片及流程管理修复。Windows、Mac 和公共 Linux 网页包均使用 v0.4.51 源码；历史安装包不覆盖。面向大众的 Linux 服务请使用 [公共网页 npm 部署说明](PUBLIC_WEB_DEPLOYMENT.md)，无需统一网站口令。下文 Docker 部分仅用于历史 v0.4.41 单用户私有服务，不是本次公共网页包的部署方式。
 
 ## Mac
 
-- Apple 芯片：下载 `HPClaw-0.4.43-mac-arm64.dmg`。
-- Intel Mac：下载 `HPClaw-0.4.43-mac-x64.dmg`。
+- Apple 芯片：下载 `HPClaw-0.4.51-mac-arm64.dmg`。
+- Intel Mac：下载 `HPClaw-0.4.51-mac-x64.dmg`。
 - 打开 DMG，将 HPClaw 拖到 Applications，再从 Applications 启动。无需另装 Node.js。
 - 这批安装包没有 Apple Developer ID 签名和公证。首次打开可能被 Gatekeeper 阻止；核对来源与 SHA-256 后，按 [Apple 官方说明](https://support.apple.com/102445) 在“系统设置 → 隐私与安全”中允许打开此应用。不要全局关闭 Gatekeeper。
 - 当前 Mac 版手动下载更新，不能承诺未签名包可正常自动更新。后续配置 Apple 签名证书与公证凭据后再启用 Mac 自动更新。
@@ -79,5 +79,5 @@ HPCLAW_TRUST_PROXY=1
 
 ## 构建和来源
 
-GitHub 工作流 `Package v0.4.41 for Mac and Linux Web` 在原生 macOS arm64、macOS Intel 和 Linux x64 上分别准备依赖、构建与测试。固定版本来自仓库锁文件，平台依赖来自 vendored DSH 的精确版本清单，保留已有 DSH 修复。
+GitHub 工作流 `Package Mac installers` 与 `Package public web Node 20 compatibility` 在原生 macOS arm64、macOS Intel 和 Linux x64 上分别准备依赖、构建与测试。固定版本来自仓库锁文件，平台依赖来自 vendored DSH 的精确版本清单，保留已有 DSH 修复。Mac 另测试连续执行、完整聊天、断点卡片与依赖图；公共 Linux 包在 Node.js 20.19.5 和 22.17.1 上执行完整测试与两个隔离 SSH 账号的集成检查。
 发布包附 SHA-256 校验与 source commit 信息。不要把仅配置了构建、但未实际成功的工作流当作已生成安装包。

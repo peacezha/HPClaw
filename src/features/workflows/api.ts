@@ -3,6 +3,11 @@ import type { Workflow, WorkflowPaperImport } from '@/shared/workflow';
 import type { PreflightResult } from '@/shared/flowManifest';
 import { workflowSlug, workflowSlugLegacy, workflowSlugParenLegacy } from '@/shared/flowManifest';
 import { getStoredLocale } from '../../i18n';
+import { WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
+
+function notifyCatalogue(detail: { workflow?: Workflow; deletedId?: string }): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(WORKFLOW_CATALOG_CHANGED, { detail }));
+}
 
 export type { Workflow, WorkflowStep, WorkflowParam } from '@/shared/workflow';
 export type { FlowManifest, PreflightResult, PreflightItemResult } from '@/shared/flowManifest';
@@ -35,6 +40,7 @@ export async function createWorkflow(input: Partial<Workflow>): Promise<Workflow
     method: 'POST',
     body: JSON.stringify(input),
   });
+  notifyCatalogue({ workflow: data.workflow });
   return data.workflow;
 }
 
@@ -43,11 +49,21 @@ export async function updateWorkflow(id: string, input: Partial<Workflow>): Prom
     method: 'PUT',
     body: JSON.stringify(input),
   });
+  notifyCatalogue({ workflow: data.workflow });
   return data.workflow;
 }
 
 export async function deleteWorkflow(id: string): Promise<void> {
   await request(`/api/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  notifyCatalogue({ deletedId: id });
+}
+
+export async function setWorkflowLifecycle(id: string, state: 'active' | 'pending_disposal', reason = ''): Promise<Workflow> {
+  const data = await request(`/api/workflows/${encodeURIComponent(id)}/lifecycle`, {
+    method: 'PATCH', body: JSON.stringify({ state, reason }),
+  });
+  notifyCatalogue({ workflow: data.workflow });
+  return data.workflow;
 }
 
 export async function draftWorkflow(description: string, profile: { provider: string; model: string; apiKey: string }): Promise<Partial<Workflow>> {

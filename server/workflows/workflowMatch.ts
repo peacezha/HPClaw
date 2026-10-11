@@ -1,5 +1,6 @@
 // 流程匹配：与 skillIndex 一致的 bigram 中文分词评分。
 import type { Workflow } from './workflowTypes';
+import { isPendingDisposal } from '../../shared/workflowCatalog';
 
 function tokenize(query: string): string[] {
   const terms: string[] = [];
@@ -46,6 +47,7 @@ export function scoreWorkflow(workflow: Workflow, query: string): number {
 /** 返回得分最高的前 limit 个流程（score > 0） */
 export function matchWorkflows(workflows: Workflow[], query: string, limit = 3): (Workflow & { score: number })[] {
   return workflows
+    .filter(w => !isPendingDisposal(w))
     .map(w => ({ ...w, score: scoreWorkflow(w, query) }))
     .filter(w => w.score > 0)
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))

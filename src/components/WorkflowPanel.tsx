@@ -6,14 +6,18 @@ import {
   Search, Plus, Sparkles, ChevronDown, ChevronRight, Play, Pencil, Trash2,
   Loader2, AlertCircle, X, GitBranch, CheckCircle2, XCircle, Circle,
   ShieldCheck, ShieldAlert, Wrench, FileText, Package, Database, FolderGit2,
-  BookOpen, AlertTriangle, Activity,
+  BookOpen, AlertTriangle, Activity, Archive, RotateCcw,
 } from 'lucide-react';
 import type { Workflow, WorkflowPaperImport, WorkflowParam, WorkflowStep } from '@/shared/workflow';
 import { WORKFLOW_CATEGORIES } from '@/shared/workflow';
+import { isPendingDisposal, workflowDisposalReason, WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
+import WorkflowCatalogActionDialog, { type WorkflowCatalogAction } from './WorkflowCatalogActionDialog';
+import WorkflowStepDependencies from './WorkflowStepDependencies';
+import { stableWorkflowStepIds, validateOrderedDependencies } from '@/shared/workflowDependencies';
 import type { FlowManifest, PreflightResult } from '@/shared/flowManifest';
 import { workflowSlug } from '@/shared/flowManifest';
 import {
-  createWorkflow, deleteWorkflow, draftWorkflow, getCachedPreflight, learnFromPaper,
+  createWorkflow, setWorkflowLifecycle, draftWorkflow, getCachedPreflight, learnFromPaper,
   fetchWorkflowRuns, listWorkflows, mergeWorkflowRunUpdate, reconcileWorkflowRunSnapshot,
   runBelongsToWorkflow, runPreflight, updateWorkflow, type WorkflowRun,
   listLearnDrafts, getLearnDraft, deleteLearnDraftApi, reviseLearnDraft,
@@ -118,6 +122,9 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [catalogueView, setCatalogueView] = useState<'active' | 'pending_disposal'>('active');
+  const [catalogueAction, setCatalogueAction] = useState<WorkflowCatalogAction | null>(null);
+  const [catalogueBusy, setCatalogueBusy] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [draftMode, setDraftMode] = useState(false);
@@ -163,6 +170,11 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const changed = () => { void refresh(); };
+    window.addEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+    return () => window.removeEventListener(WORKFLOW_CATALOG_CHANGED, changed);
+  }, [refresh]);
 
   useEffect(() => {
     const connected = () => setRealtimeConnected(true);
@@ -250,13 +262,13 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return workflows.filter(w => !query
+    return workflows.filter(w => isPendingDisposal(w) === (catalogueView === 'pending_disposal')).filter(w => !query
       || w.name.toLowerCase().includes(query)
       || w.description.toLowerCase().includes(query)
       || displayText(w.name).toLowerCase().includes(query)
       || displayText(w.description).toLowerCase().includes(query)
       || w.keywords.some(k => k.toLowerCase().includes(query)));
-  }, [workflows, search, displayText]);
+  }, [workflows, search, displayText, catalogueView]);
 
   // 分类分组：按 category 分组渲染组头；类别筛选只影响展示不影响搜索
   const groupedWorkflows = useMemo(() => {
@@ -288,22 +300,28 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   }, [runs, workflows]);
 
   const handleDelete = async (w: Workflow) => {
-    if (!window.confirm(`删除流程定义「${w.name}」？已有运行目录、结果和报告不会被删除。`)) return;
+    setCatalogueAction({ workflow: w, kind: 'delete' });
+  };
+  const handleRestore = async (w: Workflow) => {
+    if (catalogueBusy) return;
+    setCatalogueBusy(w.id); setError('');
     try {
-      await deleteWorkflow(w.id);
+      await setWorkflowLifecycle(w.id, 'active');
       await refresh();
     } catch (e: any) {
       setError(e.message);
-    }
+    } finally { setCatalogueBusy(null); }
   };
 
   const handleSave = async () => {
     if (!editor) return;
-    const steps = editor.steps.filter(s => s.title.trim() && s.command.trim());
+    const steps = stableWorkflowStepIds(editor.steps).filter(s => s.title.trim() && s.command.trim());
     if (!editor.name.trim() || steps.length === 0) {
       setError('流程名称和至少一个有效步骤（标题+命令）必填');
       return;
     }
+    try { validateOrderedDependencies(steps); }
+    catch (cause) { setError(displayText('流程依赖配置有误') + ': ' + String(cause)); return; }
     if (editor.paperImport && !paperReviewConfirmed) {
       setError('请先查看文献完整度、未匹配工具和待确认问题，并勾选“我已检查文献提取结果”');
       return;
@@ -849,7 +867,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs text-scholar-300">步骤（按执行顺序）</span>
-            <button onClick={() => setEditor({ ...editor, steps: [...editor.steps, { title: '', command: '' }] })}
+            <button onClick={() => setEditor({ ...editor, steps: stableWorkflowStepIds([...editor.steps, { title: '', command: '' }]) })}
               className="text-xs text-accent hover:underline">+ 步骤</button>
           </div>
           {editor.steps.map((s, i) => (
@@ -866,9 +884,10 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                     setEditor({ ...editor, steps });
                   }} />可选
                 </label>
-                <button onClick={() => setEditor({ ...editor, steps: editor.steps.filter((_, j) => j !== i) })}
+                <button onClick={() => setEditor({ ...editor, steps: stableWorkflowStepIds(editor.steps, true).filter((_, j) => j !== i) })}
                   className="text-scholar-400 hover:text-red-600 px-0.5" aria-label="删除步骤"><Trash2 className="w-3 h-3" /></button>
               </div>
+              <WorkflowStepDependencies steps={editor.steps} index={i} onChange={steps => setEditor({ ...editor, steps })} />
               <textarea value={s.command} placeholder="命令模板 *（如：bsub -q normal -n 8 &quot;fastqc {{SAMPLE}}.fq.gz&quot;）" rows={2}
                 onChange={e => {
                   const steps = [...editor.steps]; steps[i] = { ...s, command: e.target.value };
@@ -970,6 +989,16 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
   // ─── 列表视图 ───
   return (
     <div className="flex-1 overflow-y-auto flex flex-col">
+      {catalogueAction && <WorkflowCatalogActionDialog key={`${catalogueAction.kind}:${catalogueAction.workflow.id}`} action={catalogueAction} onClose={() => setCatalogueAction(null)} onDone={() => { void refresh(); }} />}
+      <div className="shrink-0 px-3 pt-3 flex flex-wrap gap-2" role="group" aria-label={displayText('流程板块')}>
+        <button type="button" aria-pressed={catalogueView === 'active'} onClick={() => { setCatalogueView('active'); setCategoryFilter('all'); }} className={catalogueView === 'active' ? 'btn-primary !text-xs' : 'btn-ghost !text-xs'}>
+          {displayText('正式流程')} ({workflows.filter(w => !isPendingDisposal(w)).length})
+        </button>
+        <button type="button" aria-pressed={catalogueView === 'pending_disposal'} onClick={() => { setCatalogueView('pending_disposal'); setCategoryFilter('all'); }} className={catalogueView === 'pending_disposal' ? 'btn-primary !text-xs' : 'btn-ghost !text-xs'}>
+          <Archive className="h-3.5 w-3.5" />{displayText('待弃置')} ({workflows.filter(isPendingDisposal).length})
+        </button>
+      </div>
+      {catalogueView === 'pending_disposal' && <p className="shrink-0 mx-3 mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs leading-5 text-scholar-300">{displayText('待弃置流程不会推荐或发起新运行。可查看原因、编辑后恢复，或删除定义；已有任务和结果不受影响。')}</p>}
       {/* 搜索 + 操作 */}
       <div className="shrink-0 p-3 pb-1 flex gap-1.5">
         <div className="relative flex-1">
@@ -1144,6 +1173,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                   )}
                 </div>
                 {w.description && <p data-user-content={w.source !== 'builtin' ? 'true' : undefined} className="text-[11px] text-scholar-400 truncate mt-0.5">{w.description}</p>}
+                {isPendingDisposal(w) && <p data-user-content="true" className="mt-2 text-xs leading-5 text-amber-400">{w.lifecycle?.reason || displayText(workflowDisposalReason(w))}{w.lifecycle?.replacementId && workflows.some(item => item.id === w.lifecycle?.replacementId && !isPendingDisposal(item)) && <> {displayText('替代流程：')}{displayText(workflows.find(item => item.id === w.lifecycle?.replacementId)!.name)}</>}</p>}
                 <div className="flex flex-wrap gap-1 mt-1">
                   {w.keywords.slice(0, 5).map(k => (
                     <span key={k} className="text-[9px] px-1.5 py-0.5 rounded-full bg-scholar-700/60 text-scholar-300">{k}</span>
@@ -1154,10 +1184,11 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
             </button>
 
             {expandedId !== w.id && (
-              <div className="px-2 pb-2 flex items-center justify-end gap-1.5">
+              <div className="px-2 pb-2 flex flex-wrap items-center justify-end gap-1.5">
                 <button
                   type="button"
                   onClick={() => handleUse(w)}
+                  disabled={isPendingDisposal(w)}
                   className="btn-ghost !text-[10px] !px-2"
                   title="打开运行配置"
                 >
@@ -1179,6 +1210,9 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                 >
                   <Pencil className="w-3 h-3" /> 修改
                 </button>
+                {isPendingDisposal(w)
+                  ? <button type="button" disabled={catalogueBusy === w.id} onClick={() => void handleRestore(w)} className="btn-ghost !text-xs !px-2"><RotateCcw className="h-3 w-3" />{displayText('恢复到正式流程')}</button>
+                  : <button type="button" onClick={() => setCatalogueAction({ workflow: w, kind: 'archive' })} className="btn-ghost !text-xs !px-2"><Archive className="h-3 w-3" />{displayText('移入待弃置')}</button>}
                 <button
                   type="button"
                   onClick={() => void handleDelete(w)}
@@ -1261,7 +1295,10 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                     ))}
                   </div>
                 </details>
-                <div className="flex gap-1.5 mt-2 pt-1">
+                <div className="flex flex-wrap gap-1.5 mt-2 pt-1">
+                  {isPendingDisposal(w)
+                    ? <button type="button" disabled={catalogueBusy === w.id} onClick={() => void handleRestore(w)} className="btn-ghost !text-xs"><RotateCcw className="h-3 w-3" />{displayText('恢复到正式流程')}</button>
+                    : <button type="button" onClick={() => setCatalogueAction({ workflow: w, kind: 'archive' })} className="btn-ghost !text-xs"><Archive className="h-3 w-3" />{displayText('移入待弃置')}</button>}
                   <button onClick={() => void handlePreflight(w)} disabled={busy || !sessionId}
                     title={sessionId ? 'SSH 核查必要软件与参考数据' : '需要先连接计算资源'}
                     className="btn-ghost !text-xs">
@@ -1280,7 +1317,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                       manifest: w.manifest, paperImport: w.paperImport, source: w.source,
                     });
                   }} className="btn-ghost !text-xs"><Pencil className="w-3 h-3" /> 编辑</button>
-                  <button onClick={() => void handleDelete(w)} className="btn-ghost !text-xs hover:!text-red-600"><Trash2 className="w-3 h-3" /></button>
+                  <button onClick={() => void handleDelete(w)} title={displayText('删除流程定义')} className="btn-ghost !text-xs hover:!text-red-600"><Trash2 className="w-3 h-3" />{displayText('删除')}</button>
                 </div>
               </div>
             )}

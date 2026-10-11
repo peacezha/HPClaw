@@ -109,7 +109,7 @@ describe('dshTranslate', () => {
     expect(sent).toEqual([{ type: 'tool_result', name: 'tool', result: 'x' }]);
   });
 
-  it('truncates tool results at 4000 chars and prefixes [error] on failure', () => {
+  it('preserves the complete received tool result and prefixes [error] on failure', () => {
     const { sent, translator, state } = setup();
     const long = 'START: ' + 'y'.repeat(5000) + ' END: fatal error';
     translator.translateFrame(sessionEvent({
@@ -123,8 +123,7 @@ describe('dshTranslate', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe('tool_result');
     expect(sent[0].result.startsWith('[error] ')).toBe(true);
-    expect(sent[0].result.length).toBe('[error] '.length + 4000);
-    expect(sent[0].result).toContain('HPClaw display truncated');
+    expect(sent[0].result).toBe('[error] ' + long);
     expect(sent[0].result).toContain('START:');
     expect(sent[0].result).toContain('END: fatal error');
 

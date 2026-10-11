@@ -176,7 +176,7 @@ describe('新装（无存储）种子注入', () => {
 });
 
 describe('内置流程编辑保护（provenance.customized）', () => {
-  it('升级时移除已被中英文原生版取代的旧官方包装流程', async () => {
+  it('升级时将旧官方包装流程移入待弃置，不丢失定义', async () => {
     const store = await freshStore();
     await store.loadWorkflows();
     const raw = JSON.parse(await fs.readFile(storeFile(), 'utf-8')) as Workflow[];
@@ -188,7 +188,7 @@ describe('内置流程编辑保护（provenance.customized）', () => {
     await fs.writeFile(storeFile(), JSON.stringify(raw, null, 2), 'utf-8');
     const restarted = await restartStore();
     const migrated = await restarted.loadWorkflows();
-    expect(migrated.some(workflow => workflow.id === 'encode-chipseq-tf-official')).toBe(false);
+    expect(migrated.find(workflow => workflow.id === 'encode-chipseq-tf-official')?.lifecycle).toMatchObject({ state: 'pending_disposal', reasonCode: 'retired_seed' });
   });
 
   it('编辑硬编码内置流程后 reload 字段不回滚，并补 customized 标记', async () => {
@@ -308,6 +308,40 @@ describe('内置流程删除持久化', () => {
 });
 
 describe('upsertWorkflow 分类合并语义', () => {
+  it('待弃置状态和用户恢复跨重启保留，移动不改科学定义', async () => {
+    const store = await freshStore();
+    const original = (await store.loadWorkflows()).find(w => w.id === 'encode-atacseq')!;
+    const moved = await store.setWorkflowLifecycle(original.id, 'pending_disposal', '仅收起');
+    expect(moved?.steps).toEqual(original.steps);
+    expect(moved?.provenance?.customized).not.toBe(true);
+    let restarted = await restartStore();
+    expect((await restarted.loadWorkflows()).find(w => w.id === original.id)?.lifecycle?.reason).toBe('仅收起');
+    await restarted.setWorkflowLifecycle('encode-atacseq-en', 'active');
+    restarted = await restartStore();
+    expect((await restarted.loadWorkflows()).find(w => w.id === 'encode-atacseq-en')?.lifecycle?.state).toBe('active');
+  });
+  it('内置、用户、AI 和待弃置均可删除，留定义备份且不复活', async () => {
+    const store = await freshStore();
+    await store.loadWorkflows();
+    const user = await store.upsertWorkflow({ name: 'user', source: 'user', steps: [{ title: 'u', command: 'echo user' }] });
+    const ai = await store.upsertWorkflow({ name: 'ai', source: 'ai', steps: [{ title: 'a', command: 'echo ai' }] });
+    const ids = ['encode-atacseq', 'encode-chipseq-tf-en', user.id, ai.id];
+    await Promise.all(ids.map(id => store.deleteWorkflow(id)));
+    const restarted = await restartStore();
+    expect((await restarted.loadWorkflows()).filter(w => ids.includes(w.id))).toEqual([]);
+    const backupDir = path.join(state.tmpRoot, 'workflows', 'deleted-definitions');
+    const snapshots = await Promise.all((await fs.readdir(backupDir)).map(async file => JSON.parse(await fs.readFile(path.join(backupDir, file), 'utf-8'))));
+    expect(snapshots.map(w => w.id).sort()).toEqual(ids.sort());
+  });
+  it('并发移入和恢复不会互相覆盖，未知 ID 不生成新流程', async () => {
+    const store = await freshStore();
+    await store.loadWorkflows();
+    await Promise.all([store.setWorkflowLifecycle('encode-atacseq', 'pending_disposal'), store.setWorkflowLifecycle('encode-chipseq-tf-en', 'active')]);
+    const list = await store.loadWorkflows();
+    expect(list.find(w => w.id === 'encode-atacseq')?.lifecycle?.state).toBe('pending_disposal');
+    expect(list.find(w => w.id === 'encode-chipseq-tf-en')?.lifecycle?.state).toBe('active');
+    expect(await store.setWorkflowLifecycle('unknown', 'active')).toBeNull();
+  });
   it('未携带 category 保持原值，空串清除，值正常更新', async () => {
     const store = await freshStore();
     const created = await store.upsertWorkflow({

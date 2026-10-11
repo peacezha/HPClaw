@@ -3,28 +3,8 @@ export interface ChatMessage {
   content: string;
 }
 
-export const AGENT_PLAN_CHECKPOINT = '[HPCLAW_AGENT_PLAN]';
-
-export function serializeAgentPlanCheckpoint(plan: unknown): string {
-  return `${AGENT_PLAN_CHECKPOINT} ${JSON.stringify(plan)}`;
-}
-
-export function findLatestAgentPlanCheckpoint(messages: ChatMessage[]): unknown | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const content = messages[index]?.content?.trim() || '';
-    if (!content.startsWith(`${AGENT_PLAN_CHECKPOINT} `)) continue;
-    const raw = content.slice(AGENT_PLAN_CHECKPOINT.length).trim();
-    if (!raw || raw.length > 50_000) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || !String(parsed.goal || '').trim() || !Array.isArray(parsed.steps)) return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
+import { AGENT_PLAN_CHECKPOINT, serializeAgentPlanCheckpoint } from '../../shared/chatPlan';
+export { AGENT_PLAN_CHECKPOINT, serializeAgentPlanCheckpoint, findLatestAgentPlanCheckpoint } from '../../shared/chatPlan';
 
 /** 在对话中只保留一份隐藏计划检查点，供切换对话或重开软件后恢复。 */
 export function upsertAgentPlanCheckpoint(messages: ChatMessage[], plan: unknown | null): ChatMessage[] {

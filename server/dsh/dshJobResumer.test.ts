@@ -75,6 +75,38 @@ afterEach(() => {
 });
 
 describe('maybeResumeAgent', () => {
+  it('waits for an existing DSH turn before subscribing and sending a resume prompt', async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps();
+      const client = makeClient(deps.muxes);
+      client.sessionStatus = vi.fn().mockResolvedValueOnce({ running: true }).mockResolvedValue({ running: false });
+      (deps.createClient as ReturnType<typeof vi.fn>).mockReturnValue(client);
+      const running = maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.prompt).not.toHaveBeenCalled();
+      expect(client.connectMux).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(client.prompt).toHaveBeenCalledTimes(1);
+      deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Only the resume turn is collected.' }] } } }));
+      deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'turn/end', data: {} }));
+      await running;
+      expect(deps.markResumed).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not acknowledge an empty completed turn and explains uncertainty in English', async () => {
+    const deps = makeDeps({ getBinding: () => makeBinding({ locale: 'en-US' }) });
+    const client = makeClient(deps.muxes);
+    (deps.createClient as ReturnType<typeof vi.fn>).mockReturnValue(client);
+    const running = maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+    await vi.waitFor(() => expect(client.prompt).toHaveBeenCalled());
+    deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'turn/end', data: {} }));
+    await running;
+    expect(deps.markResumed).not.toHaveBeenCalled();
+    expect(deps.notify).toHaveBeenCalledWith('Auto-resume unverified', expect.stringContaining('results have not been verified'));
+  });
+
   it('does nothing when HPCLAW_JOB_RESUME=off', async () => {
     const deps = makeDeps();
     process.env.HPCLAW_JOB_RESUME = 'off';
@@ -175,6 +207,7 @@ describe('maybeResumeAgent', () => {
 
     const running = maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'EXIT' }, deps);
     await vi.waitFor(() => expect(client.connectMux).toHaveBeenCalled());
+    deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '任务已核验。' }] } } }));
     deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'turn/end', data: {} }));
     await running;
 
@@ -199,6 +232,7 @@ describe('maybeResumeAgent', () => {
     expect(client.prompt).toHaveBeenCalledTimes(1);
     expect(deps.markResumed).not.toHaveBeenCalled();
 
+    deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '任务已核验。' }] } } }));
     deps.muxes[0].hooks.onFrame(sessionFrame('dsh-sess-1', { type: 'turn/end', data: {} }));
     await first;
     expect(deps.markResumed).toHaveBeenCalledTimes(1);
@@ -210,5 +244,37 @@ describe('maybeResumeAgent', () => {
     });
     await expect(maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps))
       .resolves.toBeUndefined();
+  });
+
+  it('retains a different completion received while the conversation is busy and monitors new jobs', async () => {
+    const deps = makeDeps({ onJobsSubmitted: vi.fn() });
+    const client = makeClient(deps.muxes);
+    (deps.createClient as ReturnType<typeof vi.fn>).mockReturnValue(client);
+    const first = maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+    await vi.waitFor(() => expect(client.prompt).toHaveBeenCalledTimes(1));
+    const second = maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424243', status: 'DONE' }, deps);
+    const frame = (event: any) => deps.muxes.at(-1)!.hooks.onFrame(sessionFrame('dsh-sess-1', event));
+    frame({ type: 'tool/call', data: { name: 'run_command', callId: 'submit', arguments: { command: 'bsub < next.lsf' } } });
+    frame({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'submit', content: [{ type: 'text', text: 'Job <777> is submitted to queue <normal>.' }] }] } } });
+    expect(deps.onJobsSubmitted).toHaveBeenCalledWith(expect.objectContaining({ dshSessionId: 'dsh-sess-1' }), ['777']);
+    frame({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '后续作业已交接监控。' }] } } });
+    frame({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await vi.waitFor(() => expect(client.prompt).toHaveBeenCalledTimes(2));
+    frame({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '第二个完成事件已处理。' }] } } });
+    frame({ type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await Promise.all([first, second]);
+    expect(deps.markResumed).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not acknowledge a rejected wake prompt or label an empty response as task completion', async () => {
+    const deps = makeDeps();
+    const client = makeClient(deps.muxes);
+    client.prompt.mockResolvedValue({ accepted: false });
+    (deps.createClient as ReturnType<typeof vi.fn>).mockReturnValue(client);
+    await maybeResumeAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+    expect(deps.markResumed).not.toHaveBeenCalled();
+    expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: expect.stringContaining('未被引擎接受') }),
+    ]), 'ssh-1');
   });
 });

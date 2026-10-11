@@ -1,5 +1,6 @@
 // 分析流程（Workflow）数据模型：用户可自定义、关键词可触发的分步命令模板。
 import type { FlowManifest } from '../../shared/flowManifest';
+import type { WorkflowLifecycle } from '../../shared/workflow';
 
 export interface WorkflowStep {
   /** 稳定步骤标识；依赖图使用它连边。 */
@@ -169,6 +170,7 @@ export interface WorkflowParam {
 export type WorkflowSource = 'builtin' | 'user' | 'ai';
 
 export interface Workflow {
+  lifecycle?: WorkflowLifecycle;
   id: string;
   name: string;
   description: string;

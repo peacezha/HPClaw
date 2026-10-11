@@ -48,7 +48,7 @@ async function saveJobEvents(events: JobEvent[]): Promise<void> {
 /**
  * 对比前后两次 bjobs 快照，找出"新完成"的作业。
  * - 上次在跑（RUN/PEND/UNKNOWN），这次 DONE/EXIT → 完成
- * - 上次在跑，这次消失 → 完成（状态用 bjobs -l 补查，查不到按 DONE 处理由调用方决定）
+ * - 上次在跑，这次消失 → 待核查候选（必须补查终态，不能凭消失判 DONE）
  */
 export function detectFinishedJobs(
   prev: JobEntry[],
@@ -92,6 +92,7 @@ export class JobWatcher {
   private sessions = new Map<string, WatchSessionLike>();
   private prevJobs = new Map<string, JobEntry[]>();
   private notifiedJobIds = new Set<string>();
+  private polling = new Set<string>();
 
   constructor(private deps: WatcherDeps = {}) {}
 
@@ -168,42 +169,52 @@ export class JobWatcher {
     }
   }
 
-  /** Slurm 作业从 squeue 消失后用 sacct 补查最终状态；查不到按 DONE 处理 */
-  private async resolveSlurmFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT'> {
+  /** Slurm 作业从 squeue 消失后用 sacct 补查；空结果或活跃态仍待核查。 */
+  private async resolveSlurmFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
       const raw = await session.cluster.exec(slurmFinalStateCommand(jobId), 10_000);
       const state = raw.trim().split(/\s+/)[0]?.toUpperCase() || '';
-      if (!state) return 'DONE';
-      return state === 'COMPLETED' ? 'DONE' : 'EXIT';
+      if (state === 'COMPLETED') return 'DONE';
+      if (/^(FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE|REVOKED)(?:[+]|$)/.test(state)) return 'EXIT';
+      return undefined;
     } catch {
-      return 'DONE'; // sacct 不可用时按完成处理
+      return undefined;
     }
   }
 
   /** PBS 作业离开 qstat 后用 qstat -x -f 补查：Exit_status=0 判 DONE。 */
-  private async resolvePbsFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT'> {
+  private async resolvePbsFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
       const raw = await session.cluster.exec(pbsFinalStateCommand(jobId), 10_000);
-      if (!raw.trim()) return 'DONE';
-      if (/job_state\s*=\s*[CF]/i.test(raw) && /Exit_status\s*=\s*0\b/.test(raw)) return 'DONE';
-      if (/Exit_status\s*=\s*0\b/.test(raw)) return 'DONE';
-      return 'EXIT';
+      const exit = raw.match(/Exit_status\s*=\s*(-?\d+)\b/i);
+      if (!/job_state\s*=\s*[CF]\b/i.test(raw) || !exit) return undefined;
+      return Number(exit[1]) === 0 ? 'DONE' : 'EXIT';
     } catch {
-      return 'DONE';
+      return undefined;
     }
   }
 
-  private async resolveLsfFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT'> {
+  private async resolveLsfFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
       const raw = await session.cluster.exec(lsfFinalStateCommand(jobId), 10_000);
       const state = raw.trim().split(/\s+/)[0]?.toUpperCase() || '';
-      return state === 'EXIT' ? 'EXIT' : 'DONE';
+      return state === 'DONE' || state === 'EXIT' ? state : undefined;
     } catch {
-      return 'DONE';
+      return undefined;
     }
   }
 
   private async poll(sessionId: string, session: WatchSessionLike): Promise<void> {
+    if (this.polling.has(sessionId)) return;
+    this.polling.add(sessionId);
+    try {
+      await this.pollOnce(sessionId, session);
+    } finally {
+      this.polling.delete(sessionId);
+    }
+  }
+
+  private async pollOnce(sessionId: string, session: WatchSessionLike): Promise<void> {
     // 会话级调度器标签优先（登录探测打标）；老会话无标签时回退全局手动配置
     const scheduler = session.scheduler ?? await loadSchedulerType();
     let jobs: JobEntry[];
@@ -236,19 +247,32 @@ export class JobWatcher {
       return;
     }
 
-    const finished = detectFinishedJobs(prev, jobs);
+    const candidates = detectFinishedJobs(prev, jobs);
+    const finished: typeof candidates = [];
     // Slurm 的 squeue 只显示活跃作业，结束即消失，失败会被"消失=DONE"误判，用 sacct 补查
     const nextIds = new Set(jobs.map(j => j.jobId));
-    for (const job of finished) {
-      if (nextIds.has(job.jobId)) continue;
+    for (const job of candidates) {
+      if (nextIds.has(job.jobId)) { finished.push(job); continue; }
+      let finalStatus: 'DONE' | 'EXIT' | undefined;
       if (scheduler === 'slurm') {
-        job.status = await this.resolveSlurmFinalStatus(session, job.jobId);
+        finalStatus = await this.resolveSlurmFinalStatus(session, job.jobId);
       } else if (scheduler === 'pbs') {
-        job.status = await this.resolvePbsFinalStatus(session, job.jobId);
+        finalStatus = await this.resolvePbsFinalStatus(session, job.jobId);
       } else if (scheduler === 'none') {
-        job.status = 'DONE'; // 无调度器：进程消失即结束，成败由后续验证产物判定
+        finalStatus = 'DONE'; // 无调度器：进程消失即结束，成败由后续验证产物判定
       } else {
-        job.status = await this.resolveLsfFinalStatus(session, job.jobId);
+        finalStatus = await this.resolveLsfFinalStatus(session, job.jobId);
+      }
+      if (finalStatus) {
+        job.status = finalStatus;
+        finished.push(job);
+      } else {
+        // Accounting can lag or be temporarily unreachable. Preserve the ID
+        // for the next poll, including IDs registered while a query was in flight.
+        const baseline = this.prevJobs.get(sessionId) || [];
+        if (!baseline.some(item => item.jobId === job.jobId)) {
+          this.prevJobs.set(sessionId, [...baseline, { ...prev.find(item => item.jobId === job.jobId)!, status: 'UNKNOWN' }]);
+        }
       }
     }
     for (const job of finished) {

@@ -49,6 +49,15 @@ export function parseWorkflowExecutionContext(text: string): WorkflowExecutionCo
   }
 }
 
+/** Remove protocol metadata only; keep the user's start/resume instruction readable. */
+export function stripWorkflowExecutionMarkers(text: string): string {
+  return text.split(/\r?\n/).filter(line => !parseWorkflowExecutionContext(line)).join('\n').trim();
+}
+
+export function workflowRunIdentity(context: WorkflowExecutionContext): string {
+  return JSON.stringify([context.workflowId, context.runId, context.runDir.replace(/\/+$/, '')]);
+}
+
 /**
  * 从完整对话中恢复最近一次正式流程。调用方应在裁剪聊天窗口之前使用，
  * 避免长流程跑过多轮后最初的运行标记被传输预算丢弃。

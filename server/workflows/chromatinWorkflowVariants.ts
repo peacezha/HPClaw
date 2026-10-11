@@ -373,7 +373,18 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
       { afterStep: 6, metric: 'TSS/基因体富集曲线、FRiP 与 SPOT', pass: 'FRiP≥0.2，且 SPOT、720 dpi profile PDF 与 heatmap PNG 产物完整', warn: '任一必需产物缺失或 FRiP 低于阈值时标记文库质控失败' },
     ];
   }
-  if (workflow.provenance) workflow.provenance.importerVersion = 'chromatin-qc-bilingual-v3';
+  // These dependencies are backed by the commands' actual input files. ATAC's
+  // combined peak/QC steps stay sequential; do not invent cosmetic branches.
+  const dependencies: string[][] = assay === 'dap'
+    ? [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['peaks'], ['peaks'], ['extended-qc', 'motif-annotation']]
+    : assay === 'atac'
+      ? [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['peaks'], ['extended-qc']]
+      : [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['filter-dedup'], ['peaks'], ['peaks'], ['xcor', 'extended-qc', 'idr-frip']];
+  const ids = assay === 'dap' ? ['preflight', 'fastqc', 'align', 'filter-dedup', 'peaks', 'extended-qc', 'motif-annotation', 'report']
+    : assay === 'atac' ? ['preflight', 'fastqc', 'align', 'filter-dedup', 'peaks', 'extended-qc', 'report']
+      : ['preflight', 'fastqc', 'align', 'filter-dedup', 'xcor', 'peaks', 'extended-qc', 'idr-frip', 'report'];
+  workflow.steps.forEach((step, i) => { step.id = ids[i]; step.dependsOn = dependencies[i]; });
+  if (workflow.provenance) workflow.provenance.importerVersion = 'chromatin-qc-bilingual-v4';
 }
 
 function englishParam(param: WorkflowParam): WorkflowParam {

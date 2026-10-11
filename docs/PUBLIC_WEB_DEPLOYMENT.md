@@ -1,4 +1,4 @@
-# HPClaw v0.4.43 公共网页端（Linux / npm）
+# HPClaw v0.4.51 公共网页端（Linux / npm）
 
 此包面向多位访客，保留经典 v0.4.41 界面。**不要把旧的 `web-linux-x64` 单用户包去掉口令后公开**；请选择名称含 `public-web` 的新包。无需 Docker，无需统一网站密码。
 
@@ -7,8 +7,11 @@
 前提：Linux x64、Node.js **20.19.5 或更新正式版**和 npm；已有网站的 HTTPS 域名/反向代理可继续使用。以下命令不修改其他网站，也不安装系统软件。本兼容包支持现有 Node.js 20.19.5，但 Node.js 20 已[结束官方维护](https://nodejs.org/en/about/previous-releases)，长期公网部署建议使用受支持的 LTS。
 
 ```bash
-tar -xzf HPClaw-0.4.43-public-web-linux-x64-node20.tar.gz
-cd HPClaw-0.4.43-public-web-linux-x64-node20
+curl -fLO https://github.com/peacezha/HPClaw/releases/download/v0.4.51/HPClaw-0.4.51-public-web-linux-x64-node20.tar.gz
+curl -fLO https://github.com/peacezha/HPClaw/releases/download/v0.4.51/HPClaw-0.4.51-public-web-linux-x64-node20.tar.gz.sha256
+sha256sum -c HPClaw-0.4.51-public-web-linux-x64-node20.tar.gz.sha256
+tar -xzf HPClaw-0.4.51-public-web-linux-x64-node20.tar.gz
+cd HPClaw-0.4.51-public-web-linux-x64-node20
 npm ci --omit=dev --ignore-scripts
 npm start -- --url https://你的实际域名
 ```
@@ -69,7 +72,7 @@ HPCLAW_ALLOW_PRIVATE_CLUSTERS=1 npm start -- --url https://你的域名
 
 同一集群账号多窗口修改同一个设置文件会检测冲突，拒绝覆盖并提示重新登录；不要用同一 SSH 账号给不同人提供所谓隔离。若进程恰在远程写入期间被强杀，可能残留 `~/hpclaw_web/state.lock`；确认该账号没有任何正在保存的网页连接后，才可手动 `rmdir ~/hpclaw_web/state.lock`。不自动删除无法确认归属的锁。
 
-升级时停止旧服务，将新包解压到新目录，安装依赖并用同一域名/端口启动。不需要复制网页服务器的用户数据库；用户数据在各自集群。回滚到之前的**公共网页包**，不要回滚为无口令的单用户服务。v0.4.43 同时提供 Windows/Mac 文献学习修复；历史版本标签和资产不覆盖。已有文献草稿不会自动改写，升级后重新上传 PDF 学习即可使用原始数据查询与分批生成逻辑。
+升级时停止旧服务，将新包解压到新目录，安装依赖并用同一域名/端口启动。不需要复制网页服务器的用户数据库；用户数据在各自集群。回滚到之前的**公共网页包**，不要回滚为无口令的单用户服务。v0.4.51 同时提供 Windows/Mac 对话、连续执行、断点恢复与流程图修复；历史版本标签和资产不覆盖。已保存聊天正文不再限定显示末尾 500 条；执行记录可在对话中全部展开。同一 RUN 的断点恢复保留一个流程框。缺少关键输入、QC 不合格或需要审批仍会暂停，不能将作业 DONE 当作产物验收通过。已有文献草稿不会自动改写。
 
 ## 验证范围
 

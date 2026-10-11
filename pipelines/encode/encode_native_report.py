@@ -139,7 +139,7 @@ def collect(run_dir, input_dir):
     data['dup_metrics'] = all_hits(['qc/*.dup_metrics.txt'])
 
     # 峰文件与峰数
-    for bed in all_hits(['peaks/*.peaks.final.bed', 'peaks/*.peaks.narrowPeak', 'peaks/*.regionPeak', '*.peaks.final.bed']):
+    for bed in all_hits(['peaks/*.peaks.final.bed', 'peaks/*.peaks.narrowPeak', 'peaks/*_peaks.narrowPeak', 'peaks/*.regionPeak', '*.peaks.final.bed']):
         try:
             count = sum(1 for line in open(bed, encoding='utf-8', errors='ignore') if line.strip() and not line.startswith('#'))
         except Exception:

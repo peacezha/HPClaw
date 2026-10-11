@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { appPath, dataPath } from '../paths';
 import { WORKFLOW_CATEGORIES } from '../../shared/workflow';
+import { classifyWorkflowCatalog } from '../../shared/workflowCatalog';
 import { BIOSKILLS_IMPORTER_VERSION, generateBioskillsWorkflows } from './bioskillsSeed';
 import { buildEnvCheckCommand } from './envCheckScript';
 import { buildOfficialEncodeWorkflows } from './encodeOfficialWorkflows';
@@ -21,7 +22,6 @@ const DELETED_SEEDS_PATH = dataPath('workflows', 'deleted-builtin-seeds.json');
 /** bioSkills 种子版本：提取规则变化时递增，触发老库重新生成 */
 const BIOSKILLS_SEED_VERSION = BIOSKILLS_IMPORTER_VERSION;
 /** 旧版曾入库、现已由无 blacklist 的中英文原生流程取代的系统种子。 */
-const DEPRECATED_BUILTIN_WORKFLOW_IDS = new Set(['encode-chipseq-tf-official']);
 
 const [
   CATEGORY_GENOMICS,
@@ -140,43 +140,44 @@ async function rememberDeletedBuiltinSeed(id: string): Promise<void> {
  */
 function buildChipseqTfDagVariant(linear: Workflow, now: number): Workflow {
   const L = linear.steps;
-  const pseudorepCommand = '#BSUB -J chipseq_pseudo -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks/pr peaks/pooled\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  samtools view -@ {{THREADS}} -b -s 0.5 --subsample-seed 11 "$b" > peaks/pr/"${s}".pr1.bam\n  samtools view -@ {{THREADS}} -b -s 0.5 --subsample-seed 23 "$b" > peaks/pr/"${s}".pr2.bam\n  macs2 callpeak -t peaks/pr/"${s}".pr1.bam ${CTRL:+-c "$CTRL"} -n "${s}.pr1" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks/pr\n  macs2 callpeak -t peaks/pr/"${s}".pr2.bam ${CTRL:+-c "$CTRL"} -n "${s}.pr2" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks/pr\ndone\nmapfile -t BAMS < <(ls *.dedup.bam)\nif [ "${#BAMS[@]}" -ge 2 ]; then\n  samtools merge -@ {{THREADS}} -f peaks/pooled/pooled.bam "${BAMS[@]}"\n  samtools index peaks/pooled/pooled.bam\n  macs2 callpeak -t peaks/pooled/pooled.bam ${CTRL:+-c "$CTRL"} -n pooled -g {{GENOME_SIZE}} -q 0.05 --outdir peaks/pooled\n  samtools view -@ {{THREADS}} -b -s 0.5 --subsample-seed 11 peaks/pooled/pooled.bam > peaks/pooled/pooled.pr1.bam\n  samtools view -@ {{THREADS}} -b -s 0.5 --subsample-seed 23 peaks/pooled/pooled.bam > peaks/pooled/pooled.pr2.bam\n  macs2 callpeak -t peaks/pooled/pooled.pr1.bam ${CTRL:+-c "$CTRL"} -n pooled.pr1 -g {{GENOME_SIZE}} -q 0.05 --outdir peaks/pooled\n  macs2 callpeak -t peaks/pooled/pooled.pr2.bam ${CTRL:+-c "$CTRL"} -n pooled.pr2 -g {{GENOME_SIZE}} -q 0.05 --outdir peaks/pooled\nelse\n  echo "SKIP: 只有一个重复，跳过池化（官方结构需要 ≥2 个生物学重复）"\nfi\nls peaks/pr peaks/pooled 2>/dev/null';
-  const idrSuffix = '\n# 池化伪重复 IDR（Np）与 rescue ratio（官方可重复性判定）\nif [ -f peaks/pooled/pooled.pr1_peaks.narrowPeak ] && [ -f peaks/pooled/pooled.pr2_peaks.narrowPeak ]; then\n  idr --samples peaks/pooled/pooled.pr1_peaks.narrowPeak peaks/pooled/pooled.pr2_peaks.narrowPeak --peak-list peaks/pooled/pooled_peaks.narrowPeak --input-file-type narrowPeak --rank p.value -o idr/idr.ppr.txt --plot || true\nfi\npython3 - <<\'PY\'\nimport json, os\ndef count_idr(path):\n    if not os.path.exists(path): return None\n    n = 0\n    with open(path) as fh:\n        for line in fh:\n            cols = line.rstrip("\\n").split("\\t")\n            try:\n                if float(cols[10]) < 0.05: n += 1\n            except (IndexError, ValueError): continue\n    return n\nnt = count_idr("idr/idr.txt")\nnp_pooled = count_idr("idr/idr.ppr.txt")\nqc = {}\nif os.path.exists("qc/idr_qc.json"):\n    with open("qc/idr_qc.json") as fh: qc = json.load(fh)\nrescue = None\nif nt is not None and np_pooled is not None and min(nt, np_pooled) > 0:\n    rescue = round(max(nt, np_pooled) / min(nt, np_pooled), 3)\nqc["_reproducibility"] = {"Nt_true_replicate": nt, "Np_pooled_pseudorep": np_pooled, "rescue_ratio": rescue, "rule": "rescue ratio <= 2 为重复间一致（官方 ENCODE 判定）"}\nwith open("qc/idr_qc.json", "w") as out: json.dump(qc, out, indent=2, ensure_ascii=False)\nPY';
+  const command = (action: string) => `#BSUB -J chipseq_${action} -n {{THREADS}} -q {{QUEUE}}
+set -euo pipefail
+module load SAMtools/1.17 MACS2/2.2.7.1
+${action === 'idr' ? 'module load IDR/2.0.4.2\n' : ''}python3 <FLOW>/01_software/tools/chipseq_dag.py ${action} --input-dir "{{INPUT_DIR}}" --control-dir "{{CONTROL_DIR}}" --genome-size "{{GENOME_SIZE}}" --threads {{THREADS}}`;
   const steps: WorkflowStep[] = [
-    { ...L[0], id: 'preflight', dependsOn: [], phase: 'Prepare' },
+    { ...L[0], id: 'preflight', dependsOn: [], phase: 'Prepare', command: L[0].command + '\ncommand -v python3\ncommand -v idr\ntest -s <FLOW>/01_software/tools/chipseq_dag.py' },
     { ...L[1], id: 'fastqc', dependsOn: ['preflight'], phase: 'Prepare' },
     { ...L[2], id: 'align', dependsOn: ['fastqc'], phase: 'Alignment' },
-    { ...L[3], id: 'filter-dedup', dependsOn: ['align'], phase: 'Alignment' },
+    { ...L[3], id: 'filter-dedup', dependsOn: ['align'], phase: 'Alignment', command: L[3].command.replace(/\bsamtools index(?!\s+-c)\b/g, 'samtools index -c') },
     { ...L[4], id: 'xcor', dependsOn: ['filter-dedup'], phase: 'QC' },
-    { ...L[5], id: 'rep-peaks', dependsOn: ['filter-dedup'], phase: 'Peak Calling' },
+    { ...L[5], id: 'rep-peaks', dependsOn: ['filter-dedup'], phase: 'Peak Calling', command: command('peaks') },
     {
-      id: 'pseudorep-peaks',
-      title: 'Self/pooled pseudoreplicate peaks（官方结构）',
-      dependsOn: ['rep-peaks'],
-      phase: 'Pseudoreplicates',
-      command: pseudorepCommand,
-      notes: '官方结构：每个重复随机均分为自伪重复 pr1/pr2（两个不同种子近似官方 shuffle-split），全部重复合并出池化 BAM 与池化伪重复，各跑 MACS2；供 IDR 三路一致性判定',
+      id: 'pseudorep-peaks', title: '互补自伪重复与池化伪重复峰调用',
+      dependsOn: ['filter-dedup'], phase: 'Pseudoreplicates', command: command('pseudoreplicates'),
+      notes: '按模板名与 read group 哈希分成互补且不重叠的两份，保留双端配对；分别合并各重复的 pr1 和 pr2，所有峰采用 BAMPE 模式。仅处理同一靶标、同一条件的生物学重复。',
     },
     { ...L[6], id: 'signals-spot', dependsOn: ['rep-peaks'], phase: 'QC' },
     {
-      ...L[7],
-      id: 'idr-frip',
-      dependsOn: ['rep-peaks', 'pseudorep-peaks'],
-      phase: 'IDR',
-      command: `${L[7].command}${idrSuffix}`,
-      notes: 'FRiP + 真重复 IDR（Nt）+ 池化伪重复 IDR（Np）：rescue ratio = max(Np,Nt)/min(Np,Nt) ≤ 2 判重复间一致（官方 ENCODE 标准）；单重复时只有自伪重复一致性可参考',
+      ...L[7], id: 'idr-frip', title: '三路 IDR 可重复性评估',
+      dependsOn: ['rep-peaks', 'pseudorep-peaks'], phase: 'IDR', command: command('idr'),
+      notes: '全局 IDR 使用第 12 列的 -log10 分数；评估真重复、自伪重复和池化伪重复，同时输出 rescue ratio 与 self-consistency ratio。缺失、零峰或仅单重复不能标记为通过。',
     },
     { ...L[8], id: 'report', dependsOn: ['xcor', 'signals-spot', 'idr-frip'], phase: 'Report' },
   ];
+  const manifest = linear.manifest ? structuredClone(linear.manifest) : undefined;
+  if (manifest) {
+    manifest.inputHint = '同一转录因子与条件的双端 ChIP-seq 生物学重复目录，以及一个处理完成的 matched Input 对照 BAM 目录';
+    manifest.qcGates = manifest.qcGates.map(gate => ({ ...gate, afterStep: gate.afterStep >= 7 ? gate.afterStep + 1 : gate.afterStep }));
+    manifest.qcGates.push({ afterStep: 9, metric: '三路 IDR 可重复性', pass: 'rescue ratio 与 self-consistency ratio 均≤2，且峰数非零', warn: '任一比值>2 或不可计算时不建议继续下游分析' });
+  }
   return {
-    ...linear,
-    id: 'encode-chipseq-tf-dag',
-    name: 'ENCODE TF ChIP-seq 官方结构流程（分支 DAG）',
-    description: 'ENCODE TF ChIP-seq 官方结构：过滤去重后分支出链相关 QC、信号轨迹/SPOT、真重复峰；峰之后接自伪重复/池化伪重复，三路 IDR 判定可重复性（rescue ratio ≤ 2），报告汇聚全部 QC。参数与线性版一致，直接填文件路径，不需要 genome TSV/Caper。',
+    ...linear, id: 'encode-chipseq-tf-dag', name: 'ENCODE TF ChIP-seq 官方结构流程（分支 DAG）',
+    description: '参照 ENCODE 依赖结构的原生双端 TF ChIP-seq 流程：链交叉相关性、真重复峰与互补伪重复分支，三路 IDR 与信号质控汇入报告。使用直接文件参数；这是 HPClaw 扩展实现，不是官方 WDL。',
     keywords: [...linear.keywords, '官方结构', 'dag', '分支', 'pseudoreplicate', '三路idr'],
-    steps,
-    createdAt: now,
-    updatedAt: now,
+    params: linear.params.map(param => param.name === 'CONTROL_DIR' ? { ...param, required: true } : param),
+    manifest, assets: [...(linear.assets || []), { source: 'encode/chipseq_dag.py', remotePath: 'tools/chipseq_dag.py', label: 'TF ChIP-seq DAG reproducibility helper' }],
+    provenance: { ...linear.provenance, importerVersion: 'chipseq-dag-v2' },
+    steps, createdAt: now, updatedAt: now,
   };
 }
 
@@ -1170,6 +1171,15 @@ export function builtinWorkflows(): Workflow[] {
  */
 let storeCache: { mtimeMs: number; size: number; workflows: Workflow[] } | null = null;
 
+// Serialize complete read/migrate/write cycles; catalogue actions cannot lose
+// each other's changes or restore a concurrently deleted definition.
+let storeQueue: Promise<unknown> = Promise.resolve();
+function withStoreLock<T>(action: () => Promise<T>): Promise<T> {
+  const pending = storeQueue.then(action);
+  storeQueue = pending.catch(() => undefined);
+  return pending;
+}
+
 /** 读盘完成后按最新文件状态写入缓存；stat 失败（如文件刚被删除）仅跳过本次缓存 */
 async function updateStoreCache(workflows: Workflow[]): Promise<void> {
   try {
@@ -1194,6 +1204,10 @@ function applyDerivedCategories(workflows: Workflow[]): void {
 }
 
 export async function loadWorkflows(): Promise<Workflow[]> {
+  return withStoreLock(loadWorkflowsUnlocked);
+}
+
+async function loadWorkflowsUnlocked(): Promise<Workflow[]> {
   try {
     const stat = await fs.stat(STORE_PATH);
     // bioSkills 种子校验未完成时不走缓存，保留下次读盘重试刷新的原行为
@@ -1212,15 +1226,6 @@ export async function loadWorkflows(): Promise<Workflow[]> {
       // 迁移：内置流程为系统所有，params/manifest 随版本升级总是刷新为当前内置定义
       // （用户自建与 AI 生成的流程不受影响）；版本新增的内置流程自动入库
       let migrated = false;
-      const withoutDeprecated = workflows.filter(workflow => !(
-        workflow.source === 'builtin'
-        && !workflow.provenance?.customized
-        && DEPRECATED_BUILTIN_WORKFLOW_IDS.has(workflow.id)
-      ));
-      if (withoutDeprecated.length !== workflows.length) {
-        workflows = withoutDeprecated;
-        migrated = true;
-      }
       // 用户删除过的内置种子：清出库存且不再注入，避免删除后“复活”
       const deletedSeedIds = await loadDeletedBuiltinSeeds();
       if (deletedSeedIds.size > 0) {
@@ -1270,24 +1275,28 @@ export async function loadWorkflows(): Promise<Workflow[]> {
           migrated = true;
         }
       }
-      if (migrated) await saveWorkflows(workflows);
+      if (migrated) await writeWorkflows(workflows);
       await ensureBioskillsSeeds(workflows);
+      if (classifyWorkflowCatalog(workflows)) await writeWorkflows(workflows);
       // 分类不落盘派生：内置流程 category 每次读取时按 BUILTIN_CATEGORIES 现算，
       // 避免迁移把派生字段写回持久化文件（workflows.json 与 builtinWorkflows() 保持对齐）
       applyDerivedCategories(workflows);
       await updateStoreCache(workflows);
       return workflows;
     }
+    throw new SyntaxError('Workflow store must be an array');
   } catch (err: any) {
-    if (err?.code !== 'ENOENT') {
+    if (err?.code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;
+    if (err instanceof SyntaxError) {
       // 文件损坏时备份后重建，避免流程全部丢失
       try { await fs.rename(STORE_PATH, `${STORE_PATH}.broken-${Date.now()}`); } catch { /* ignore */ }
     }
   }
   const deletedSeedIds = await loadDeletedBuiltinSeeds();
   const seeds = builtinWorkflows().filter(seed => !deletedSeedIds.has(seed.id));
-  await saveWorkflows(seeds);
+  await writeWorkflows(seeds);
   await ensureBioskillsSeeds(seeds);
+  if (classifyWorkflowCatalog(seeds)) await writeWorkflows(seeds);
   applyDerivedCategories(seeds);
   await updateStoreCache(seeds);
   return seeds;
@@ -1315,11 +1324,11 @@ async function refreshBioskillsSeeds(workflows: Workflow[]): Promise<boolean> {
       const stored = workflows.find(workflow => workflow.id === gen.id);
       return stored && (stored.provenance?.customized || stored.provenance?.importerVersion === BIOSKILLS_SEED_VERSION);
     });
-    const hasObsolete = workflows.some(workflow => workflow.id.startsWith('bioskills-') && workflow.source === 'builtin' && !expectedIds.has(workflow.id) && !deletedSeedIds.has(workflow.id));
+    const hasObsolete = workflows.some(workflow => workflow.id.startsWith('bioskills-') && workflow.source === 'builtin' && !expectedIds.has(workflow.id) && !deletedSeedIds.has(workflow.id) && !workflow.lifecycle && !workflow.provenance?.customized);
     if (marker === BIOSKILLS_SEED_VERSION && complete && !hasObsolete) return true;
 
     const result = mergeGeneratedBioskills(workflows, generated, deletedSeedIds);
-    if (result.changed) await saveWorkflows(workflows);
+    if (result.changed) await writeWorkflows(workflows);
     await fs.mkdir(path.dirname(SEED_MARKER_PATH), { recursive: true });
     await fs.writeFile(SEED_MARKER_PATH, BIOSKILLS_SEED_VERSION, 'utf-8');
     return true;
@@ -1377,9 +1386,10 @@ export function mergeGeneratedBioskills(workflows: Workflow[], generated: Workfl
 
   for (let index = workflows.length - 1; index >= 0; index--) {
     const workflow = workflows[index];
-    if (workflow.id.startsWith('bioskills-') && workflow.source === 'builtin' && !expectedIds.has(workflow.id)) {
-      workflows.splice(index, 1);
-      removed++;
+    if (workflow.id.startsWith('bioskills-') && workflow.source === 'builtin' && !expectedIds.has(workflow.id)
+      && !workflow.lifecycle && !workflow.provenance?.customized) {
+      workflow.lifecycle = { state: 'pending_disposal', origin: 'automatic', reasonCode: 'retired_seed', updatedAt: Date.now() };
+      updated++;
     }
   }
 
@@ -1418,6 +1428,10 @@ export function mergeGeneratedBioskills(workflows: Workflow[], generated: Workfl
 }
 
 export async function saveWorkflows(workflows: Workflow[]): Promise<void> {
+  return withStoreLock(() => writeWorkflows(workflows));
+}
+
+async function writeWorkflows(workflows: Workflow[]): Promise<void> {
   storeCache = null; // 写盘即失效读缓存，下一次 loadWorkflows 重新读文件
   await fs.mkdir(path.dirname(STORE_PATH), { recursive: true });
   const tmp = `${STORE_PATH}.tmp`;
@@ -1426,7 +1440,11 @@ export async function saveWorkflows(workflows: Workflow[]): Promise<void> {
 }
 
 export async function upsertWorkflow(input: Partial<Workflow> & { name: string }): Promise<Workflow> {
-  const workflows = await loadWorkflows();
+  return withStoreLock(() => upsertWorkflowUnlocked(input));
+}
+
+async function upsertWorkflowUnlocked(input: Partial<Workflow> & { name: string }): Promise<Workflow> {
+  const workflows = await loadWorkflowsUnlocked();
   const now = Date.now();
   if (input.id) {
     const idx = workflows.findIndex(w => w.id === input.id);
@@ -1446,7 +1464,8 @@ export async function upsertWorkflow(input: Partial<Workflow> & { name: string }
         merged.provenance = { ...previous.provenance, customized: true };
       }
       workflows[idx] = merged;
-      await saveWorkflows(workflows);
+      classifyWorkflowCatalog(workflows);
+      await writeWorkflows(workflows);
       return workflows[idx];
     }
   }
@@ -1466,17 +1485,42 @@ export async function upsertWorkflow(input: Partial<Workflow> & { name: string }
   if (input.assets) workflow.assets = input.assets;
   if (input.paperImport) workflow.paperImport = input.paperImport;
   workflows.push(workflow);
-  await saveWorkflows(workflows);
+  classifyWorkflowCatalog(workflows);
+  await writeWorkflows(workflows);
   return workflow;
 }
 
 export async function deleteWorkflow(id: string): Promise<boolean> {
-  const workflows = await loadWorkflows();
+  return withStoreLock(() => deleteWorkflowUnlocked(id));
+}
+
+async function deleteWorkflowUnlocked(id: string): Promise<boolean> {
+  const workflows = await loadWorkflowsUnlocked();
   const target = workflows.find(w => w.id === id);
   if (!target) return false;
   const next = workflows.filter(w => w.id !== id);
-  await saveWorkflows(next);
+  const backup = dataPath('workflows', 'deleted-definitions', `${Date.now()}-${crypto.randomUUID()}.json`);
+  await fs.mkdir(path.dirname(backup), { recursive: true });
+  await fs.writeFile(backup, JSON.stringify(target, null, 2), 'utf-8');
   // 内置种子删除后登记，load/merge 不再复活；用户/AI 流程不会被种子注入，无需记录
   if (target.source === 'builtin') await rememberDeletedBuiltinSeed(id);
+  await writeWorkflows(next);
   return true;
+}
+
+export async function setWorkflowLifecycle(id: string, state: 'active' | 'pending_disposal', reason = ''): Promise<Workflow | null> {
+  return withStoreLock(async () => {
+    const workflows = await loadWorkflowsUnlocked();
+    const index = workflows.findIndex(w => w.id === id);
+    if (index < 0) return null;
+    const previous = workflows[index];
+    const workflow: Workflow = { ...previous, lifecycle: {
+      state, origin: 'user', updatedAt: Date.now(),
+      ...(state === 'pending_disposal' ? { reasonCode: 'manual' as const, ...(reason ? { reason } : {}) } : {}),
+    } };
+    workflows[index] = workflow;
+    // Visibility is not a scientific customization; seed upgrades still work.
+    await writeWorkflows(workflows);
+    return workflow;
+  });
 }

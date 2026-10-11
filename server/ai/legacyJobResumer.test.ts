@@ -207,4 +207,38 @@ describe('maybeResumeLegacyAgent', () => {
     await expect(maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps))
       .resolves.toBeUndefined();
   });
+
+  it('queues a distinct completed job instead of dropping it while the first wake turn runs', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const deps = makeDeps({ runAgent: vi.fn<RunAgentMock>(async (_ctx, cb) => { await gate; cb.onDone('已验收并推进。'); }) });
+    const first = maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '1', status: 'DONE' }, deps);
+    await vi.waitFor(() => expect(deps.runAgent).toHaveBeenCalledTimes(1));
+    const second = maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '2', status: 'DONE' }, deps);
+    release();
+    await Promise.all([first, second]);
+    expect(deps.runAgent).toHaveBeenCalledTimes(2);
+    expect(deps.markResumed).toHaveBeenCalledWith('1', 'ssh-1');
+    expect(deps.markResumed).toHaveBeenCalledWith('2', 'ssh-1');
+  });
+  it('restores the original goal, scientific parameters and plan checkpoint and persists the advanced plan', async () => {
+    const plan = { goal: 'FASTQ to report', steps: [{ id: '1', title: 'Alignment', verification: 'BAM quickcheck', status: 'waiting' }] };
+    const deps = makeDeps({
+      loadConversation: vi.fn(async () => ({ messages: [
+        { role: 'user' as const, content: '从 FASTQ 分析到报告，MAPQ=20。' },
+        { role: 'system' as const, content: '[HPCLAW_AGENT_PLAN] ' + JSON.stringify(plan) },
+      ] })),
+      runAgent: vi.fn<RunAgentMock>(async (ctx, cb, messages) => {
+        expect(ctx.resumePlan).toEqual(plan);
+        expect(messages[0].content).toContain('MAPQ=20');
+        cb.onPlanUpdate?.({ ...plan, createdAt: 1, updatedAt: 2, steps: [{ ...plan.steps[0], status: 'done' }] } as any, '1');
+        cb.onDone('已验收比对并继续下游。');
+      }),
+    });
+    await maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '123', status: 'DONE' }, deps);
+    expect(deps.loadConversation).toHaveBeenCalledWith('conv-1', 'ssh-1');
+    expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', expect.arrayContaining([
+      expect.objectContaining({ role: 'system', content: expect.stringContaining('"status":"done"') }),
+    ]), 'ssh-1');
+  });
 });

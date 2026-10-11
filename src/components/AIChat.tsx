@@ -43,7 +43,9 @@ import {
   parseWorkflowConfigureDirective,
   parseWorkflowExecutionContext,
   stripWorkflowConfigureDirectives,
+  stripWorkflowExecutionMarkers,
   stripWorkflowRunDetachedMarkers,
+  workflowRunIdentity,
 } from '@/shared/workflowExecution';
 import { closeSseReader, type SseReaderCloseReason } from '../services/sseReaderLifecycle';
 import { prepareAiRequestBody } from '../services/aiRequestBody';
@@ -174,8 +176,6 @@ export function extractOutputFiles(text: string): string[] {
   return Array.from(paths);
 }
 
-const MAX_RENDERED_MESSAGES = 500;
-
 export type ConversationTimelineItem =
   | { type: 'message'; message: Message; absoluteIndex: number }
   | { type: 'execution'; items: ExecutionTraceItem[]; key: string };
@@ -270,8 +270,10 @@ function buildFollowUpSuggestions(content: string, isEnglish: boolean, contextTe
 //  Message Bubble 
 // React.memo：流式期间每个 token 都触发 AIChat 整体重渲染；消息列表不可变追加、msg 引用稳定，
 // memo 后历史气泡跳过渲染体内的 thought 正则、extractOutputFiles 与逐行 split 等重计算
-const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId, workspace, workflowRunDir, remoteBasePaths, onOpenWebPanel }: { msg: Message; index: number; sessionId?: string | null; workspace?: string; workflowRunDir?: string | null; remoteBasePaths?: string[]; onOpenWebPanel?: (request: WebPanelRequest) => void }) {
+const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId, workspace, workflowRunDir, remoteBasePaths, onOpenWebPanel, expandDetails = false }: { msg: Message; index: number; sessionId?: string | null; workspace?: string; workflowRunDir?: string | null; remoteBasePaths?: string[]; onOpenWebPanel?: (request: WebPanelRequest) => void; expandDetails?: boolean }) {
+  const { isEnglish } = useI18n();
   const [thoughtExpanded, setThoughtExpanded] = useState(false);
+  useEffect(() => setThoughtExpanded(expandDetails), [expandDetails]);
 
   // Parse thought steps
   const thoughtRegex = /<thought>([\s\S]*?)<\/thought>/g;
@@ -331,8 +333,8 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
               className="flex w-full items-center gap-1.5 text-left text-[11px] text-scholar-400 hover:text-scholar-200"
             >
               {thoughtExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              <span>思考过程</span>
-              <span className="text-scholar-500">· {thoughts.length} 步</span>
+              <span>{isEnglish ? 'Reasoning details' : '思考过程'}</span>
+              <span className="text-scholar-500">{isEnglish ? `· ${thoughts.length} ${thoughts.length === 1 ? 'step' : 'steps'}` : `· ${thoughts.length} 步`}</span>
             </button>
             <AnimatePresence>
               {thoughtExpanded && (
@@ -345,7 +347,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
                   {thoughts.map((t, i) => (
                     <div key={i} className="mt-2 bg-scholar-900/60 border border-scholar-600/50 rounded p-2 text-[11px] text-scholar-300">
                       <div className="text-[10px] text-accent-dark/70 mb-0.5 font-medium">Step {i + 1}</div>
-                      <div data-user-content="true" className="whitespace-pre-wrap break-words">{t.length > 500 ? t.slice(0, 500) + '...' : t}</div>
+                      <div data-user-content="true" className="whitespace-pre-wrap break-words">{t}</div>
                     </div>
                   ))}
                 </motion.div>
@@ -1199,14 +1201,12 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 if (event.name === 'run_command') {
                   addMessage({
                     role: 'system',
-                    content: `[命令输出已隐藏]\n${(event.result || '').slice(0, 500)}`,
+                    content: `[命令输出]\n${event.result || ''}`,
                   });
                 } else if (event.name !== 'ask_user') {
-                  // validate_dsh_ui 的 UI spec JSON 需要完整可解析才能渲染成卡片，放宽截断
-                  const toolResultLimit = event.name === 'validate_dsh_ui' ? 4000 : 500;
                   addMessage({
                     role: 'system',
-                    content: `[📋 ${event.name}] ${(event.result || '').slice(0, toolResultLimit)}`,
+                    content: `[📋 ${event.name}] ${event.result || ''}`,
                   });
                 }
                 break;
@@ -1755,18 +1755,25 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     }
     void submitToAI(text, { appendUserMessage: true });
   };
-  const renderedMessageStart = Math.max(0, messages.length - MAX_RENDERED_MESSAGES);
-  const renderedMessages = messages.slice(renderedMessageStart);
-  const reportContexts = useMemo(() => new Map(messages.slice(Math.max(0, messages.length - MAX_RENDERED_MESSAGES)).flatMap((message, offset) => {
+  const [expandExecutionDetails, setExpandExecutionDetails] = useState(false);
+  const reportContexts = useMemo(() => new Map(messages.flatMap((message, i) => {
     if (!/\.x?html?\b/i.test(message.content)) return [];
-    const i = Math.max(0, messages.length - MAX_RENDERED_MESSAGES) + offset;
     return [[i, reportBasePaths(messages.slice(0, i + 1))] as const];
   })), [messages]);
-  const conversationTimeline = buildConversationTimeline(renderedMessages, renderedMessageStart);
+  // Rendering and model context budgets are independent: never discard older chat rows.
+  const conversationTimeline = useMemo(() => buildConversationTimeline(messages, 0), [messages]);
+  const runCardIndices = useMemo(() => {
+    const indices = new Map<string, number>();
+    messages.forEach((message, index) => {
+      const context = message.role === 'user' ? parseWorkflowExecutionContext(message.content) : null;
+      if (context && !indices.has(workflowRunIdentity(context))) indices.set(workflowRunIdentity(context), index);
+    });
+    return indices;
+  }, [messages]);
   // 流程上下文：裸相对路径(results/x.png)的解析基准 + 建议选项的状态感知来源
   const workflowRunDir = findLatestWorkflowExecutionContext(messages)?.runDir ?? null;
   const lastConversationalMessage = [...messages].reverse().find(message => message.role !== 'system' && message.content.trim());
-  const suggestionContextText = renderedMessages.slice(-8).map(m => m.content).join('\n');
+  const suggestionContextText = messages.slice(-8).map(m => m.content).join('\n');
   const followUpSuggestions = !isAiLoading && !isStreaming && !pendingAsk && lastConversationalMessage?.role === 'assistant'
     ? buildFollowUpSuggestions(lastConversationalMessage.content, isEnglish, suggestionContextText)
     : [];
@@ -2061,21 +2068,27 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 </div>
               </div>
             )}
-            {renderedMessageStart > 0 && (
-              <div className="mx-auto mb-2 rounded-full border border-scholar-700 bg-scholar-800 px-3 py-1 text-xs text-scholar-400 w-fit">
-                已收起较早的 {renderedMessageStart} 条消息，可在对话存档中完整查看
+            {messages.length > 0 && (
+              <div className="sticky top-0 z-10 flex items-center justify-between rounded-lg border border-scholar-700 bg-scholar-900/95 px-3 py-2 text-xs text-scholar-300">
+                <span>{isEnglish ? `${messages.length} records · complete history` : `${messages.length} 条记录 · 完整对话`}</span>
+                <button type="button" aria-pressed={expandExecutionDetails} onClick={() => setExpandExecutionDetails(value => !value)} className="text-accent hover:underline">
+                  {isEnglish ? (expandExecutionDetails ? 'Collapse execution details' : 'Expand execution details') : (expandExecutionDetails ? '收起执行记录' : '展开执行记录')}
+                </button>
               </div>
             )}
             {conversationTimeline.map(item => {
-              if (item.type === 'execution') return <ExecutionTrace key={item.key} items={item.items} sessionId={sessionId} workspace={agentWorkspace || undefined} />;
+              if (item.type === 'execution') return <ExecutionTrace key={item.key} items={item.items} sessionId={sessionId} workspace={agentWorkspace || undefined} expandDetails={expandExecutionDetails} />;
               const { message, absoluteIndex } = item;
               // 正式流程运行标记：不显示原始协议文本，渲染对话内嵌运行卡
               if (message.role === 'user') {
                 const runContext = parseWorkflowExecutionContext(message.content);
                 if (runContext) {
+                  const remainder = stripWorkflowExecutionMarkers(message.content);
+                  const showCard = runCardIndices.get(workflowRunIdentity(runContext)) === absoluteIndex;
                   return (
                     <div key={absoluteIndex} className="mx-1 mb-3 max-w-[95%]">
-                      <WorkflowRunCard
+                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
+                      {showCard && <WorkflowRunCard
                         context={runContext}
                         sessionId={clusterSessionId}
                         socket={socket}
@@ -2084,7 +2097,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                         onOpenReport={clusterSessionId && onOpenWebPanel
                           ? path => handleOpenWebPanel({ remotePath: path, sessionId: clusterSessionId, title: '分析报告' })
                           : undefined}
-                      />
+                      />}
                     </div>
                   );
                 }
@@ -2096,7 +2109,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   const remainder = stripWorkflowConfigureDirectives(message.content);
                   return (
                     <div key={absoluteIndex} className="mx-1 mb-3 max-w-[95%] space-y-1.5">
-                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} />}
+                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
                       <WorkflowConfigCard
                         workflowId={directive.workflowId}
                         sessionId={clusterSessionId}
@@ -2108,7 +2121,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   );
                 }
               }
-              return <MessageBubble key={absoluteIndex} msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} />;
+              return <div key={absoluteIndex} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' }}><MessageBubble msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} /></div>;
             })}
 
             {/* Streaming preview */}

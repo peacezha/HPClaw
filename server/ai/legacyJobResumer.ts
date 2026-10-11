@@ -8,6 +8,8 @@ import { runAgent as defaultRunAgent, type AgentCtx, type AgentCB } from './agen
 import type { AIMessage, AIProfile } from './types';
 import type { JobAgentBinding } from '../dsh/jobAgentBindings';
 import type { JobSubmissionGuard } from './jobSubmissionGuard';
+import { JobWakeQueue } from './jobWakeQueue';
+import { AGENT_PLAN_CHECKPOINT, findLatestAgentPlanCheckpoint, serializeAgentPlanCheckpoint } from '../../shared/chatPlan';
 
 export interface LegacyResumeJobEvent {
   sessionId: string;
@@ -26,6 +28,7 @@ export interface LegacyResumeDeps {
   lsfSkillDir?: string;
   userSkillsDir?: string;
   appendConversation?: (conversationId: string, messages: AIMessage[], sshSessionId?: string) => Promise<boolean>;
+  loadConversation?: (conversationId: string, sshSessionId: string) => Promise<{ messages: AIMessage[]; summary?: string } | null>;
   emitToUi?: (sshSessionId: string, payload: unknown) => void;
   notify?: (title: string, content: string) => Promise<void>;
   /** 唤醒轮里 Agent 新提交的作业：交给服务端 trackJobs + 续登绑定，保持监控闭环。 */
@@ -41,7 +44,7 @@ const RESUME_TIMEOUT_MS = 10 * 60_000;
 const OUTPUT_EXCERPT_MAX = 3 * 1024;
 
 // 同一对话的并发唤醒互斥（避免作业批量结束时重复投递 prompt）。
-const resumeLocks = new Set<string>();
+const wakeQueue = new JobWakeQueue();
 
 function buildWakeText(binding: JobAgentBinding, jobId: string, status: string, tail: string): string {
   const excerpt = tail.trim() ? tail.slice(0, OUTPUT_EXCERPT_MAX) : '';
@@ -49,12 +52,12 @@ function buildWakeText(binding: JobAgentBinding, jobId: string, status: string, 
     return `The background watcher confirmed that job ${jobId} has finished. Final status: ${status}.`
       + (excerpt ? `\n\nOutput excerpt:\n${excerpt}` : '')
       + '\n\nPlease read the full output (e.g. bpeek or the output files), verify the results and continue the previous task; if the task is already complete, briefly summarize the results.'
-      + '\n\nThis is an autonomous background resume: do NOT call ask_user — the user is not watching. Analyze and finish on your own; if the next step needs a decision, pick the recommended option and note the assumption in your summary.';
+      + '\n\nContinue the authorized task without routine requests to proceed. Pause for missing essential inputs, failed QC, required approval or an explicit user stop; never invent scientific parameters or bypass approval.';
   }
   return `后台监控确认作业 ${jobId} 已结束，终态：${status}。`
     + (excerpt ? `\n\n输出摘要：\n${excerpt}` : '')
     + '\n\n请读取完整输出（如 bpeek 或输出文件），验证结果并继续之前的任务；如果任务已完成，请简要总结结果。'
-    + '\n\n这是后台自动续跑：禁止调用 ask_user 反问——用户此刻不在对话前。请自主分析并收尾；若下一步需要用户拍板，直接按推荐方案执行并在总结里注明这个假设。';
+    + '\n\n请连续完成已授权的后续步骤，不要每步询问是否继续。仅在缺少关键输入、QC 不合格、需要审批或用户明确停止时暂停；不得擅自猜测科学参数或绕过审批。';
 }
 
 function buildSysMessage(binding: JobAgentBinding, jobId: string, status: string): string {
@@ -74,16 +77,7 @@ export async function maybeResumeLegacyAgent(evt: LegacyResumeJobEvent, deps: Le
       return;
     }
     const lockKey = `${evt.sessionId}:${binding.conversationKey}`;
-    if (resumeLocks.has(lockKey)) {
-      console.warn('[legacy-resume] 对话 %s 正在续跑中，跳过作业 %s 的重复唤醒', binding.conversationKey, evt.jobId);
-      return;
-    }
-    resumeLocks.add(lockKey);
-    try {
-      await runResume(evt, binding, deps);
-    } finally {
-      resumeLocks.delete(lockKey);
-    }
+    await wakeQueue.enqueue(lockKey, evt.jobId, () => runResume(evt, binding, deps));
   } catch (err) {
     console.error('[legacy-resume] 作业 %s 唤醒失败: %s', evt.jobId, err instanceof Error ? err.message : String(err));
   }
@@ -114,6 +108,10 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
     let finalText = '';
     let askQuestion = '';
     let runError = '';
+    let latestPlan: unknown;
+    const history = binding.conversationId && deps.loadConversation
+      ? await deps.loadConversation(binding.conversationId, evt.sessionId)
+      : null;
     const run = deps.runAgent ?? defaultRunAgent;
     const ctx: AgentCtx = {
       sid: evt.sessionId,
@@ -135,6 +133,7 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
       jobSubmissionGuard: deps.jobSubmissionGuard,
       conversationId: binding.conversationId,
       conversationKey: binding.conversationKey,
+      resumePlan: history ? findLatestAgentPlanCheckpoint(history.messages) : undefined,
       locale: binding.locale ?? 'zh-CN',
     };
     const callbacks: AgentCB = {
@@ -144,11 +143,21 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
       onToolResult: () => {},
       onStep: () => {},
       onAsk: question => { askQuestion = question; },
+      onPlan: plan => { latestPlan = plan; },
+      onPlanUpdate: plan => { latestPlan = plan; },
       onDone: text => { finalText = text; },
       onErr: error => { runError = error; },
       sig: () => abort.signal,
     };
-    await run(ctx, callbacks, [{ role: 'user', content: buildWakeText(binding, evt.jobId, evt.status, tail) }]);
+    // Restore the goal, accepted parameters and checkpoint, not just "a job finished".
+    const context = (history?.messages || []).filter(m => !m.content.startsWith(AGENT_PLAN_CHECKPOINT)).slice(-24).map(m => ({
+      ...m, content: m.content.length <= 8000 ? m.content : m.content.slice(0, 4000) + '\n[context excerpt]\n' + m.content.slice(-4000),
+    }));
+    await run(ctx, callbacks, [
+      ...(history?.summary ? [{ role: 'system' as const, content: history.summary.slice(-8000) }] : []),
+      ...context,
+      { role: 'user', content: buildWakeText(binding, evt.jobId, evt.status, tail) },
+    ]);
 
     const zh = binding.locale !== 'en-US';
     let assistantText: string;
@@ -169,6 +178,7 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
         await deps.appendConversation(binding.conversationId, [
           { role: 'user', content: buildSysMessage(binding, evt.jobId, evt.status) },
           { role: 'assistant', content: assistantText || fallback },
+          ...(latestPlan ? [{ role: 'system' as const, content: serializeAgentPlanCheckpoint(latestPlan) }] : []),
         ], binding.sshSessionId);
       } catch (err) {
         console.warn('[legacy-resume] 会话回写失败: %s', err instanceof Error ? err.message : String(err));

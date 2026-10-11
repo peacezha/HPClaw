@@ -17,6 +17,9 @@ export interface FormalWorkflowContinuation {
   runId: string;
   connectionKey: string;
   sessionId?: string;
+  conversationId?: string;
+  locale?: 'zh-CN' | 'en-US';
+  confirmationPolicy?: 'never' | 'dangerous' | 'state_changes' | 'every_command';
   state: 'waiting_jobs' | 'job_finished' | 'resuming' | 'waiting_user';
   terminalStatus?: 'DONE' | 'EXIT';
   resumeCount: number;
@@ -30,6 +33,9 @@ export interface FormalWorkflowContinuationContext {
   runId: string;
   connection: WorkflowConnectionIdentity;
   sessionId?: string;
+  conversationId?: string;
+  locale?: 'zh-CN' | 'en-US';
+  confirmationPolicy?: 'never' | 'dangerous' | 'state_changes' | 'every_command';
 }
 
 const MAX_RECORDS = 500;
@@ -100,6 +106,9 @@ export function addFormalWorkflowContinuations(
         runId: context.runId,
         connectionKey,
         sessionId: context.sessionId,
+        conversationId: context.conversationId,
+        locale: context.locale,
+        confirmationPolicy: context.confirmationPolicy,
         state: 'waiting_jobs',
         resumeCount: 0,
         submittedAt: now,
@@ -108,6 +117,9 @@ export function addFormalWorkflowContinuations(
       records.push(record);
     } else {
       record.sessionId = context.sessionId;
+      record.conversationId = context.conversationId ?? record.conversationId;
+      record.locale = context.locale ?? record.locale;
+      record.confirmationPolicy = context.confirmationPolicy ?? record.confirmationPolicy;
       record.state = 'waiting_jobs';
       record.terminalStatus = undefined;
       record.updatedAt = now;
@@ -130,7 +142,8 @@ export function markFormalWorkflowJobFinished(
   sessionId: string,
 ): FormalWorkflowContinuation[] {
   const key = workflowConnectionKey(identity);
-  const matched = load().filter(record => record.connectionKey === key && record.jobId === jobId);
+  // A user/QC/approval pause is durable. A repeated scheduler event must not undo it.
+  const matched = load().filter(record => record.connectionKey === key && record.jobId === jobId && record.state !== 'waiting_user');
   const now = Date.now();
   for (const record of matched) {
     record.state = 'job_finished';

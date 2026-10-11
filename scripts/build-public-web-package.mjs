@@ -13,7 +13,7 @@ const name = `HPClaw-${version}-public-web-linux-x64-node20`;
 const stage = path.join(output, name);
 if (fs.existsSync(stage)) throw new Error('Use a fresh checkout: staging directory already exists');
 fs.mkdirSync(stage, { recursive: true });
-for (const directory of ['dist', 'dist-electron', 'skills', 'lsf_skills', 'pipelines', 'demo-assets']) {
+for (const directory of ['dist', 'dist-electron', 'skills', 'lsf_skills', 'pipelines', 'demo-assets', 'third-party']) {
   fs.cpSync(path.join(root, directory), path.join(stage, directory), { recursive: true });
 }
 fs.mkdirSync(path.join(stage, 'scripts'));

@@ -90,7 +90,7 @@ describe('调度器主动对账', () => {
     expect(collectActiveJobIds(runs)).toEqual(['101']);
     const done = reconcileRunsWithScheduler(runs, parseBjobsStates('101 DONE\n'), NOW);
     expect(done[0].steps?.[0].status).toBe('running');
-    expect(done[0].status).toBe('running');
+    expect(done[0].status).toBe('waiting_user');
 
     const failed = reconcileRunsWithScheduler([
       { runDir: 'c', status: 'running', steps: [{ n: 1, status: 'running', jobIds: ['102'] }] },
@@ -99,7 +99,7 @@ describe('调度器主动对账', () => {
     expect(failed[0].status).toBe('failed');
   });
 
-  it('后台作业完成但还有后续步骤时转为等待用户继续', () => {
+  it('后台作业完成但还有后续步骤时进入自动验收门，不标记分析完成', () => {
     const runs = [{
       runDir: 'a', status: 'waiting_jobs', totalSteps: 2, currentStep: 1,
       steps: [
@@ -112,5 +112,21 @@ describe('调度器主动对账', () => {
     expect(reconciled[0].steps?.[0].status).toBe('running');
     expect(reconciled[0].status).toBe('waiting_user');
     expect(reconciled[0].error).toContain('等待 Agent 验收');
+  });
+
+  it('retains a batch member terminal state after LSF purges it, without treating unknown jobs as success', () => {
+    const run = {
+      runDir: 'r', status: 'waiting_jobs', steps: [{ n: 1, status: 'running', jobIds: ['1', '2'] }],
+    };
+    const first = reconcileRunsWithScheduler([run], new Map([['1', 'DONE'], ['2', 'RUN']]))[0];
+    expect(first.status).toBe('waiting_jobs');
+    expect(first.jobStates).toEqual({ '1': 'DONE', '2': 'RUN' });
+    const last = reconcileRunsWithScheduler([first], new Map([['2', 'DONE']]))[0];
+    expect(last.status).toBe('waiting_user');
+    expect(last.jobStates).toEqual({ '1': 'DONE', '2': 'DONE' });
+    const unknown = reconcileRunsWithScheduler([run], new Map([['1', 'DONE']]))[0];
+    expect(unknown.status).toBe('waiting_jobs');
+    const paused = reconcileRunsWithScheduler([{ ...last, error: '用户要求暂停' }], new Map([['2', 'DONE']]))[0];
+    expect(paused.error).toBe('用户要求暂停');
   });
 });

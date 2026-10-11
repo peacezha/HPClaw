@@ -8,11 +8,43 @@ import {
   sanitizeRunConfig,
   workflowStepScriptPath,
   updateWorkflowRun,
+  reconcileWorkflowRunWithScheduler,
 } from './workflowRunService';
 import type { WorkflowRun } from '../../shared/workflowRun';
 import type { Workflow } from './workflowTypes';
+import { needsAutomaticOutputReview } from './runAnnotate';
 
 describe('workflowRunService', () => {
+  it('hands each job off as waiting_jobs and progresses three steps from completion events without another user request', async () => {
+    const runDir = '/home/u/hpclaw_flows/wf/03_workspace/runs/r1';
+    let stored: WorkflowRun = {
+      runId: 'r1', workflowId: 'wf', workflowName: 'Test', workflowVersion: 1, revision: 1,
+      runDir, status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1,
+      currentStep: 1, totalSteps: 3,
+      config: sanitizeRunConfig({}),
+      steps: [1, 2, 3].map(n => ({ n, stepId: 's' + n, title: 'Step ' + n, status: 'pending' })),
+    };
+    const exec = async (command: string) => {
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(stored);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded && command.includes('/run.json')) stored = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+      return '';
+    };
+    for (const n of [1, 2, 3]) {
+      const submitted = await updateWorkflowRun(exec, '/home/u', runDir, {
+        status: 'waiting_jobs', step: { n, status: 'running', jobIds: [String(100 + n)] },
+      });
+      expect(submitted.status).toBe('waiting_jobs'); // Regression: step.running used to overwrite this.
+      const finished = await reconcileWorkflowRunWithScheduler(exec, '/home/u', runDir, new Map([[String(100 + n), 'DONE']]));
+      expect(needsAutomaticOutputReview(finished)).toBe(true);
+      expect(finished.steps[n - 1].status).toBe('running'); // No false QC success from scheduler DONE.
+      await updateWorkflowRun(exec, '/home/u', runDir, {
+        status: 'running', step: { n, status: 'done', summary: 'Output checked', evidence: ['results/log.txt'], qc: { status: 'pass' } },
+      });
+    }
+    expect(stored.status).toBe('done');
+    expect(stored.steps.every(step => step.status === 'done')).toBe(true);
+  });
   it('只允许流程运行工作区路径', () => {
     const home = '/public/home/u';
     expect(resolveWorkflowRunDir(home, '~/hpclaw_flows/rna/03_workspace/runs/r1'))

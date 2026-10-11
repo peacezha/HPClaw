@@ -12,10 +12,12 @@ import WorkflowFlowGraph from './WorkflowFlowGraph';
 import HtmlReportFrame from './rich-content/HtmlReportFrame';
 import WorkflowQcNotice from './WorkflowQcNotice';
 import { unresolvedQcFailures } from '@/shared/workflowQc';
+import { needsAutomaticOutputReview } from '@/shared/workflowContinuation';
 import { useWorkflowText } from '../i18n';
 import { buildDataPrepGuide } from '../features/workflows/dataPrepGuide';
 import { encodeExampleFor } from '../features/workflows/encodeExample';
 import type { Workflow } from '@/shared/workflow';
+import { isPendingDisposal, workflowDisposalReason } from '@/shared/workflowCatalog';
 import type { PickPathKind } from '@/shared/fileTransfer';
 import type { PreflightResult } from '@/shared/flowManifest';
 import {
@@ -99,6 +101,7 @@ export function isWorkflowParamRequired(p: Workflow['params'][number]): boolean 
 }
 
 export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose, onRun, onPickFolder, onOpenRunFolder, embedded = false }: FlowRunnerDrawerProps) {
+  const displayText = useWorkflowText();
   const [initialHabit] = useState(() => getWorkflowHabitSuggestion(workflow.id));
   const [preflight, setPreflight] = useState<PreflightResult | null | undefined>(undefined);
   const [checkingAll, setCheckingAll] = useState(false);
@@ -343,6 +346,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const needInputs = !!inputHint || workflow.params.some(p => /INPUT|DATA|FASTQ| SAMPLE/i.test(p.name));
 
   const handleRun = useCallback(async () => {
+    if (isPendingDisposal(workflow)) { setFormError(displayText('此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。')); return; }
     if (needInputs && inputs.length === 0) {
       setFormError('请先选择要处理的数据目录');
       return;
@@ -519,6 +523,10 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {isPendingDisposal(workflow) && <section className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm leading-6 text-amber-400">
+          <p>{displayText('此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。')}</p>
+          <p data-user-content="true">{workflow.lifecycle?.reason || displayText(workflowDisposalReason(workflow))}</p>
+        </section>}
         <section className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
           <div className="flex items-center gap-2">
             <FolderOpen className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
@@ -870,7 +878,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             环境有必需项未就绪，运行后 AI 会先引导你补齐，再开始分析。
           </p>
         )}
-        <button onClick={() => void handleRun()} disabled={!sessionId || startingRun}
+        <button onClick={() => void handleRun()} disabled={!sessionId || startingRun || isPendingDisposal(workflow)}
           className="btn-primary w-full !py-2.5 text-sm">
           {startingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
           {startingRun ? '正在创建正式运行…' : '运行流程'}
@@ -1077,9 +1085,10 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
   // A changed verdict/revision must be reviewed again, not acknowledged by a stale dialog.
   useEffect(() => setReviewQc(false), [run.revision]);
   const qcBlocked = unresolvedQcFailures(run).length > 0;
+  const autoReview = needsAutomaticOutputReview(run);
   const st = run.stale
     ? { label: '疑似中断', cls: 'bg-gray-500/20 text-gray-400' }
-    : RUN_STATUS[run.status] || RUN_STATUS.unknown;
+    : autoReview ? { label: '自动验收中', cls: 'bg-accent/15 text-accent' } : RUN_STATUS[run.status] || RUN_STATUS.unknown;
   const total = run.totalSteps || run.steps?.length || 0;
   const current = run.currentStep ?? (run.steps?.filter(s => s.status === 'done').length ?? 0);
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
@@ -1092,7 +1101,7 @@ export function RunItem({ run, expanded, onToggle, onShowLog, onShowReport, onSh
   const started = run.startedAt
     ? new Date(run.startedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '';
-  const canResume = !!run.stale || ['failed', 'waiting_user', 'blocked_env'].includes(run.status);
+  const canResume = !!run.stale || (!autoReview && ['failed', 'waiting_user', 'blocked_env'].includes(run.status));
 
   return (
     <div className="bg-scholar-950/50 border border-scholar-700/50 rounded-lg">

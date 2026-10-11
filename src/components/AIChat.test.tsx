@@ -6,6 +6,11 @@ import AIChat, { buildConversationTimeline, extractOutputFiles } from './AIChat'
 import { saveAIProfile } from '../services/aiProfile';
 import { saveAgentWorkspace, clearAgentWorkspace } from '../services/agentWorkspace';
 import { useState } from 'react';
+import { formatWorkflowExecutionContext } from '../../shared/workflowExecution';
+
+vi.mock('./WorkflowRunCard', () => ({
+  default: ({ context }: any) => <div data-testid="workflow-run-card">{context.runId}</div>,
+}));
 
 vi.mock('../features/file-transfer/api', () => ({
   enqueueTransfer: vi.fn(async () => ({ id: 'task-1' })),
@@ -81,6 +86,44 @@ afterEach(() => {
 });
 
 describe('AIChat 对话附件', () => {
+  it('renders the full conversation beyond 500 records and expands long details in the chat pane', async () => {
+    const messages = Array.from({ length: 602 }, (_, index) => ({
+      role: 'user' as const, content: 'history-row-' + index,
+    }));
+    const all: any[] = [...messages,
+      { role: 'system', content: '[命令输出]\n' + 'x'.repeat(1000) + 'OUTPUT_END' },
+      { role: 'assistant', content: '结果尚未核验。', thoughtSteps: [{ step: 1, content: 'x'.repeat(1000) + 'DETAIL_END' }] },
+    ];
+    render(<LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only"
+      messages={all} onMessagesChange={vi.fn()} onSkillsChange={() => {}} /></LocaleProvider>);
+    expect(screen.getByText('history-row-0')).toBeVisible();
+    expect(screen.getByText('history-row-300')).toBeVisible();
+    expect(screen.getByText('history-row-601')).toBeVisible();
+    expect(screen.queryByText(/可在对话存档中完整查看/)).toBeNull();
+    expect(screen.queryByText(/OUTPUT_END/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '展开执行记录' }));
+    expect(screen.getByText(/OUTPUT_END/)).toBeVisible();
+    await waitFor(() => expect(screen.getByText(/DETAIL_END/)).toBeVisible());
+  });
+
+  it('keeps one card per RUN on repeated breakpoint resumes without hiding the user instructions', () => {
+    const marker = (runId: string, slash = '') => formatWorkflowExecutionContext({
+      workflowId: 'wf', runId, runDir: '/home/qa/hpclaw_flows/wf/03_workspace/runs/' + runId + slash,
+    });
+    const messages = [
+      { role: 'user' as const, content: marker('r1') + '\n开始流程。' },
+      { role: 'assistant' as const, content: '作业已提交，等待输出验收。' },
+      { role: 'user' as const, content: marker('r1', '/') + '\n从步骤 2 继续。' },
+      { role: 'user' as const, content: marker('r2') + '\n单独启动另一个 RUN。' },
+    ];
+    render(<LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only"
+      messages={messages} onMessagesChange={vi.fn()} onSkillsChange={() => {}} /></LocaleProvider>);
+    expect(screen.getAllByTestId('workflow-run-card').map(card => card.textContent)).toEqual(['r1', 'r2']);
+    expect(screen.getByText('开始流程。')).toBeVisible();
+    expect(screen.getByText('从步骤 2 继续。')).toBeVisible();
+    expect(screen.queryByText(/HPCLAW_WORKFLOW_RUN/)).toBeNull();
+  });
+
   it('keeps a live ask dialog visible through message updates, preserves drafts after deferral, and answers the original stream', async () => {
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));

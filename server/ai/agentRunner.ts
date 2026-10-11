@@ -1475,7 +1475,7 @@ export async function runAgent(
           execute: async (input) => {
             cb.onToolCall('get_workflow', input);
             try {
-              const all = await loadWorkflows();
+              const all = (await loadWorkflows()).filter(w => formalWorkflow?.workflowId === w.id || w.lifecycle?.state !== 'pending_disposal');
               const needle = (input.id || input.name || '').trim().toLowerCase();
               const wf = all.find(w => w.id === (formalWorkflow?.workflowId || input.id))
                 || all.find(w => (w.name || '').toLowerCase() === needle)
