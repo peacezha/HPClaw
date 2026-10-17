@@ -11,9 +11,9 @@ export declare class EntryGroup {
     get context(): Context;
     create(options: Omit<EntryOptions, 'id'>): Promise<string>;
     unlink(options: EntryOptions): void;
-    remove(id: string, isDispose?: boolean): Promise<void>;
+    remove(id: string, isDispose?: boolean): void;
     update(config: EntryOptions[]): Promise<void>;
-    stop(): Promise<void>;
+    stop(): void;
 }
 /** Plugin that mounts a nested loader entry group. */
 export declare class Group extends EntryGroup {
@@ -22,6 +22,6 @@ export declare class Group extends EntryGroup {
     static initial: Omit<EntryOptions, 'id'>[];
     static readonly [EntryGroup.key] = true;
     constructor(ctx: Context, config: EntryOptions[]);
-    [Service.init](): AsyncGenerator<() => Promise<void>, void, unknown>;
+    [Service.init](): AsyncGenerator<() => void, void, unknown>;
 }
 //# sourceMappingURL=group.d.ts.map

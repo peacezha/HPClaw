@@ -1,6 +1,7 @@
 import { Service } from "@deepseek-ai/cordis";
-import { HarnessError, assertNever } from "@deepseek-ai/dsh-llm";
-import { realpathSync } from "node:fs";
+import { HarnessError } from "@deepseek-ai/dsh-llm";
+import { assertNever } from "@deepseek-ai/dsh-util-values";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 //#region lib/types/escalation.js
 /**
@@ -76,21 +77,28 @@ function escalationHintMarker(subject) {
 	return `[sandbox: escalation available — retry this exact ${subject} once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]`;
 }
 /**
-* Resolve a sandbox-escalation request BEFORE anything executes: check strict
-* widening against the call's effective mode, then resolve the approval
-* channel, then map every outcome — the ordered fail-closed sequence both
-* enforcing families share. Returns the granted mode to stamp onto exactly
-* this call; throws the distinct verbatim text for every other path (a
-* non-widening request, a missing approval service, an agent-less execution,
-* a rejection, a cancellation, an unanswerable ask) — the tool registry turns
-* the throw into the call's isError result, and nothing has run. A
-* non-widening request never prompts a human.
+* The model-facing `sandbox_permissions` parameter description, which carries
+* the escalation rules for every enforcing family.
+* @param subject - the family's noun for the denied action (`command` for
+*   bash, `operation` for a filesystem mutation).
+* @returns the parameter description, exactly as the model sees it.
+*/
+function sandboxPermissionsDescription(subject) {
+	return `The narrowest wider sandbox mode for a one-shot retry of the exact ${subject} the sandbox just denied; the retry asks the user for approval.`;
+}
+/**
+* Resolve a sandbox permission request before execution. Repeating the call's
+* effective mode returns it without approval. A strictly wider mode requires
+* approval and applies only to this call. Narrower or unsupported targets,
+* missing approval services or agents for widening, and non-grant outcomes
+* throw before execution.
 * @param request - the escalation to judge (see {@link EscalationRequest}).
 * @param approval - the approval ingredients the tool holds (see {@link EscalationApproval}).
 * @returns the granted mode, consumed by the one call that asked.
 */
 async function approveEscalation(request, approval) {
 	const { requestedMode: mode, effectiveMode, justification, subject } = request;
+	if (mode === effectiveMode) return effectiveMode;
 	if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode)) throw new Error(`sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`);
 	if (approval.approver === void 0) throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`);
 	if (approval.agent === void 0) throw new Error(`sandbox escalation to "${mode}" requires approval, but the call has no agent to route it through`);
@@ -99,11 +107,15 @@ async function approveEscalation(request, approval) {
 		toolName: approval.toolName,
 		callId: approval.callId,
 		reason: `escalate sandbox to ${mode}: ${justification}`,
+		displayReason: {
+			en: `Allow this operation with ${mode} permissions: ${justification}`,
+			zh: `允许本次操作使用 ${mode} 权限：${justification}`
+		},
 		...approval.signal ? { signal: approval.signal } : {}
 	});
 	switch (outcome) {
 		case "allowed-once": return mode;
-		case "rejected": throw new Error(`the user rejected escalating this ${subject} to "${mode}"`);
+		case "rejected": throw new Error(`the user rejected escalating this ${subject} to "${mode}"; it stays denied, so stop and explain instead of working around it`);
 		case "cancelled": throw new Error(`approval for escalating to "${mode}" was cancelled`);
 		case "unavailable": throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval channel is available`);
 		default: return assertNever(outcome, "EscalationOutcome");
@@ -160,6 +172,82 @@ function writableRoots(policy) {
 	].map(canonicalPath))];
 }
 //#endregion
+//#region lib/types/diagnostics.js
+/** Classify observed sandbox runner failures and file-effect denials. */
+/** Node-local spawn codes proven to identify executable resolution or permission failure. */
+const EXECUTABLE_SPAWN_CODES = new Set(["EACCES", "ENOENT"]);
+/** Whether the caller-owned spawn cwd can be entered. */
+function isUsableWorkdir(path) {
+	try {
+		if (!statSync(path).isDirectory()) return false;
+		accessSync(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+/**
+* Attribute only Node ENOENT/EACCES failures whose error path equals argv[0]
+* after independently ruling out the caller-owned cwd. A supplied error path
+* must exactly identify the runner; without one, the syscall must. With a
+* usable cwd, these codes describe resolution or execute permission for that
+* argv[0] or its shebang interpreter.
+* The workdir is checked at classification time, not atomically with spawn;
+* concurrent path replacement may change attribution but cannot permit an
+* unconfined execution.
+* @param error - the original spawn rejection.
+* @param runnerProgram - provider argv[0], the executable that establishes confinement.
+* @param workdir - the caller-owned spawn cwd, checked independently for usability.
+* @returns whether the rejection has executable-specific runner evidence.
+*/
+function isRunnerSpawnFailure(error, runnerProgram, workdir) {
+	if (runnerProgram === void 0 || !isUsableWorkdir(workdir)) return false;
+	if (typeof error !== "object" || error === null) return false;
+	const { code, path, syscall } = error;
+	if (typeof code !== "string" || !EXECUTABLE_SPAWN_CODES.has(code)) return false;
+	if (typeof syscall !== "string") return false;
+	const exactSyscall = `spawn ${runnerProgram}`;
+	if (path === void 0) return syscall === exactSyscall;
+	if (typeof path !== "string" || path.length === 0 || path !== runnerProgram) return false;
+	return syscall === "spawn" || syscall === exactSyscall;
+}
+/**
+* Classify one settled process against the selected backend's structured
+* runner-failure rules. Each rule requires a nonzero exit, its optional
+* exit-code gate, and a fatal signature on one stderr line after exact
+* informational lines are excluded.
+* @param exitCode - process exit code; null means signal termination.
+* @param stderr - collected stderr text, left unchanged.
+* @param rules - structured runner-failure rules from the active wrap.
+* @returns the first matching fatal line, or undefined when evidence is insufficient.
+*/
+function classifyRunnerFailure(exitCode, stderr, rules) {
+	if (exitCode === null || exitCode === 0) return void 0;
+	const lines = stderr.split(/\r?\n/);
+	for (const rule of rules) {
+		if (rule.allowedExitCodes !== void 0 && !rule.allowedExitCodes.includes(exitCode)) continue;
+		const informationalLines = new Set((rule.informationalLines ?? []).map((line) => line.toLowerCase()));
+		const fatalSignatures = rule.fatalSignatures.filter((signature) => signature.trim().length > 0).map((signature) => signature.toLowerCase());
+		for (const line of lines) {
+			const lowered = line.toLowerCase();
+			if (informationalLines.has(lowered)) continue;
+			if (fatalSignatures.some((signature) => lowered.includes(signature))) return { detail: line };
+		}
+	}
+}
+/**
+* Match a non-zero exit against case-insensitive stderr signatures.
+* @param exitCode - process exit code; null means signal termination.
+* @param stderr - collected stderr text.
+* @param signatures - substrings identifying the selected backend's dialect.
+* @returns whether this is a non-zero exit whose stderr matches a signature.
+*/
+function matchesSignature(exitCode, stderr, signatures) {
+	if (exitCode === null || exitCode === 0) return false;
+	const lowered = stderr.toLowerCase();
+	return signatures.some((signature) => lowered.includes(signature.toLowerCase()));
+}
+//#endregion
 //#region lib/types/index.js
 /**
 * Service Definition for the same-world process-confinement capability seam: wrap exact subprocess argv under a
@@ -198,4 +286,4 @@ var SandboxProvider = class extends Service {
 	}
 };
 //#endregion
-export { ESCALATION_TARGETS, SANDBOX_UNAVAILABLE, SandboxProvider, SandboxProvider as default, SandboxUnavailableError, WIDER_MODES, approveEscalation, canonicalPath, escalationHintMarker, sandboxDenialMarker, validateEscalationArgs, writableRoots };
+export { ESCALATION_TARGETS, SANDBOX_UNAVAILABLE, SandboxProvider, SandboxProvider as default, SandboxUnavailableError, WIDER_MODES, approveEscalation, canonicalPath, classifyRunnerFailure, escalationHintMarker, isRunnerSpawnFailure, matchesSignature, sandboxDenialMarker, sandboxPermissionsDescription, validateEscalationArgs, writableRoots };

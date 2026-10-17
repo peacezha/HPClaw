@@ -34,8 +34,8 @@ export function isFatalWorkflowError(error) {
 }
 /**
  * Workflow Service Definition contract. Invalid requests throw before publication; a live
- * run is holder-owned, its result never rejects, cancellation and disposal are
- * bounded, and disposal waits for child cleanup within that bound. Lifecycle
+ * run is holder-owned, its result never rejects, and disposal waits for script
+ * and child cleanup. Lifecycle
  * listener failures are contained, and `workflow/end` fires exactly once as the
  * result settles.
  */

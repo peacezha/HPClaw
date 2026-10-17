@@ -1,4 +1,4 @@
-// HPClaw v2 终端链接升级 实机验证 v2：真实 hover + 点击（坐标定位）
+// TRACE v2 终端链接升级 实机验证 v2：真实 hover + 点击（坐标定位）
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9222';
@@ -129,7 +129,7 @@ function getJson(path) {
   await sleep(3500);
   const termText1 = await evalJs(`document.querySelector('.xterm-rows')?.textContent || ''`);
   ok('点击目录后终端执行 cd+ls', termText1.includes('cd "/tmp/cdp_link_test/d1" && ls'));
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-dir-2-cd.png');
+  await shot('E:/0612trace/trace_v2/smoke-dir-2-cd.png');
 
   // ── 用例2：回到上级，点击文件名 f1.txt → 预览打开 ──
   await typeText('cd /tmp/cdp_link_test && clear && ls');
@@ -140,7 +140,7 @@ function getJson(path) {
   await sleep(4500);
   const previewOpen = await evalJs(`!!document.querySelector('[data-testid="preview-overlay"]')`);
   ok('点击文件名打开预览', previewOpen);
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-dir-3-preview.png');
+  await shot('E:/0612trace/trace_v2/smoke-dir-3-preview.png');
   if (previewOpen) {
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', text: '' });
     await sleep(800);

@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { loadWorkflows } from './workflowStore';
 import { isPendingDisposal } from '../../shared/workflowCatalog';
 import { readCachedPreflight, runPreflight } from './preflight';
+import { runPreflightForConfig } from './preflightRun';
 import {
   createWorkflowRun,
   readWorkflowStepCode,
@@ -35,6 +36,21 @@ export function registerWorkflowRunRoutes(
   resolveSession: (req: Request) => WorkflowRunSession | undefined,
   onRunChanged?: WorkflowRunChanged,
 ): void {
+  // 启动前整体检查：按本次运行配置一次性扫描软件/参考数据/输入数据/参数/脚本占位符，
+  // 返回集中问题清单供前端一次解答；body 与创建运行的 config 同形。
+  app.post('/api/workflows/:id/preflight-run', async (req, res) => {
+    try {
+      const session = resolveSession(req);
+      if (!session) return sendError(res, 401, '需要活跃的 SSH 会话');
+      const workflow = (await loadWorkflows()).find(w => w.id === String(req.params.id));
+      if (!workflow) return sendError(res, 404, '流程不存在');
+      const report = await runPreflightForConfig(session.exec, workflow, req.body);
+      res.json({ success: true, report });
+    } catch (err: any) {
+      sendError(res, 500, err?.message || String(err));
+    }
+  });
+
   app.post('/api/workflows/:id/runs', async (req, res) => {
     try {
       const session = resolveSession(req);

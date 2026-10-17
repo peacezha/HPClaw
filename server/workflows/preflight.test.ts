@@ -58,9 +58,9 @@ describe('runPreflight', () => {
     expect(commands[0]).toContain("for prerequisite_module in 'Java/1.8'");
     expect(commands[0]).toContain('module -t avail');
     expect(commands[0]).toContain('module spider');
-    expect(commands[0]).toMatch(/hpclaw_flows\/RNA-seq-[0-9a-f]{6}/);
+    expect(commands[0]).toMatch(/trace_flows\/RNA-seq-[0-9a-f]{6}/);
     // 写文件的目标路径必须把 ~ 展开为 $HOME（单引号内 ~ 不展开会导致缓存静默丢失）
-    expect(commands[0]).toContain('"$HOME/hpclaw_flows/');
+    expect(commands[0]).toContain('"$HOME/trace_flows/');
     expect(commands[0]).not.toContain("> '~/");
     // 结果解析
     expect(result.scheduler).toBe('lsf');
@@ -168,7 +168,7 @@ describe('runPreflight {{FLOW_HOME}} 与 ~ 路径', () => {
     await runPreflight(exec, wf);
     const checkCmd = commands.find(c => c.includes('ITEM|'))!;
     // FLOW_HOME 已替换为流程家目录
-    expect(checkCmd).toContain('hpclaw_flows/');
+    expect(checkCmd).toContain('trace_flows/');
     expect(checkCmd).toContain('01_software/hidog/hidogV11.py');
     expect(checkCmd).not.toContain('{{FLOW_HOME}}');
     // ~ 路径用 "$HOME/..." 双引号形式，不会被单引号锁死

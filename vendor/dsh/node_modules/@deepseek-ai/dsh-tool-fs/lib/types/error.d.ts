@@ -1,20 +1,19 @@
 /**
- * Model-facing remediation for guarded-mutation failures. The provider's
- * `FS_STALE_VERSION` and `FS_NOT_OBSERVED` messages state the condition but
- * not the only correct recovery (re-read / read the file), so this package
- * appends the remedy at the model boundary; provider messages stay
- * machine-oriented and unchanged.
+ * Model-facing diagnostics for guarded-mutation failures. Providers and
+ * policies retain operation-specific causes, while this package owns the
+ * stable message shown to the model.
  * @module @deepseek-ai/dsh-tool-fs/src/error
  */
 /**
- * Append the correct recovery instruction to a guarded-mutation failure's
- * message. `FS_STALE_VERSION` (the file changed since this session's last
- * observation, including a missing target) recovers only by re-reading;
- * `FS_NOT_OBSERVED` (no prior read by this session) by reading. The `FsError`
- * code is preserved so retry/permission/UI layers keep routing on it, and the
- * original error chains as `cause`. Anything else passes through untouched.
+ * Render the stable model-facing diagnostic for a guarded-mutation failure.
+ * `FS_STALE_VERSION` keeps the provider's reason and appends its re-read
+ * remedy. `FS_NOT_OBSERVED` replaces operation-specific policy/provider text
+ * with one path-aware reason and read remedy. The original error remains the
+ * cause, and both diagnostics preserve its code for machine routing. Anything
+ * else passes through untouched.
  * @param error - the caught value from a write/edit execution.
+ * @param displayPath - the resolved target path shown to the model.
  * @returns a remediated `FsError` for the two guarded-mutation codes, else the original value.
  */
-export declare function remediateFsError(error: unknown): unknown;
+export declare function remediateFsError(error: unknown, displayPath: string): unknown;
 //# sourceMappingURL=error.d.ts.map

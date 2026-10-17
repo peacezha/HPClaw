@@ -7,10 +7,10 @@ export function useAiProfile() {
   useEffect(() => {
     const sync = () => setProfileState(loadAIProfile());
     window.addEventListener('storage', sync);
-    window.addEventListener('hpclaw-ai-profile-change', sync as EventListener);
+    window.addEventListener('trace-ai-profile-change', sync as EventListener);
     return () => {
       window.removeEventListener('storage', sync);
-      window.removeEventListener('hpclaw-ai-profile-change', sync as EventListener);
+      window.removeEventListener('trace-ai-profile-change', sync as EventListener);
     };
   }, []);
 

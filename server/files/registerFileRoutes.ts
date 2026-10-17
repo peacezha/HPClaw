@@ -429,7 +429,7 @@ export function registerFileRoutes(app: Express, resolveSession: ResolveRemoteFi
       const entry = await service.stat(requiredString(req.query.path, 'path'));
       if (entry.kind === 'directory' || !/\.x?html?$/i.test(entry.name)) throw new HttpFileError(415, 'REMOTE_HTML_REQUIRED', 'path is not an HTML document');
       const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : req.get('X-SSH-Session-Id') || (req.session as any)?.sshSessionId;
-      const reportAccess = process.env.HPCLAW_PUBLIC_WORKER === '1' ? req.get('X-HPClaw-Report-Access') : '';
+      const reportAccess = process.env.TRACE_PUBLIC_WORKER === '1' ? req.get('X-TRACE-Report-Access') : '';
       const base = reportAccess && /^[a-f0-9]{64}$/.test(reportAccess)
         ? `/api/public/report-assets/${reportAccess}/`
         : `/api/files/html-assets/${encodeURIComponent(sessionId)}/${Buffer.from(path.posix.dirname(entry.path)).toString('base64url')}/`;
@@ -457,11 +457,11 @@ export function registerFileRoutes(app: Express, resolveSession: ResolveRemoteFi
       }
       const service = serviceFor(session);
       const entry = await service.stat(target);
-      if (process.env.HPCLAW_PUBLIC_WORKER === '1') {
+      if (process.env.TRACE_PUBLIC_WORKER === '1') {
         const sftp = session.cluster.getSftp();
         const canonical = (file: string) => new Promise<string>((resolve, reject) => sftp.realpath(file, (error, value) => error ? reject(error) : resolve(value)));
         const [realRoot, realTarget] = await Promise.all([canonical(normalizedRoot), canonical(target)]);
-        const privatePart = (file: string) => file.split('/').some(part => part.startsWith('.') || ['hpclaw_web', 'hpclaw_conversations', 'hpclaw_skills'].includes(part));
+        const privatePart = (file: string) => file.split('/').some(part => part.startsWith('.') || ['trace_web', 'trace_conversations', 'trace_skills'].includes(part));
         if ((realTarget !== realRoot && !realTarget.startsWith(realRoot.replace(/\/$/, '') + '/')) || privatePart(realRoot) || privatePart(realTarget)) {
           throw new HttpFileError(403, 'REMOTE_HTML_ASSET_FORBIDDEN', 'Report assets cannot escape the directory or read private credential stores');
         }

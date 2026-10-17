@@ -1,6 +1,6 @@
 # elkjs 0.12.0
 
-HPClaw distributes an unmodified elkjs library for workflow diagram layout.
+TRACE distributes an unmodified elkjs library for workflow diagram layout.
 The component is distributed under the Eclipse Public License 2.0.
 The accompanying LICENSE.md is the upstream license, unchanged.
 

@@ -1,5 +1,5 @@
 // BioSkills 流程导入器 v2：把 skills/bioSkills/workflows 下的 Agent 技能文档
-// 转换成可追溯、可配置、可逐步监控的 HPClaw 工作流。
+// 转换成可追溯、可配置、可逐步监控的 TRACE 工作流。
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -8,18 +8,18 @@ import type { Workflow, WorkflowParam, WorkflowStep } from './workflowTypes';
 import type { FlowManifest, QcGate, ReferenceItem, SoftwareItem } from '../../shared/flowManifest';
 import { buildEnvCheckCommand } from './envCheckScript';
 
-export const BIOSKILLS_IMPORTER_VERSION = '3';
+export const BIOSKILLS_IMPORTER_VERSION = '4';
 const AGENT_CONTRACT_VERSION = '3';
 const MAX_STEP_COMMAND = 8_000;
 
 /**
- * 已被 ENCODE 金标准流程覆盖的 BioSkills 同名流程，v3 起不再生成。
+ * 已停止生成的 BioSkills 流程。v4 按用户要求保留 ATAC-seq/ChIP-seq，
  * 这些目录的 SKILL.md 仍保留在 skills/ 中供 search_skills 检索知识，
- * 但流程库里只保留对应的 encode-* 固定脚本版本，避免“同一件事两套流程”。
+ * Hi-C/CLIP-seq 不再入库，但其知识文档以及独立的 ENCODE 流程仍保留。
  */
 export const BIOSKILLS_RETIRED: ReadonlySet<string> = new Set([
-  'atacseq-pipeline',   // → encode-atacseq
-  'chipseq-pipeline',   // → encode-chipseq-tf / encode-chipseq-histone
+  'causal-genomics-pipeline', // 用户要求删除
+  'crispr-editing-pipeline', // 用户要求删除
   'rnaseq-to-de',       // → encode-rnaseq-bulk
   'hic-pipeline',       // → encode-hic
   'clip-pipeline',      // → encode-eclip
@@ -755,7 +755,7 @@ export function workflowFromSkill(dir: string, parsed: ParsedSkill, content = ''
     steps.push({
       title: '分析设计与路径确认',
       command: [
-        '# HPClaw BioSkills Agent Decision v3',
+        '# TRACE BioSkills Agent Decision v3',
         `# 来源流程：${sourcePath}`,
         `# 决策章节：${decisions.join('；')}`,
         '# 读取来源章节，检查输入数据类型、实验设计、物种、对照和测序平台；列出适用与不适用分支。',

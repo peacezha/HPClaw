@@ -1,6 +1,6 @@
 // 对话内嵌网页预览：assistant 答复中的 http(s) 链接生成可折叠预览卡。
 // 默认收起——不自动加载外网；展开后 Electron 用 <webview>（与侧边网页栏同
-// partition，可交互），浏览器 dev 环境（无 window.hpclawDesktop）回退 sandbox
+// partition，可交互），浏览器 dev 环境（无 window.traceDesktop）回退 sandbox
 // iframe 并提示"部分网站禁止内嵌"。webview 加载失败给错误态 + 重试。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, ExternalLink, Globe, Loader2, PanelRightOpen, RefreshCw } from 'lucide-react';
@@ -106,7 +106,7 @@ function EmbedWebview({ url }: { url: string }) {
       <webview
         ref={webviewRef}
         src={url}
-        partition="hpclaw-webpanel"
+        partition="trace-webpanel"
         // 与 WebPanelDrawer 相同：属性存在即允许弹窗（主进程再转系统浏览器）
         {...{ allowpopups: 'true' as unknown as boolean }}
         className={`h-full w-full border-0 ${state === 'error' ? 'invisible' : ''}`}
@@ -116,7 +116,7 @@ function EmbedWebview({ url }: { url: string }) {
   );
 }
 
-/** 浏览器 dev（无 hpclawDesktop）：sandbox iframe 回退；X-Frame-Options 拒嵌时给提示 */
+/** 浏览器 dev（无 traceDesktop）：sandbox iframe 回退；X-Frame-Options 拒嵌时给提示 */
 function EmbedIframe({ url }: { url: string }) {
   const [loaded, setLoaded] = useState(false);
   return (
@@ -146,7 +146,7 @@ function EmbedIframe({ url }: { url: string }) {
 
 function WebEmbedCard({ url, onOpenWebPanel }: { url: string; onOpenWebPanel?: (request: WebPanelRequest) => void }) {
   const [open, setOpen] = useState(false);
-  const isDesktop = typeof window !== 'undefined' && !!window.hpclawDesktop;
+  const isDesktop = typeof window !== 'undefined' && !!window.traceDesktop;
 
   return (
     <div className="rounded-lg border border-scholar-700/70 bg-scholar-900/60 overflow-hidden" data-testid="web-embed-card">

@@ -4,7 +4,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { useCallback, useState } from 'react';
 import LocalFilePane from './LocalFilePane';
 import { LOCAL_DRIVES_ROOT } from './localDrives';
-import { mockHpclawDesktop } from './testFixtures';
+import { mockTraceDesktop } from './testFixtures';
 import type { PaneState } from './controller';
 import type { FileEntry } from '@/shared/fileTransfer';
 
@@ -56,14 +56,14 @@ describe('LocalFilePane drives root', () => {
     window.localStorage.clear();
     listDrives = vi.fn().mockResolvedValue(['C:\\', 'D:\\']);
     list = vi.fn().mockResolvedValue([]);
-    const desktop = mockHpclawDesktop();
+    const desktop = mockTraceDesktop();
     desktop.localFiles.listDrives = listDrives;
     desktop.localFiles.list = list;
-    window.hpclawDesktop = desktop;
+    window.traceDesktop = desktop;
   });
 
   afterEach(() => {
-    delete window.hpclawDesktop;
+    delete window.traceDesktop;
   });
 
   it('lists drives as directory entries instead of calling list at the drives root', async () => {

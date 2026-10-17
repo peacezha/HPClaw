@@ -1,8 +1,8 @@
-﻿# HPClaw — HPC 集群智能 Web 终端
+﻿# TRACE — HPC 集群智能 Web 终端
 
 ## 项目概述
 
-HPClaw 是一个面向生物信息学科研人员的 **HPC 集群 Web 终端 + AI 智能助手** 一体化平台。用户通过浏览器即可 SSH 登录远程 HPC 集群（支持密码 + Google Authenticator 双因素认证），在 Web 终端中执行命令，同时由 AI Agent 自主完成生物信息学分析任务——包括环境探查、命令执行、文件管理、LSF 作业提交与监控、结果解读等全流程。
+TRACE 是一个面向生物信息学科研人员的 **HPC 集群 Web 终端 + AI 智能助手** 一体化平台。用户通过浏览器即可 SSH 登录远程 HPC 集群（支持密码 + Google Authenticator 双因素认证），在 Web 终端中执行命令，同时由 AI Agent 自主完成生物信息学分析任务——包括环境探查、命令执行、文件管理、LSF 作业提交与监控、结果解读等全流程。
 
 **技术栈：** TypeScript 全栈，Express + Socket.IO 后端，React 19 前端，xterm.js 终端模拟，Vite 构建，Vitest 测试。
 
@@ -11,7 +11,7 @@ HPClaw 是一个面向生物信息学科研人员的 **HPC 集群 Web 终端 + A
 ## 项目结构
 
 ```
-E:\0612hpclaw\
+E:\0612trace\
 ├── server.ts                  # 主服务入口 (2374 行) — Express + Socket.IO + SSE
 ├── server/
 │   ├── loginDiagnostics.ts    # 登录失败诊断格式化
@@ -215,4 +215,4 @@ npm run lint
 
 ## 总结
 
-HPClaw 是一个功能完整的 **HPC 生物信息学智能工作台**，将 SSH 终端、AI Agent、技能知识库、文件管理和作业调度深度整合。其核心价值在于让 AI 能够像人类研究人员一样在集群上自主工作——理解任务、探索环境、执行分析、处理错误、产出结果，显著降低生物信息学分析的门槛。
+TRACE 是一个功能完整的 **HPC 生物信息学智能工作台**，将 SSH 终端、AI Agent、技能知识库、文件管理和作业调度深度整合。其核心价值在于让 AI 能够像人类研究人员一样在集群上自主工作——理解任务、探索环境、执行分析、处理错误、产出结果，显著降低生物信息学分析的门槛。

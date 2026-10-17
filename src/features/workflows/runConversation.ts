@@ -33,7 +33,7 @@ export interface ConversationTitleMessage {
 
 /**
  * 运行协议消息 → 「流程：<名>」；非运行协议（或协议里取不到流程名）→ null。
- * 协议首行是 [HPCLAW_WORKFLOW_RUN] 标记，不能直接当标题；
+ * 协议首行是 [TRACE_WORKFLOW_RUN] 标记，不能直接当标题；
  * 流程名出现在协议正文的「开始或继续/继续成品流程「<名>」」句中。
  */
 export function workflowRunConversationTitle(firstUserContent: string): string | null {

@@ -15,8 +15,9 @@
  * session); the private-temp ACEs are revoked on dispose. The runner
  * receives both SIDs (their presence marks the seam-managed contract) and
  * stops managing DACLs itself. The rung reports partial enforcement because
- * WRITE_RESTRICTED must retain Everyone in its
- * restricting list and NTFS hard links alias one file object across paths.
+ * NTFS hard links alias one file object across paths, reads stay unconfined,
+ * and a tree another AppContainer tool has ACL'd with a package SID is not
+ * readable by the Low-integrity child.
  * @module @deepseek-ai/dsh-sandbox-local
  */
 import { Context } from '@deepseek-ai/cordis';
@@ -110,11 +111,12 @@ export declare class LocalSandboxProvider extends SandboxProvider {
      *
      * @param argv - the exact argv the caller is about to spawn.
      * @param policy - the file-effect policy this execution runs under.
+     * @param signal - cancellation before policy resolution or grant creation.
      * @returns the wrapped argv plus the selected backend's enforcement completeness, denial
      *   signatures, and structured runner-failure rules; throws the fail-closed
      *   `SANDBOX_UNAVAILABLE` error when the platform has no usable runner.
      */
-    confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv;
+    confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv>;
     /** The selected rung's runner invocation (program + profile arguments) for one policy. */
     private runnerArgv;
     /**
@@ -175,6 +177,8 @@ export declare class LocalSandboxProvider extends SandboxProvider {
     /**
      * The windows-acl runner argv prefix: the built lib/runner.js entry when
      * present (production), else the package source through tsx (development).
+     * Pin the source loader and TypeScript paths to this installation, independently
+     * of target cwd or environment overrides.
      * The prefix stays `[node, runner, ...]` — a future native-exe runner keeps
      * the same argv contract and only swaps these entries.
      */

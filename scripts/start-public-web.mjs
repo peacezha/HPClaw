@@ -3,8 +3,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertPublicWebRuntime } from './public-web-runtime.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 assertPublicWebRuntime();
-process.env.HPCLAW_APP_ROOT = root;
-const options = new Map([['--url', 'HPCLAW_WEB_ORIGIN'], ['--host', 'HPCLAW_HOST'], ['--port', 'PORT']]);
+process.env.TRACE_APP_ROOT = root;
+const options = new Map([['--url', 'TRACE_WEB_ORIGIN'], ['--host', 'TRACE_HOST'], ['--port', 'PORT']]);
 for (let index = 2; index < process.argv.length; index += 2) {
   const key = options.get(process.argv[index]);
   const value = process.argv[index + 1];

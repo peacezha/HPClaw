@@ -1,7 +1,7 @@
 // 「参考示例」一键填参：按流程把参数自动填成集群上示例参考库里的具体文件路径。
-// 用户把 encode-reference-example 包上传到 ~/hpclaw_refs/encode_example 并跑一次
+// 用户把 encode-reference-example 包上传到 ~/trace_refs/encode_example 并跑一次
 // build_indices.sh 后，点「参考示例」即可直接运行（chr19 小数据集，只用于验证流程跑通）。
-export const ENCODE_EXAMPLE_ROOT = '~/hpclaw_refs/encode-reference-example';
+export const ENCODE_EXAMPLE_ROOT = '~/trace_refs/encode-reference-example';
 
 export interface EncodeExampleSpec {
   /** 填进 inputs 列表的数据目录（含 smoke FASTQ） */

@@ -20,7 +20,7 @@ export interface ProfileSecrets {
   totpSecret: string;
 }
 
-const LS_KEY = 'hpclaw_login_profiles_v1';
+const LS_KEY = 'trace_login_profiles_v1';
 
 interface LocalProfileRecord {
   id: string;
@@ -47,7 +47,7 @@ export function findMatchingLoginProfile(
 }
 
 function desktopProfiles(): any | null {
-  return (window as any).hpclawDesktop?.profiles ?? null;
+  return (window as any).traceDesktop?.profiles ?? null;
 }
 
 function readLocal(): LocalProfileRecord[] {

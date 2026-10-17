@@ -1,6 +1,6 @@
 // 流程（Workflow）前端 API 客户端
 import type { Workflow, WorkflowPaperImport } from '@/shared/workflow';
-import type { PreflightResult } from '@/shared/flowManifest';
+import type { PreflightResult, PreflightRunReport } from '@/shared/flowManifest';
 import { workflowSlug, workflowSlugLegacy, workflowSlugParenLegacy } from '@/shared/flowManifest';
 import { getStoredLocale } from '../../i18n';
 import { WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
@@ -10,7 +10,7 @@ function notifyCatalogue(detail: { workflow?: Workflow; deletedId?: string }): v
 }
 
 export type { Workflow, WorkflowStep, WorkflowParam } from '@/shared/workflow';
-export type { FlowManifest, PreflightResult, PreflightItemResult } from '@/shared/flowManifest';
+export type { FlowManifest, PreflightResult, PreflightItemResult, PreflightRunIssue, PreflightRunReport } from '@/shared/flowManifest';
 
 async function request(path: string, options: RequestInit = {}): Promise<any> {
   const res = await fetch(path, {
@@ -189,6 +189,23 @@ export async function getCachedPreflight(id: string, sessionId?: string | null):
   return data.result || null;
 }
 
+/**
+ * 启动前整体检查：按本次运行配置一次性扫描软件/参考数据/输入数据/参数/脚本占位符。
+ * config 与 createWorkflowRun 同形；返回集中问题清单（issues 为空表示全部就绪）。
+ */
+export async function runPreflightForConfig(
+  id: string,
+  config: WorkflowRunConfigInput,
+  sessionId?: string | null,
+): Promise<PreflightRunReport> {
+  const data = await request(`/api/workflows/${encodeURIComponent(id)}/preflight-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-SSH-Session-Id': sessionId } : {}) },
+    body: JSON.stringify({ ...config, reportLanguage: config.reportLanguage ?? (getStoredLocale() === 'en-US' ? 'en' : 'zh') }),
+  });
+  return data.report as PreflightRunReport;
+}
+
 /** 查看流程运行日志（动态发现 run 目录下的日志文件并 tail） */
 export async function fetchRunLog(runDir: string, sessionId?: string | null, n = 200): Promise<{ log: string; files: string[] }> {
   const qs = new URLSearchParams({ dir: runDir, n: String(n) });
@@ -281,6 +298,7 @@ export async function saveWorkflowStepCode(
 }
 
 export interface WorkflowRunConfigInput {
+  reportLanguage?: 'zh' | 'en';
   inputs: string[];
   params: Record<string, string>;
   stepParams: Record<number, Record<string, string>>;
@@ -298,7 +316,7 @@ export async function createWorkflowRun(
   const data = await request(`/api/workflows/${encodeURIComponent(workflowId)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-SSH-Session-Id': sessionId } : {}) },
-    body: JSON.stringify(config),
+    body: JSON.stringify({ ...config, reportLanguage: config.reportLanguage ?? (getStoredLocale() === 'en-US' ? 'en' : 'zh') }),
   });
   return data.run;
 }
@@ -409,7 +427,7 @@ export function runBelongsToWorkflow(run: WorkflowRun, workflow: Workflow): bool
     if (slugs.has(runNameSlug) || slugs.has(runNameLegacy)) return true;
   }
   for (const slug of slugs) {
-    if (run.runDir && run.runDir.includes(`/hpclaw_flows/${slug}/`)) return true;
+    if (run.runDir && ['trace_flows', 'hpclaw_flows'].some(root => run.runDir.includes(`/${root}/${slug}/`))) return true;
   }
   return false;
 }

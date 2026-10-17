@@ -1,5 +1,5 @@
-// dsh → HPClaw 桥路由：dsh 插件（hpclaw-dsh-plugin）通过这些端点在用户集群上执行
-// 命令 / 探测 SSH 连通性 / 读写集群文件。鉴权头 X-HPClaw-Bridge 必须等于桥 token
+// dsh → TRACE 桥路由：dsh 插件（trace-dsh-plugin）通过这些端点在用户集群上执行
+// 命令 / 探测 SSH 连通性 / 读写集群文件。鉴权头 X-TRACE-Bridge 必须等于桥 token
 // （见 bridgeState）。安全策略与 server/ai/agentRunner 对齐：高风险命令确认后可执行；
 // 确认策略来自每个 dsh 会话绑定；远程文件限制在该 SSH 用户 home，
 // 本地传输限制在该 dsh 会话选择的工作区。
@@ -12,7 +12,7 @@ import { invokeWebApi } from '../webapis/invoke';
 import { SftpFileService } from '../files/sftpFileService';
 import { assertRemotePathWithinRoot } from '../files/pathSafety';
 import { extractSubmittedJobIds, isSubmissionCommand } from './jobAgentBindings';
-import type { DshBridgeBinding } from './bridgeState';
+import { getDshInteractionHandler, type DshBridgeBinding, type DshInteractionHandler } from './bridgeState';
 import { resolveWorkspaceFilePath } from './workspace';
 import { preflightJobSubmission, type JobSubmissionClaim, type JobSubmissionGuard } from '../ai/jobSubmissionGuard';
 import type { SchedulerKind } from '../cluster/schedulerProfile';
@@ -49,6 +49,9 @@ export interface BridgeRouteDeps {
   ) => BridgeFsService;
   /** 所有 Agent 执行入口共享，防止前台、自动续跑与 dsh 重复提交同一脚本。 */
   jobSubmissionGuard?: JobSubmissionGuard;
+  onJobsSubmitted?: (binding: DshBridgeBinding, jobIds: string[]) => void;
+  /** sdk 通道的人机交互（审批/反问）处理器查询；缺省直接用 bridgeState 注册表。 */
+  getDshInteractionHandler?: (dshSessionId: string | undefined) => DshInteractionHandler | undefined;
 }
 
 const FS_LIST_MAX_ENTRIES = 500;
@@ -57,7 +60,7 @@ const FS_READ_MAX_BYTES = 1024 * 1024;
 const FS_WRITE_MAX_BYTES = 1024 * 1024;
 const FS_TRANSFER_MAX_BYTES = 512 * 1024 * 1024;
 const FS_TRANSFER_TIMEOUT_MS = 10 * 60_000;
-const DSH_SESSION_HEADER = 'X-HPClaw-Dsh-Session';
+const DSH_SESSION_HEADER = 'X-TRACE-Dsh-Session';
 
 // 与 server/ai/agentRunner.ts 的 16k 首尾截断等效，避免超长输出灌回 dsh 上下文。
 function trunc(s: string, max = 16000): string {
@@ -172,7 +175,7 @@ export async function waitForLsfJob(
 
 export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void {
   const auth = (req: Request, res: Response, next: NextFunction): void => {
-    if (req.get('X-HPClaw-Bridge') !== deps.getBridgeToken()) {
+    if (req.get('X-TRACE-Bridge') !== deps.getBridgeToken()) {
       res.status(403).json({ error: 'forbidden' });
       return;
     }
@@ -194,6 +197,10 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     }
     return binding;
   };
+
+  // 交互处理器注册表是模块级单例（bridgeState），server.ts 的既有装配不需要改动；
+  // 测试可经 deps 注入替身。
+  const lookupInteractionHandler = deps.getDshInteractionHandler ?? getDshInteractionHandler;
 
   const requireCluster = (
     req: Request,
@@ -247,6 +254,10 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     const cluster = requireCluster(req, res);
     if (!cluster) return;
     const risk = classifyCommandRisk(command);
+    if (cluster.binding.readOnly && risk !== 'read') {
+      res.status(409).json({ error: 'clarification_read_only', message: 'The user requested an explanation, not execution permission.' });
+      return;
+    }
     if ((isJobTerminationCommand(command) || requiresConfirmation(risk, cluster.binding.confirmationPolicy)) && body.confirmed !== true) {
       res.status(428).json({ error: 'confirmation_required', risk });
       return;
@@ -307,22 +318,19 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
           console.error('[submit-guard] dsh 提交账本落盘失败:', ledgerError);
         }
       }
-      // waitForJobs（分钟，钳 1..30）：命令输出捕获到作业号时，轮询等第一个作业到终态。
-      // 只有命令本身是提交命令（bsub/sbatch/qsub）才提取作业号——读历史 submit
-      // 日志的输出含同样字样，不能触发等待（v0.4.31）。
-      const rawWait = Number(body.waitForJobs);
-      const waitMinutes = Number.isFinite(rawWait) && rawWait > 0 ? Math.min(Math.max(Math.floor(rawWait), 1), 30) : 0;
-      if (waitMinutes > 0 && isSubmissionCommand(command)) {
-        const jobIds = extractSubmittedJobIds(output);
-        if (jobIds.length > 0) {
-          const waited = await waitForLsfJob(
-            session.cluster.exec.bind(session.cluster),
-            jobIds[0],
-            { timeoutMs: waitMinutes * 60_000, pollIntervalMs: jobPollIntervalMs },
-          );
-          res.json({ ok: true, exitCode: 0, output: trunc(output), waitedJobs: [waited] });
-          return;
+      // Return the submission receipt immediately; never wait for an HPC job
+      // inside an Agent RPC with a shorter execution deadline.
+      const jobIds = isSubmissionCommand(command) ? extractSubmittedJobIds(output) : [];
+      if (jobIds.length) {
+        try { deps.onJobsSubmitted?.(binding, jobIds); } catch (error) {
+          console.error('[dsh-bridge] watcher registration failed:', errText(error));
         }
+      }
+      const rawWait = Number(body.waitForJobs);
+      if (Number.isFinite(rawWait) && rawWait > 0 && jobIds.length) {
+        res.json({ ok: true, exitCode: 0, output: trunc(output) + '\n[TRACE_BACKGROUND_JOB] Submission acknowledged for ' + jobIds.join(', ')
+          + '. Inline waiting is disabled; use background monitoring and mark the workflow waiting_jobs. Submitted does not mean completed or QC-passed. Do not resubmit or poll in the Agent turn.' });
+        return;
       }
       res.json({ ok: true, exitCode: 0, output: trunc(output) });
     } catch (err) {
@@ -454,6 +462,7 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     }
     const ctx = requireFs(req, res);
     if (!ctx) return;
+    if (ctx.binding.readOnly) { res.status(409).json({ error: 'clarification_read_only' }); return; }
     if (requiresConfirmation('write', ctx.binding.confirmationPolicy) && body.confirmed !== true) {
       res.status(428).json({ error: 'confirmation_required', risk: 'write', action: 'write' });
       return;
@@ -477,6 +486,7 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     }
     const ctx = requireFs(req, res);
     if (!ctx) return;
+    if (ctx.binding.readOnly) { res.status(409).json({ error: 'clarification_read_only' }); return; }
     if (requiresConfirmation('write', ctx.binding.confirmationPolicy) && body.confirmed !== true) {
       res.status(428).json({ error: 'confirmation_required', risk: 'write', action: 'push' });
       return;
@@ -515,6 +525,7 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
     }
     const ctx = requireFs(req, res);
     if (!ctx) return;
+    if (ctx.binding.readOnly) { res.status(409).json({ error: 'clarification_read_only' }); return; }
     if (requiresConfirmation('write', ctx.binding.confirmationPolicy) && body.confirmed !== true) {
       res.status(428).json({ error: 'confirmation_required', risk: 'write', action: 'pull' });
       return;
@@ -540,6 +551,62 @@ export function registerBridgeRoutes(app: Express, deps: BridgeRouteDeps): void 
       res.json({ ok: true, remotePath: safeRemote, localPath: safeLocal, bytes: size });
     } catch (err) {
       res.json({ ok: false, error: errText(err) });
+    }
+  });
+
+  /* ---------------- 人机交互回桥（sdk 通道的审批/反问应答） ----------------
+   * sdk profile 里 approval/request 与 user-questions/request 瀑布没有官方
+   * 客户端应答器；插件内 HTTP 应答器把请求 POST 到这里，由当前持有该 dsh 会话的
+   * runner（registerDshInteractionHandler）给出用户裁决。长时间挂起属正常
+   * （等待用户操作），插件侧自带超时与 signal 取消。 */
+
+  app.post('/api/bridge/interaction/approval', auth, async (req: Request, res: Response) => {
+    const body = bodyOf(req);
+    const sessionId = readString(body, 'sessionId');
+    const handler = lookupInteractionHandler(sessionId);
+    if (!handler) {
+      res.json({ outcome: 'unavailable' });
+      return;
+    }
+    try {
+      const outcome = await handler.onApproval({
+        requestId: readString(body, 'requestId'),
+        sessionId,
+        toolName: readString(body, 'toolName'),
+        ...(readString(body, 'callId') ? { callId: readString(body, 'callId') } : {}),
+        ...(readString(body, 'reason') ? { reason: readString(body, 'reason') } : {}),
+      });
+      res.json({ outcome });
+    } catch (err) {
+      console.warn('[dsh-bridge] 审批应答处理失败（fail-closed）: %s', errText(err));
+      res.json({ outcome: 'unavailable' });
+    }
+  });
+
+  app.post('/api/bridge/interaction/questions', auth, async (req: Request, res: Response) => {
+    const body = bodyOf(req);
+    const sessionId = readString(body, 'sessionId');
+    const handler = lookupInteractionHandler(sessionId);
+    if (!handler) {
+      res.status(409).json({ error: 'no_answerer' });
+      return;
+    }
+    try {
+      const questions = Array.isArray(body.questions) ? body.questions : [];
+      const answer = await handler.onQuestions({
+        requestId: readString(body, 'requestId'),
+        sessionId,
+        ...(readString(body, 'callId') ? { callId: readString(body, 'callId') } : {}),
+        questions,
+      });
+      if (!answer) {
+        res.status(409).json({ error: 'no_answerer' });
+        return;
+      }
+      res.json({ answer });
+    } catch (err) {
+      console.warn('[dsh-bridge] 反问应答处理失败: %s', errText(err));
+      res.status(500).json({ error: 'answerer_failed', message: errText(err) });
     }
   });
 }

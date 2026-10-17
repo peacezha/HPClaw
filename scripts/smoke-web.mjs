@@ -6,15 +6,15 @@ import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 
 const appRoot = path.resolve(process.argv[2] || '.');
-const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-web-smoke-'));
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-web-smoke-'));
 const port = await new Promise(resolve => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
 });
 const base = `http://127.0.0.1:${port}`;
 const child = spawn(process.execPath, [path.join(appRoot, 'scripts', 'start-web.mjs')], {
-  cwd: appRoot, env: { ...process.env, HPCLAW_DATA_ROOT: dataRoot, PORT: String(port),
-    HPCLAW_HOST: '127.0.0.1', HPCLAW_WEB_ORIGIN: base, HPCLAW_PARENT_PID: '' },
+  cwd: appRoot, env: { ...process.env, TRACE_DATA_ROOT: dataRoot, PORT: String(port),
+    TRACE_HOST: '127.0.0.1', TRACE_WEB_ORIGIN: base, TRACE_PARENT_PID: '' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let log = '';
@@ -43,7 +43,7 @@ try {
     method: 'POST', headers: { ...headers, Origin: 'https://untrusted.example', 'Content-Type': 'application/json' }, body: '{}',
   })).status, 403);
   const report = path.join(dataRoot, 'report.html');
-  fs.writeFileSync(report, '<html><head></head><body>HPCLAW_REPORT_OK</body></html>');
+  fs.writeFileSync(report, '<html><head></head><body>TRACE_REPORT_OK</body></html>');
   const resolved = await fetch(base + '/api/local/files/html/resolve', {
     method: 'POST', headers: { ...headers, Origin: base, 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: report, workspace: dataRoot }),
@@ -51,7 +51,7 @@ try {
   assert.equal(resolved.status, 200);
   const document = await fetch(base + '/api/local/files/html/document?' + new URLSearchParams({ path: report, workspace: dataRoot, scripts: '1' }), { headers });
   assert.equal(document.status, 200);
-  assert((await document.text()).includes('HPCLAW_REPORT_OK'));
+  assert((await document.text()).includes('TRACE_REPORT_OK'));
   const html = await fetch(base, { headers });
   assert.equal(html.status, 200);
   assert((await html.text()).includes('/assets/index-'));

@@ -9,13 +9,15 @@
  *
  * @module @deepseek-ai/dsh-tool-pwsh/render
  */
-import type { ShellProcessRead, ShellSandboxInfo, CollectedOutput } from '@deepseek-ai/dsh-shell';
+import type { ShellSandboxInfo, CollectedOutput } from '@deepseek-ai/dsh-shell';
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox';
 /** The renderable foreground result shape (the schema-derived value, no `kind`). */
 export interface RenderablePwshResult {
     exitCode: number | null;
     signal: string | null;
     timedOut: boolean;
+    /** The reason the command was stopped from outside the call, when a job kill ended it. */
+    stopped?: string;
     timeoutMs: number;
     stdout: CollectedOutput;
     stderr: CollectedOutput;
@@ -33,13 +35,31 @@ export interface RenderablePwshResult {
  */
 export declare function renderPwshResult(result: RenderablePwshResult, escalationModes?: readonly SandboxMode[]): string;
 /**
- * Shape one background-process read into the `job_output` delta the model
- * sees: the incremental delta, plus the lossy-read notice (with full-stream
- * spill paths) when in-memory truncation dropped unread bytes.
- * @param read - one incremental read from the process handle.
+ * Shape a foreground call that stopped waiting into the text the model sees:
+ * the output captured so far (one consuming registry read taken at that
+ * point, so `job_output` continues exactly after it), then the still-running
+ * marker and the job hand-off guidance.
+ * @param promoted - the promoted result value: the job id, the wait that
+ *   expired, and the output so far.
+ * @returns the model-facing text for a promoted call.
+ */
+export declare function renderPwshPromoted(promoted: {
+    jobId: string;
+    timeoutMs: number;
+    output: string;
+}): string;
+/**
+ * Shape the one consuming registry read a foreground call embeds in its
+ * result when it stops waiting: the output produced so far, plus the
+ * dropped-output notice (naming the job's spill files) when the model cursor
+ * fell behind the ring, and the sandbox notices. Later `job_output` reads
+ * render the same ring through the job tools.
+ * @param delta - the read's chunks as rendered text.
+ * @param lossy - whether bytes before the delta were evicted unread.
+ * @param spillPaths - the complete-stream files the job currently advertises.
  * @param sandbox - settled sandbox facts, when this was a confined process.
  * @param escalationModes - escalation targets advertised by this composition.
  * @returns the delta text with any loss or sandbox notice appended.
  */
-export declare function renderPwshProcessRead(read: ShellProcessRead, sandbox?: ShellSandboxInfo, escalationModes?: readonly SandboxMode[]): string;
+export declare function renderPwshJobRead(delta: string, lossy: boolean, spillPaths: readonly string[], sandbox?: ShellSandboxInfo, escalationModes?: readonly SandboxMode[]): string;
 //# sourceMappingURL=render.d.ts.map

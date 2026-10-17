@@ -82,7 +82,9 @@ describe('BioSkills importer v2 generated contracts', () => {
     const workflows = await generateBioskillsWorkflows(path.join(ROOT, '..', '..'));
     const refs = (slug: string) => workflows.find(item => item.id === `bioskills-${slug}`)?.manifest?.references.map(item => item.path);
     expect(refs('clinical-trial-pipeline')).toEqual([]);
-    expect(refs('causal-genomics-pipeline')).toContain('{{LD_REFERENCE}}');
+    expect(refs('causal-genomics-pipeline')).toBeUndefined(); // Explicitly removed from the catalogue.
+    expect(refs('atacseq-pipeline')).toContain('{{GENOME_FASTA}}');
+    expect(refs('chipseq-pipeline')).toContain('{{GENOME_FASTA}}');
     expect(refs('gwas-pipeline')).toContain('{{VARIANT_ANNOTATION}}');
     expect(refs('edna-pipeline')).toContain('{{TAXONOMY_DB}}');
     expect(refs('cytometry-pipeline')).toContain('{{PANEL_FILE}}');

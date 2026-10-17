@@ -106,7 +106,7 @@ function getJson(path) {
     return { hasPanel: text.includes('作业监控'), hasSettings: text.includes('通知设置') || text.includes('完成时提醒我') || text.includes('提醒已关闭') };
   })()`);
   ok('作业面板打开并显示通知设置', panel.hasPanel && panel.hasSettings, JSON.stringify(panel));
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-jobs.png');
+  await shot('E:/0612trace/trace_v2/smoke-jobs.png');
 
   console.log('---');
   const failed = results.filter(r => !r.pass);

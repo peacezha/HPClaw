@@ -62,9 +62,9 @@ export default function SearchPanel({
       setError(null);
 
       try {
-        if (side === 'local' && window.hpclawDesktop?.localFiles?.search) {
+        if (side === 'local' && window.traceDesktop?.localFiles?.search) {
           // Local search via desktop API
-          const result = await window.hpclawDesktop.localFiles.search(root, q.trim());
+          const result = await window.traceDesktop.localFiles.search(root, q.trim());
           if (controller.signal.aborted) return;
           setResults(result.entries.slice(0, MAX_VISIBLE_RESULTS));
           setTruncated(result.truncated || result.entries.length > MAX_VISIBLE_RESULTS);

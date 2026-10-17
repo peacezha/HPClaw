@@ -3,10 +3,16 @@ import { classifyWorkflowTurn } from './workflowTurnIntent';
 
 describe('classifyWorkflowTurn', () => {
   it.each([
+    '有哪些修复方案？',
+    '请先解释推荐方案',
+    'What are my recovery options?',
     '大概需要排队等待多久',
     '作业 75512132 的状态怎么样',
     '作业目前的状态',
     '为什么我提交的作业一直排队不动',
+    '为什么会运行那么长时间',
+    '我需要你告诉我为什么会要这么长时间',
+    '这个步骤怎么这么慢',
     '看一下作业的日志',
     'why is job 75512132 pending?',
     'show me the current workflow progress',

@@ -8,7 +8,7 @@ import { SCHEDULER_REVIEW_PENDING } from '../../shared/workflowContinuation';
 import '../index.css';
 
 if (!(import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV) throw new Error('QA is not available in production');
-const runDir = '/home/qa/hpclaw_flows/fixture/03_workspace/runs/fixture-run-1';
+const runDir = '/home/qa/trace_flows/fixture/03_workspace/runs/fixture-run-1';
 const marker = formatWorkflowExecutionContext({ workflowId: 'qa-only', runId: 'fixture-run-1', runDir });
 const workflow = { id: 'qa-only', name: '隔离验证流程 / Isolated QA workflow', description: 'Artificial fixture; no real cluster.', params: [], keywords: [], source: 'user', steps: [{ title: 'Output validation', command: 'echo QA' }], createdAt: 1, updatedAt: 1 };
 const run = {
@@ -50,7 +50,7 @@ function Qa() {
   };
   return <div className="h-screen flex flex-col bg-scholar-950 text-scholar-100">
     <header className="flex flex-wrap items-center gap-3 px-4 py-2 border-b border-scholar-700">
-      <strong>HPClaw · Isolated QA</strong><span className="text-amber-400 text-xs">模拟数据，未连接集群 / No cluster connected</span>
+      <strong>TRACE · Isolated QA</strong><span className="text-amber-400 text-xs">模拟数据，未连接集群 / No cluster connected</span>
       <button className="btn-ghost" onClick={() => select('resume')}>Resume fixture</button>
       <button className="btn-ghost" onClick={() => select('history')}>616-record history</button>
       <button className="btn-ghost" onClick={() => scroll(false)}>First message</button>

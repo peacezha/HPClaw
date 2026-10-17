@@ -1,5 +1,5 @@
 /**
- * hpclaw-dsh-plugin v0.4.1 — HPClaw capability bridge for DeepSeek Harness (dsh).
+ * trace-dsh-plugin v0.4.1 — TRACE capability bridge for DeepSeek Harness (dsh).
  *
  * HPClaw 的能力以 dsh 插件形式暴露（dsh 作为通用 Agent harness，HPClaw 保留自有
  * 运行时与桌面 UI，本插件是两者之间的桥）：
@@ -41,6 +41,13 @@
  *   - ctx.systemPrompt.section({ name: 'hpclaw:domain', order: 100 })：HPClaw 域规则
  *     精简版（提炼自 源码/server/ai/agentRunner.ts buildAgentSystemPrompt 规则区）。
  *
+ *   人机交互应答器（sdk 通道专用，0.2.1 起）：
+ *   - sdk profile 的 stdio JSON-RPC 不回传 approval/request 与 user-questions/request
+ *     瀑布（协议只有 initialize/prompt/resume/wait/working-directory/shutdown）。
+ *     这里注册两个瀑布应答器，把它们 POST 回 HPClaw 服务端的
+ *     /api/bridge/interaction/approval|questions，由 TRACE 前端完成用户裁决。
+ *     桥不可达时审批 fail-closed（'unavailable'），反问交还瀑布（next()）。
+ *
  *   安全闸门（非工具，挂在工具调度管线上）：
  *   - 监听 tools/pre-execute，对 guardedTools（默认 bash + pwsh，Windows 的
  *     dsh profile 注册的是 pwsh 而非 bash）的 command 参数做 HPClaw 命令风险
@@ -60,6 +67,7 @@
  * loadable no matter how pnpm links it into a dsh profile.
  */
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import http from 'node:http'
 import { registerBrowserTools } from './browser.js'
@@ -245,8 +253,8 @@ async function postBridgeExec(state, body, signal, fetchTimeoutMs, dshSessionId)
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-HPClaw-Bridge': state.token,
-        'X-HPClaw-Dsh-Session': String(dshSessionId || ''),
+        'X-TRACE-Bridge': state.token,
+        'X-TRACE-Dsh-Session': String(dshSessionId || ''),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.any(signals),
@@ -315,6 +323,43 @@ async function postBridgeExec(state, body, signal, fetchTimeoutMs, dshSessionId)
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* 人机交互回桥（sdk 通道）：approval/request 与 user-questions/request      */
+/* 瀑布在 stdio JSON-RPC 协议里没有对应方法，改由这里 POST 回 TRACE 服务端。  */
+/* ------------------------------------------------------------------ */
+
+/** 用户裁决等待上限（确认框/问答题由人回答，不能套用工具超时）。 */
+const INTERACTION_TIMEOUT_MS = 30 * 60_000
+
+const APPROVAL_OUTCOMES = ['allowed-once', 'rejected', 'cancelled', 'unavailable']
+
+/**
+ * POST {baseUrl}/api/bridge/interaction/<kind>。永不抛异常：网络错误/abort/
+ * 非 200/非 JSON 一律 { ok:false }，由调用方决定 fail-closed 还是交还瀑布。
+ */
+async function postInteraction(state, kind, body, signal) {
+  const signals = [AbortSignal.timeout(INTERACTION_TIMEOUT_MS)]
+  if (signal) signals.push(signal)
+  const url = new URL(`/api/bridge/interaction/${kind}`, state.baseUrl).toString()
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TRACE-Bridge': state.token,
+        'X-TRACE-Dsh-Session': String(body.sessionId || ''),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.any(signals),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.status !== 200) return { ok: false }
+    return { ok: true, data }
+  } catch {
+    return { ok: false }
+  }
+}
+
 /**
  * POST {baseUrl}/api/bridge/fs/<action>。与 postBridgeExec 同一 token 守卫、
  * 同一"不抛异常"约定；错误映射按 fs 端点契约（413 too_large、409 exists/
@@ -330,8 +375,8 @@ async function postBridgeFs(state, action, body, signal, fetchTimeoutMs, dshSess
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-HPClaw-Bridge': state.token,
-        'X-HPClaw-Dsh-Session': String(dshSessionId || ''),
+        'X-TRACE-Bridge': state.token,
+        'X-TRACE-Dsh-Session': String(dshSessionId || ''),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.any(signals),
@@ -1049,8 +1094,8 @@ export function apply(ctx, config = {}) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-HPClaw-Bridge': bridge.state.token,
-            'X-HPClaw-Dsh-Session': String(exec?.agent?.id || ''),
+            'X-TRACE-Bridge': bridge.state.token,
+            'X-TRACE-Dsh-Session': String(exec?.agent?.id || ''),
           },
           body: JSON.stringify({
             service: args.service.trim(),
@@ -1119,6 +1164,60 @@ export function apply(ctx, config = {}) {
 
   /* ------------- 浏览器控制工具组（browser.js，零依赖 CDP） ------------- */
   registerBrowserTools(ctx, browserConfig)
+
+  /* ------------- sdk 通道人机交互：审批/反问 → TRACE HTTP 应答器 -------------
+   * stdio JSON-RPC 协议（dsh-sdk-protocol）不回传 approval/request 与
+   * user-questions/request 瀑布；TRACE 是该 profile 的唯一客户端，这里把
+   * 两个瀑布转成 HTTP POST 回 TRACE 服务端（/api/bridge/interaction/*），
+   * 由持有该 dsh 会话的 runner 完成用户裁决。桥不可达时审批 fail-closed
+   * （'unavailable'），反问交还瀑布（next() → 其余应答器/NO_PROVIDER）。 */
+  const interactionSessionOf = (req) => String(req?.agent?.session?.id ?? req?.agent?.id ?? '')
+  ctx.on('approval/request', async (req, next) => {
+    if (req?.signal?.aborted) return 'cancelled'
+    const bridge = await readBridgeState(bridgeStateFile)
+    if (!bridge.ok) return 'unavailable'
+    let cancelled = false
+    const onAbort = () => { cancelled = true }
+    req?.signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      const result = await postInteraction(bridge.state, 'approval', {
+        sessionId: interactionSessionOf(req),
+        toolName: String(req?.toolName || ''),
+        ...(req?.callId ? { callId: String(req.callId) } : {}),
+        ...(typeof req?.reason === 'string' ? { reason: req.reason } : {}),
+        requestId: randomUUID(),
+      }, req?.signal)
+      if (cancelled || req?.signal?.aborted) return 'cancelled'
+      const outcome = result.ok ? result.data?.outcome : undefined
+      return APPROVAL_OUTCOMES.includes(outcome) ? outcome : 'unavailable'
+    } finally {
+      req?.signal?.removeEventListener('abort', onAbort)
+    }
+  })
+  ctx.on('user-questions/request', async (req, next) => {
+    const questions = Array.isArray(req?.questions) ? req.questions : []
+    if (questions.length === 0) return next()
+    const bridge = await readBridgeState(bridgeStateFile)
+    if (!bridge.ok) return next()
+    const result = await postInteraction(bridge.state, 'questions', {
+      sessionId: interactionSessionOf(req),
+      ...(req?.wait?.callId ? { callId: String(req.wait.callId) } : {}),
+      questions: questions.map(q => ({
+        id: String(q?.id ?? ''),
+        question: String(q?.question ?? ''),
+        ...(typeof q?.detail === 'string' ? { detail: q.detail } : {}),
+        ...(typeof q?.header === 'string' ? { header: q.header } : {}),
+        ...(Array.isArray(q?.options)
+          ? { options: q.options.map(o => ({ label: String(o?.label ?? ''), ...(typeof o?.description === 'string' ? { description: o.description } : {}) })) }
+          : {}),
+        ...(q?.multiSelect === true ? { multiSelect: true } : {}),
+      })),
+      requestId: randomUUID(),
+    }, req?.signal)
+    const answer = result.ok ? result.data?.answer : undefined
+    if (!answer || !Array.isArray(answer.answers)) return next()
+    return answer
+  })
 
   /* ------------- 安全闸门：HPClaw 命令风险分级 → dsh pre-execute ------------- */
   if (commandPolicy !== 'off' && guardedTools.length > 0) {

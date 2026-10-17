@@ -1,4 +1,4 @@
-// HPClaw v2 AI 智能化实机验证：中文技能检索 + agent 问答 + 确认端点
+// TRACE v2 AI 智能化实机验证：中文技能检索 + agent 问答 + 确认端点
 const http = require('http');
 const port = process.argv[2] || '9222';
 const results = [];

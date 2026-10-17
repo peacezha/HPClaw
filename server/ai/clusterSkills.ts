@@ -84,7 +84,9 @@ export function buildClusterSkillScanCommand(
 ): string {
   const script = `
 import os, json
-d = os.path.expanduser('~/hpclaw_skills')
+d = os.path.expanduser('~/trace_skills')
+if not os.path.isdir(d) and os.path.isdir(os.path.expanduser('~/hpclaw_skills')):
+    d = os.path.expanduser('~/hpclaw_skills')
 MAX_FILES = ${Math.max(1, Math.floor(maxFiles))}
 MAX_BYTES = ${Math.max(1024, Math.floor(maxBytes))}
 MAX_TOTAL_BYTES = ${Math.max(4096, Math.floor(maxTotalBytes))}
@@ -117,14 +119,14 @@ for root, dirs, files in os.walk(d):
 `;
   const encoded = Buffer.from(script, 'utf8').toString('base64');
   return [
-    '# hpclaw_skills MAX_FILES MAX_BYTES MAX_TOTAL_BYTES',
+    '# trace_skills MAX_FILES MAX_BYTES MAX_TOTAL_BYTES',
     `printf '%s' '${encoded}' | base64 -d | python3 2>/dev/null || printf '%s' '${encoded}' | base64 -d | python 2>/dev/null`,
   ].join('\n');
 }
 
 // ── 运行时扫描（带按会话缓存）─────────────────────────────────────
 // 此前 buildClusterSkillScanCommand/clusterSkillsFromScanOutput 只被测试引用，
-// 运行时从未接线，导致技能库读不到集群 ~/hpclaw_skills 里的技能。
+// 运行时从未接线，导致技能库读不到集群 ~/trace_skills 里的技能。
 const scanCache = new Map<string, { at: number; skills: SkillMetadata[] }>();
 const activeScans = new Map<string, Promise<SkillMetadata[]>>();
 
@@ -173,7 +175,7 @@ export function refreshClusterSkillsInBackground(
 }
 
 /**
- * 在集群上扫描 ~/hpclaw_skills 并解析为技能元数据。
+ * 在集群上扫描 ~/trace_skills 并解析为技能元数据。
  * 扫描失败（无会话/无 python/网络抖动）返回旧缓存或空数组，不阻塞本地技能。
  */
 export async function scanClusterSkills(

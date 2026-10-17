@@ -33,7 +33,7 @@ describe('dshConfigSafety', () => {
   });
 
   it('removes only an invalid saved baseURL and preserves unrelated settings', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-settings-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-dsh-settings-'));
     tempDirs.push(dir);
     const file = path.join(dir, 'settings.yaml');
     fs.writeFileSync(file, [
@@ -55,7 +55,7 @@ describe('dshConfigSafety', () => {
   });
 
   it('keeps a valid custom baseURL untouched', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-settings-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-dsh-settings-'));
     tempDirs.push(dir);
     const file = path.join(dir, 'settings.yaml');
     const original = 'llm-deepseek:\n  baseURL: https://proxy.example/v1\n';

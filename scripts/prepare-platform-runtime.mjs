@@ -23,9 +23,9 @@ for (const parent of ['node-addon-require-builtin', '@vscode/ripgrep', 'sharp'])
   }
 }
 if (required.size < 4) throw new Error('Incomplete native runtime dependency inventory');
-const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-native-'));
+const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-native-'));
 try {
-  fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ private: true, name: 'hpclaw-native-stage', version: '1.0.0' }));
+  fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ private: true, name: 'trace-native-stage', version: '1.0.0' }));
   const installed = spawnSync('npm', ['install', '--prefix', stage, '--ignore-scripts', '--omit=dev', '--package-lock=false',
     '--no-audit', '--no-fund', ...[...required].map(([name, version]) => `${name}@${version}`)], { stdio: 'inherit' });
   if (installed.status !== 0) throw new Error('Native optional dependency installation failed');
@@ -51,17 +51,17 @@ const helper = path.join(modules, 'node-pty', 'prebuilds', `${platform}-${arch}`
 if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
 const rg = path.join(modules, '@vscode', `ripgrep-${platform}-${arch}`, 'bin', 'rg');
 if (fs.existsSync(rg)) fs.chmodSync(rg, 0o755);
-const require = createRequire(path.join(modules, '_hpclaw_native_check.cjs'));
+const require = createRequire(path.join(modules, '_trace_native_check.cjs'));
 require('node-addon-require-builtin');
 require('sharp');
-const pty = require('node-pty').spawn('/bin/sh', ['-c', 'printf HPCLAW_PTY_OK'], { name: 'xterm', cols: 80, rows: 24 });
+const pty = require('node-pty').spawn('/bin/sh', ['-c', 'printf TRACE_PTY_OK'], { name: 'xterm', cols: 80, rows: 24 });
 await new Promise((resolve, reject) => {
   let output = '';
   const timeout = setTimeout(() => { pty.kill(); reject(new Error('Native PTY timed out')); }, 10000);
   pty.onData(data => { output += data; });
   pty.onExit(({ exitCode }) => {
     clearTimeout(timeout);
-    exitCode === 0 && output.includes('HPCLAW_PTY_OK') ? resolve() : reject(new Error('Native PTY smoke test failed'));
+    exitCode === 0 && output.includes('TRACE_PTY_OK') ? resolve() : reject(new Error('Native PTY smoke test failed'));
   });
 });
 console.log(`[platform] ${platform}-${arch}: Node, require-builtin, sharp, ripgrep and PTY prepared`);

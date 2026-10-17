@@ -4,8 +4,7 @@
  * drives every surface, so remounting a panel never loses an open approval or
  * an in-flight transition.
  */
-import type { ApprovalRequestId, CordisDynamicPackageId, CordisDynamicPluginId, CordisDynamicPluginRunId, CordisDynamicRunMode, DynamicCordisClientSource, DynamicCordisHostHalfResult, DynamicCordisInventoryRow, DynamicCordisResolveAck, DynamicCordisRunResolution, DynamicCordisRunResponse } from '@deepseek-ai/dsh-api-remotes/client';
-import type { SessionId } from '@deepseek-ai/dsh-client-connection/client';
+import type { ApprovalRequestId, CordisDynamicPackageId, CordisDynamicPluginId, CordisDynamicPluginRunId, CordisDynamicRunMode, DynamicCordisClientSource, DynamicCordisHostHalfResult, DynamicCordisInventoryRow, DynamicCordisResolveAck, DynamicCordisRunResolution, DynamicCordisRunResponse, SessionId } from '@deepseek-ai/dsh-api-remotes/client';
 import type { CordisObservable, DynamicCordisPackageRunner } from './runtime.ts';
 /** One Plugin's in-flight approval or activation. */
 export type CordisRunActivity = {

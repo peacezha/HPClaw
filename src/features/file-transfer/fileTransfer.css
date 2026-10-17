@@ -29,8 +29,7 @@
   position: absolute;
   inset-block: 0;
   right: 0;
-  width: min(90vw, 1680px);
-  min-width: 980px;
+  width: min(96vw, 1680px);
   background: var(--color-scholar-900); /* scholar-900 */
   display: flex;
   flex-direction: column;
@@ -38,6 +37,26 @@
   transform: translateX(0);
   transition: transform 0.25s ease;
   animation: file-transfer-slide-in 0.25s ease;
+}
+
+/* 拖动中禁用 transform 过渡，避免跟手延迟 */
+.file-transfer-drawer[data-dragging="true"] {
+  transition: none;
+}
+
+/* 抽屉头即拖动把手 */
+.file-transfer-drawer-header {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.file-transfer-drawer-header[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.file-transfer-drawer[data-maximized="true"] .file-transfer-drawer-header {
+  cursor: default;
 }
 
 .file-transfer-drawer[data-maximized="true"] {
@@ -685,6 +704,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 8px;
   padding: 6px 12px;
   border-bottom: 1px solid rgb(var(--line-rgb) / 0.15);
   flex-shrink: 0;
@@ -694,12 +715,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .queue-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .queue-toggle {
@@ -813,7 +836,7 @@
 .queue-rows {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 .file-transfer-queue-row {

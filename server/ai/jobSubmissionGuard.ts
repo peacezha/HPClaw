@@ -131,12 +131,12 @@ export async function preflightJobSubmission(
   const quoted = shellQuote(scriptPath);
   const check = [
     `hp_script=${quoted}`,
-    'test -s "$hp_script" || { echo "[HPCLAW_PREFLIGHT] missing or empty script: $hp_script" >&2; exit 41; }',
-    'bash -n "$hp_script" || { echo "[HPCLAW_PREFLIGHT] shell syntax check failed" >&2; exit 42; }',
+    'test -s "$hp_script" || { echo "[TRACE_PREFLIGHT] missing or empty script: $hp_script" >&2; exit 41; }',
+    'bash -n "$hp_script" || { echo "[TRACE_PREFLIGHT] shell syntax check failed" >&2; exit 42; }',
     "hp_modules=$(awk '/^[[:space:]]*module[[:space:]]+load[[:space:]]+/ { sub(/^[[:space:]]*module[[:space:]]+load[[:space:]]+/, \"\"); sub(/[[:space:]]*(#|&&|[|][|]|;).*$/, \"\"); for (i=1;i<=NF;i++) print $i }' \"$hp_script\")",
-    'if test -n "$hp_modules"; then type module >/dev/null 2>&1 || { echo "[HPCLAW_PREFLIGHT] script requires Environment Modules, but module is unavailable" >&2; exit 43; }; fi',
-    'for hp_module in $hp_modules; do module load "$hp_module" >/dev/null 2>&1 || { echo "[HPCLAW_PREFLIGHT] unavailable module: $hp_module" >&2; module avail "${hp_module%%/*}" 2>&1 | tail -30 >&2; exit 44; }; done',
-    'echo "[HPCLAW_PREFLIGHT] OK: $hp_script"',
+    'if test -n "$hp_modules"; then type module >/dev/null 2>&1 || { echo "[TRACE_PREFLIGHT] script requires Environment Modules, but module is unavailable" >&2; exit 43; }; fi',
+    'for hp_module in $hp_modules; do module load "$hp_module" >/dev/null 2>&1 || { echo "[TRACE_PREFLIGHT] unavailable module: $hp_module" >&2; module avail "${hp_module%%/*}" 2>&1 | tail -30 >&2; exit 44; }; done',
+    'echo "[TRACE_PREFLIGHT] OK: $hp_script"',
   ].join('; ');
   try {
     const output = await exec(check, 20_000);

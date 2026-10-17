@@ -1,6 +1,6 @@
 ; 某些 Windows 环境的 32 位 PowerShell/.NET CLR 会在 Get-CimInstance
 ; 编译阶段触发 0xc0000005。安装、升级和卸载均使用 nsProcess 原生插件
-; 检测 HPClaw，避免启动 PowerShell。
+; 检测 TRACE，避免启动 PowerShell。
 !include "StrFunc.nsh"
 !include "nsProcess.nsh"
 !ifdef BUILD_UNINSTALLER
@@ -9,40 +9,40 @@
   ${StrRep}
 !endif
 
-!macro hpclawStopBundledProcessesAt ROOT_VAR LABEL_SUFFIX
+!macro traceStopBundledProcessesAt ROOT_VAR LABEL_SUFFIX
   ; dsh 使用 shell + node-pty，退出异常时可能残留 node.exe、OpenConsole.exe
   ; 或 rg.exe。只清理已登记安装目录下 app.asar.unpacked\vendor 子树中的
   ; 可执行文件，不会影响系统 Node、其他 OpenConsole 或其他软件的 rg。
-  StrCmp "${ROOT_VAR}" "" hpclaw_vendor_cleanup_done_${LABEL_SUFFIX}
+  StrCmp "${ROOT_VAR}" "" trace_vendor_cleanup_done_${LABEL_SUFFIX}
   StrCpy $R9 "${ROOT_VAR}\resources\app.asar.unpacked\vendor\%"
   !ifdef BUILD_UNINSTALLER
     ${UnStrRep} $R9 "$R9" "\" "\\"
   !else
     ${StrRep} $R9 "$R9" "\" "\\"
   !endif
-  IfFileExists "$SYSDIR\wbem\WMIC.exe" 0 hpclaw_vendor_cleanup_done_${LABEL_SUFFIX}
-  DetailPrint "Closing bundled HPClaw tool processes under ${ROOT_VAR}..."
+  IfFileExists "$SYSDIR\wbem\WMIC.exe" 0 trace_vendor_cleanup_done_${LABEL_SUFFIX}
+  DetailPrint "Closing bundled TRACE tool processes under ${ROOT_VAR}..."
   nsExec::Exec `"$SYSDIR\wbem\WMIC.exe" process where "ExecutablePath like '$R9'" call terminate`
   Pop $R0
   Sleep 1000
-  hpclaw_vendor_cleanup_done_${LABEL_SUFFIX}:
+  trace_vendor_cleanup_done_${LABEL_SUFFIX}:
 !macroend
 
-!macro hpclawStopAllBundledProcesses
+!macro traceStopAllBundledProcesses
   ; 同时读取当前用户、所有用户和本次目标目录。这样旧版安装在另一种
   ; 安装模式/目录时也能先释放文件锁，再进入旧版卸载或覆盖复制。
   ReadRegStr $R8 HKEY_LOCAL_MACHINE "${INSTALL_REGISTRY_KEY}" "InstallLocation"
-  !insertmacro hpclawStopBundledProcessesAt $R8 machine
+  !insertmacro traceStopBundledProcessesAt $R8 machine
   ReadRegStr $R8 HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" "InstallLocation"
-  !insertmacro hpclawStopBundledProcessesAt $R8 user
-  !insertmacro hpclawStopBundledProcessesAt $INSTDIR target
+  !insertmacro traceStopBundledProcessesAt $R8 user
+  !insertmacro traceStopBundledProcessesAt $INSTDIR target
 !macroend
 
-!macro hpclawDisableUpgradeUninstaller ROOT_KEY REGISTRY_KEY
+!macro traceDisableUpgradeUninstaller ROOT_KEY REGISTRY_KEY
   ; electron-builder 的 --updated 旧卸载器会把整个安装目录原子 Rename 到
   ; $PLUGINSDIR。安装目录与系统临时目录跨盘时该操作必然返回 2；进程刚退出、
   ; 安全软件仍短暂持有文件时也会失败。升级不再调用任意旧版本卸载器：先由
-  ; 本安装器精确释放 HPClaw 自有进程，再覆盖应用文件。用户显式卸载不受影响。
+  ; 本安装器精确释放 TRACE 自有进程，再覆盖应用文件。用户显式卸载不受影响。
   ClearErrors
   ReadRegStr $R8 ${ROOT_KEY} "${REGISTRY_KEY}" "UninstallString"
   ${If} $R8 != ""
@@ -57,10 +57,20 @@
 ; 旧卸载入口，避免升级流程启动旧版卸载器中的 PowerShell。
 !macro customInit
   !ifndef BUILD_UNINSTALLER
+    ; Preserve the upgrade GUID, but do not keep the legacy folder as the new
+    ; installation default. The directory page still allows an explicit choice.
+    ${GetFileName} "$INSTDIR" $R7
+    ${If} $R7 == "HPClaw"
+      ${GetParent} "$INSTDIR" $R8
+      StrCpy $INSTDIR "$R8\TRACE"
+    ${ElseIf} $R7 == "HPClaw Competition"
+      ${GetParent} "$INSTDIR" $R8
+      StrCpy $INSTDIR "$R8\TRACE Competition"
+    ${EndIf}
     ${If} ${UAC_IsInnerInstance}
-      !insertmacro hpclawDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY}"
+      !insertmacro traceDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY}"
       !ifdef UNINSTALL_REGISTRY_KEY_2
-        !insertmacro hpclawDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY_2}"
+        !insertmacro traceDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY_2}"
       !endif
     ${EndIf}
   !endif
@@ -70,7 +80,7 @@
 ; preserve it; explicit in-app preferences live in userData and take priority.
 !macro customInstall
   ${IfNot} ${Silent}
-    FileOpen $R0 "$INSTDIR\hpclaw-install-locale.json" w
+    FileOpen $R0 "$INSTDIR\trace-install-locale.json" w
     ${If} $LANGUAGE == 1033
       FileWrite $R0 '{$\"locale$\":$\"en-US$\"}'
     ${Else}
@@ -80,20 +90,58 @@
   ${EndIf}
 !macroend
 
+; A rebranded installer must also close the old executable before updating app.asar.
+!macro traceStopLegacyApplication LEGACY_EXE LABEL_SUFFIX
+  StrCpy $R1 0
+  trace_legacy_check_${LABEL_SUFFIX}:
+    ${nsProcess::FindProcess} "${LEGACY_EXE}" $R0
+    ${If} $R0 != 0
+      Goto trace_legacy_closed_${LABEL_SUFFIX}
+    ${EndIf}
+    DetailPrint "Closing the previous application version before installing TRACE..."
+    ${nsProcess::CloseProcess} "${LEGACY_EXE}" $R0
+    Sleep 1200
+    ${nsProcess::FindProcess} "${LEGACY_EXE}" $R0
+    ${If} $R0 == 0
+      ${nsProcess::KillProcess} "${LEGACY_EXE}" $R0
+      Sleep 800
+    ${EndIf}
+    ${nsProcess::FindProcess} "${LEGACY_EXE}" $R0
+    ${If} $R0 == 0
+      IntOp $R1 $R1 + 1
+      ${If} $R1 < 3
+        Goto trace_legacy_check_${LABEL_SUFFIX}
+      ${EndIf}
+      ${If} ${Silent}
+        ${nsProcess::Unload}
+        Quit
+      ${EndIf}
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY trace_legacy_check_${LABEL_SUFFIX}
+      ${nsProcess::Unload}
+      Quit
+    ${EndIf}
+  trace_legacy_closed_${LABEL_SUFFIX}:
+!macroend
+
 !macro customCheckAppRunning
-  ; HPClaw may be running without a visible/login window because Electron keeps
-  ; the backend and renderer as HPClaw.exe child processes. Use the native
+  !if "${APP_EXECUTABLE_FILENAME}" == "TRACE Competition.exe"
+    !insertmacro traceStopLegacyApplication "HPClaw Competition.exe" competition
+  !else
+    !insertmacro traceStopLegacyApplication "HPClaw.exe" standard
+  !endif
+  ; TRACE may be running without a visible/login window because Electron keeps
+  ; the backend and renderer as TRACE.exe child processes. Use the native
   ; process plugin instead of localized command output, close gracefully first,
   ; then terminate exact-name leftovers so a hidden old version cannot block
   ; the upgrade forever. The setup executable has a different name and is safe.
   StrCpy $R1 0
-  hpclaw_process_check:
+  trace_process_check:
     ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
     ${If} $R0 != 0
-      Goto hpclaw_process_closed
+      Goto trace_process_closed
     ${EndIf}
 
-    DetailPrint "Closing background HPClaw processes..."
+    DetailPrint "Closing background TRACE processes..."
     ${nsProcess::CloseProcess} "${APP_EXECUTABLE_FILENAME}" $R0
     Sleep 1200
     ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
@@ -106,31 +154,31 @@
     ${If} $R0 == 0
       IntOp $R1 $R1 + 1
       ${If} $R1 < 3
-        Goto hpclaw_process_check
+        Goto trace_process_check
       ${EndIf}
       ${If} ${Silent}
         ${nsProcess::Unload}
         Quit
       ${EndIf}
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY hpclaw_process_check
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY trace_process_check
       ${nsProcess::Unload}
       Quit
     ${EndIf}
 
-  hpclaw_process_closed:
+  trace_process_closed:
     ${nsProcess::Unload}
 
-    !insertmacro hpclawStopAllBundledProcesses
+    !insertmacro traceStopAllBundledProcesses
 
     ; 0.2.12 及更早版本可能有卸载/退出不完整或 CRC 半安装状态。升级到本版时
     ; 保留安装目录，暂时移除旧卸载命令，让新文件直接覆盖；本次安装末尾
     ; 会重新写入完整的新版卸载记录。
     !ifndef BUILD_UNINSTALLER
-      !insertmacro hpclawDisableUpgradeUninstaller HKEY_CURRENT_USER "${UNINSTALL_REGISTRY_KEY}"
-      !insertmacro hpclawDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY}"
+      !insertmacro traceDisableUpgradeUninstaller HKEY_CURRENT_USER "${UNINSTALL_REGISTRY_KEY}"
+      !insertmacro traceDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY}"
       !ifdef UNINSTALL_REGISTRY_KEY_2
-        !insertmacro hpclawDisableUpgradeUninstaller HKEY_CURRENT_USER "${UNINSTALL_REGISTRY_KEY_2}"
-        !insertmacro hpclawDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY_2}"
+        !insertmacro traceDisableUpgradeUninstaller HKEY_CURRENT_USER "${UNINSTALL_REGISTRY_KEY_2}"
+        !insertmacro traceDisableUpgradeUninstaller HKEY_LOCAL_MACHINE "${UNINSTALL_REGISTRY_KEY_2}"
       !endif
     !endif
 !macroend

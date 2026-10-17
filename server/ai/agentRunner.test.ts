@@ -1,12 +1,15 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
 
-const { mockStreamText, mockInvokeWebApi, mockSearchWebApis } = vi.hoisted(() => ({
+const { mockStreamText, mockInvokeWebApi, mockSearchWebApis, mockSpawn } = vi.hoisted(() => ({
   mockStreamText: vi.fn(),
   mockInvokeWebApi: vi.fn(),
   mockSearchWebApis: vi.fn(),
+  mockSpawn: vi.fn(),
 }));
 
 vi.mock('@ai-sdk/openai', () => ({
@@ -30,6 +33,17 @@ vi.mock('ai', () => ({
   zodSchema: (schema: any) => schema,
 }));
 
+// 只替换 spawn（wheatomics_query / github_mirror_scout 的本机子进程），
+// 其余 child_process 能力（如 localWorkspace 的 exec）保持真实实现。
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: mockSpawn };
+});
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, spawn: mockSpawn };
+});
+
 vi.mock('../webapis/invoke', () => ({
   invokeWebApi: mockInvokeWebApi,
   searchWebApis: mockSearchWebApis,
@@ -42,21 +56,39 @@ import {
   buildWorkflowInspectorPrompt,
   extractUserAuthorizedPaths,
   normalizeAgentRuntimeConfig,
+  planNeedsReview,
   runAgent,
   selectCurrentWorkflowRunStep,
   workflowRuntimeConfig,
   workflowExecutionProfile,
 } from './agentRunner';
 import { LOCAL_WORKSPACE_NOT_SET_MESSAGE } from '../local/localWorkspace';
+import { appPath } from '../paths';
+
+/** 假子进程：按给定 stdout/stderr/exitCode 异步回吐并 close（对齐 runHelperProcess 的消费方式）。 */
+function makeFakeChild(stdout: string, stderr: string, code: number | null) {
+  const child = new EventEmitter() as any;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = vi.fn();
+  setImmediate(() => {
+    if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    child.emit('close', code);
+  });
+  return child;
+}
 
 beforeEach(() => {
   mockStreamText.mockReset();
+  mockSpawn.mockReset();
+  mockSpawn.mockImplementation(() => makeFakeChild('', '', 0));
 });
 
 describe('agent runtime limits', () => {
   it('uses the longer default and accepts the configurable upper limits', () => {
     expect(normalizeAgentRuntimeConfig({})).toMatchObject({
-      confirmationPolicy: 'never', pathPolicy: 'full_access', maxCommands: 40, maxSteps: 200,
+      confirmationPolicy: 'dangerous', pathPolicy: 'full_access', maxCommands: 40, maxSteps: 200,
     });
     expect(normalizeAgentRuntimeConfig({ maxCommands: 200, maxSteps: 500 }))
       .toMatchObject({ maxCommands: 200, maxSteps: 500 });
@@ -100,7 +132,7 @@ describe('agent response language', () => {
   });
   it('requires source-backed QC and resource diagnosis instead of treating suspension as OOM', () => {
     const prompt = buildAgentSystemPrompt(config, false);
-    expect(prompt).toContain('SSUSP alone is not evidence of out-of-memory');
+    expect(prompt).toContain('SSUSP、Exit 137、"Killed" 单独都不能断定内存超限');
     expect(prompt).toContain('processor slots, not physical node count');
     expect(prompt).toContain('not overall library enrichment or assay success');
     expect(prompt).not.toContain('第一反应必须是增加 #BSUB -n');
@@ -125,14 +157,14 @@ describe('lightweight workflow execution mode', () => {
   const config = normalizeAgentRuntimeConfig({});
   const workflowRun = {
     workflowId: 'wf-1', runId: 'run-1',
-    runDir: '/home/u/hpclaw_flows/w/03_workspace/runs/run-1',
+    runDir: '/home/u/trace_flows/w/03_workspace/runs/run-1',
     policy: 'isolated-run-v1' as const,
   };
 
-  it('uses DeepSeek chat instead of a reasoning model for saved workflow steps', () => {
+  it('uses DeepSeek flash instead of a reasoning model for saved workflow steps', () => {
     expect(workflowExecutionProfile({
       provider: 'deepseek', model: 'deepseek-reasoner', apiKey: 'x',
-    }).model).toBe('deepseek-chat');
+    }).model).toBe('deepseek-flash');
     expect(workflowExecutionProfile({
       provider: 'openai', model: 'gpt-4o', apiKey: 'x',
     }).model).toBe('gpt-4o');
@@ -175,6 +207,14 @@ describe('lightweight workflow execution mode', () => {
     expect(running).not.toContain('ENVIRONMENT REPAIR MODE');
   });
 
+  it('keeps the saved report language even when background continuation has a different UI locale', () => {
+    const prompt = buildWorkflowExecutorPrompt(config, workflowRun, {
+      ...workflowRun, status: 'running', config: { reportLanguage: 'en' }, steps: [],
+    }, 'zh-CN');
+    expect(prompt).toContain('REPORT LANGUAGE: en');
+    expect(prompt).toContain('--language en');
+  });
+
   it('builds a read-only inspector prompt that forbids workflow mutations and fake ETA claims', () => {
     const prompt = buildWorkflowInspectorPrompt(workflowRun, {
       ...workflowRun, status: 'waiting_jobs', currentStep: 3, totalSteps: 5,
@@ -211,6 +251,32 @@ describe('lightweight workflow execution mode', () => {
 });
 
 describe('runAgent ask_user handling', () => {
+  it('answers the screenshot follow-up without offering ask_user or allowing mutations', async () => {
+    const run = vi.fn(async () => 'evidence'); const onAsk = vi.fn(); const onDone = vi.fn();
+    mockStreamText.mockImplementation((options: any) => ({ fullStream: (async function* () {
+      expect(options.tools.ask_user).toBeUndefined();
+      expect(options.system).toContain('TRACE_CLARIFICATION_ONLY');
+      const blocked = await options.tools.run_command.execute({ command: 'bsub < step-03.sh' });
+      expect(blocked).toContain('Read-only');
+      yield { type: 'text-delta', text: '方案 A：保留已有结果并修复索引；方案 B：只有文件损坏时才重算。推荐先检查 A，未执行任何操作。' };
+    })() }));
+    await runAgent({ sid: 'question-test', run, profile: { provider: 'deepseek', model: 'test', apiKey: 'test' } },
+      { onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk, onDone, onErr: vi.fn(), sig: () => undefined },
+      [{ role: 'assistant', content: '❓ step-03 失败，如何修复并继续？' }, { role: 'user', content: '有哪些修复方案？' }]);
+    expect(onAsk).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); expect(onDone).toHaveBeenCalledWith(expect.stringContaining('方案 A'));
+  });
+  it('rejects the same answered question and lets the model continue with the existing choice', async () => {
+    const onAsk = vi.fn();
+    mockStreamText.mockImplementation((options: any) => ({ fullStream: (async function* () {
+      const feedback = await options.tools.ask_user.execute({ question: '选择参考版本？', options: ['IWGSC v1.0', 'IWGSC v2.1'] });
+      expect(feedback).toContain('TRACE_REPEAT_QUESTION_BLOCKED'); expect(feedback).toContain('IWGSC v1.0');
+      yield { type: 'text-delta', text: '将使用你已指定的 IWGSC v1.0；不会再问同一版本问题。' };
+    })() }));
+    await runAgent({ sid: 'question-test', run: vi.fn(), profile: { provider: 'deepseek', model: 'test', apiKey: 'test' } },
+      { onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk, onDone: vi.fn(), onErr: vi.fn(), sig: () => undefined },
+      [{ role: 'assistant', content: '❓ 选择参考版本？' }, { role: 'user', content: 'IWGSC v1.0' }]);
+    expect(onAsk).not.toHaveBeenCalled();
+  });
   it('keeps formal RUN tools out of a general cluster conversation', async () => {
     mockStreamText.mockImplementation((options: any) => ({
       fullStream: (async function* () {
@@ -430,7 +496,7 @@ describe('runAgent ask_user handling', () => {
   });
 
   it('binds a formal workflow to its RUN directory and blocks state-changing unauthorized scans without a duplicate plan', async () => {
-    const runDir = '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-1';
+    const runDir = '/public/home/u/trace_flows/rna/03_workspace/runs/run-1';
     let authoritativeRun: any = {
       runId: 'run-1', workflowId: 'wf-rna', workflowName: 'RNA', workflowVersion: 1,
       runDir, workspacePolicy: 'isolated-run-v1', status: 'running', startedAt: 1,
@@ -492,7 +558,7 @@ describe('runAgent ask_user handling', () => {
   });
 
   it('answers a workflow status question once with read-only tools and cannot ask, submit, or update', async () => {
-    const runDir = '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-inspect';
+    const runDir = '/public/home/u/trace_flows/rna/03_workspace/runs/run-inspect';
     const authoritativeRun = {
       runId: 'run-inspect', workflowId: 'wf-rna', workflowName: 'RNA', workflowVersion: 1,
       runDir, workspacePolicy: 'isolated-run-v1', status: 'waiting_jobs', startedAt: 1,
@@ -546,7 +612,7 @@ describe('runAgent ask_user handling', () => {
   });
 
   it('detaches the conversation instead of erroring forever when RUN/run.json is gone on the cluster', async () => {
-    const runDir = '/public/home/u/hpclaw_flows/atac/03_workspace/runs/run-deleted';
+    const runDir = '/public/home/u/trace_flows/atac/03_workspace/runs/run-deleted';
     const clusterRun = vi.fn(async (_sid: string, command: string) => {
       if (command.startsWith(`cat '${runDir}/run.json'`)) {
         throw new Error(`cat: ${runDir}/run.json: No such file or directory`);
@@ -579,7 +645,7 @@ describe('runAgent ask_user handling', () => {
   });
 
   it('keeps a formal workflow in the same request when the model tries to finish early', async () => {
-    const runDir = '/public/home/u/hpclaw_flows/troubleshoot/03_workspace/runs/run-early';
+    const runDir = '/public/home/u/trace_flows/troubleshoot/03_workspace/runs/run-early';
     let authoritativeRun: any = {
       runId: 'run-early', workflowId: 'wf-troubleshoot', workflowName: '排查', workflowVersion: 1,
       runDir, workspacePolicy: 'isolated-run-v1', status: 'running', startedAt: 1,
@@ -826,7 +892,7 @@ describe('runAgent ask_user handling', () => {
         yield { type: 'text-delta', text: '不应继续' };
       })(),
     }));
-    const run = vi.fn().mockResolvedValue('[HPCLAW_PREFLIGHT] OK');
+    const run = vi.fn().mockResolvedValue('[TRACE_PREFLIGHT] OK');
     const submitted: string[][] = [];
     const dones: string[] = [];
     const guard = {
@@ -856,7 +922,7 @@ describe('runAgent ask_user handling', () => {
     );
 
     expect(run).toHaveBeenCalledTimes(1); // only deterministic preflight, never bsub
-    expect(run.mock.calls[0][1]).toContain('[HPCLAW_PREFLIGHT]');
+    expect(run.mock.calls[0][1]).toContain('[TRACE_PREFLIGHT]');
     expect(run.mock.calls[0][2]).toBe(20_000);
     expect(submitted).toEqual([['75598506']]);
     expect(dones[0]).toContain('没有重复提交');
@@ -864,7 +930,7 @@ describe('runAgent ask_user handling', () => {
 });
 
 describe('formal workflow command budget', () => {
-  const runDir = '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-budget';
+  const runDir = '/public/home/u/trace_flows/rna/03_workspace/runs/run-budget';
 
   function setup(rounds: (round: number, options: any) => AsyncGenerator<unknown, void, unknown>) {
     let authoritativeRun: any = {
@@ -1029,7 +1095,7 @@ describe('formal workflow command budget', () => {
 describe('formal workflow environment repair turn (blocked_env at turn start)', () => {
   // v0.4.25 根因回归：run 以 blocked_env 进入本轮时，停止门不得把“仍是 blocked_env”
   // 当结束信号（修复要多轮），只有 Agent 重新断言 blocked_env 或翻回 running 才收尾。
-  const runDir = '/public/home/u/hpclaw_flows/chip/03_workspace/runs/run-repair';
+  const runDir = '/public/home/u/trace_flows/chip/03_workspace/runs/run-repair';
 
   function setup(rounds: (round: number, options: any) => AsyncGenerator<unknown, void, unknown>) {
     let authoritativeRun: any = {
@@ -1127,7 +1193,7 @@ describe('formal workflow environment repair turn (blocked_env at turn start)', 
 describe('waiting_jobs reconcile on turn start (v0.4.30)', () => {
   // 监控器错过作业终态时 run 永远卡在 waiting_jobs（用户问什么都只收到罐头回复）。
   // 每轮对话开始必须先向调度器核实真实状态，全部终态就翻回 running 继续执行。
-  const runDir = '/public/home/u/hpclaw_flows/dap/03_workspace/runs/run-stuck';
+  const runDir = '/public/home/u/trace_flows/dap/03_workspace/runs/run-stuck';
 
   function setup(
     bjobsAnswer: string,
@@ -1219,7 +1285,7 @@ describe('waiting_jobs reconcile on turn start (v0.4.30)', () => {
 describe('failed run recovery turn (v0.4.34)', () => {
   // run 判 failed 后停止门把它当永久终态：用户说「继续」也只收到罐头句。
   // 修复：failed + 存活作业 → 翻回 waiting_jobs；failed + 全终态 → 恢复轮可多轮续跑。
-  const runDir = '/public/home/u/hpclaw_flows/dap/03_workspace/runs/run-failed';
+  const runDir = '/public/home/u/trace_flows/dap/03_workspace/runs/run-failed';
 
   function setup(
     bjobsAnswer: string,
@@ -1371,8 +1437,8 @@ describe('web API tools (search_web_apis / call_web_api)', () => {
     expect(prompt).not.toContain('TASK SIZING');
     expect(prompt).not.toContain('AGENT DISCIPLINE');
     expect(prompt).not.toContain('智能体质量契约');
-    expect(prompt).toContain('TOP PRIORITY');
-    expect(prompt).toContain('THINKING PROTOCOL');
+    expect(prompt).toContain('SAFETY & TRUST');
+    expect(prompt).toContain('INTENT');
     const localZh = buildLocalWorkspacePromptSection('D:\\ws', 'zh-CN');
     expect(localZh).toContain('任务分级');
     expect(localZh).toContain('不要写校验脚本');
@@ -1522,11 +1588,278 @@ describe('web API tools (search_web_apis / call_web_api)', () => {
   });
 });
 
+describe('ported dsh tools (cluster_fs / wheatomics_query / github_mirror_scout)', () => {
+  const toolResults: string[] = [];
+  const cbs = {
+    onText: vi.fn(),
+    onReason: vi.fn(),
+    onToolCall: vi.fn(),
+    onToolResult: (_name: string, result: string) => toolResults.push(result),
+    onStep: vi.fn(),
+    onAsk: vi.fn(),
+    onDone: vi.fn(),
+    onErr: vi.fn(),
+    sig: () => undefined,
+  };
+
+  const makeFakeSftp = (overrides: Record<string, unknown> = {}) => {
+    const state = { written: '' };
+    const sftp = {
+      readdir: (_p: string, cb: any) => cb(null, [
+        { filename: 'sub', longname: 'drwxr-xr-x 2 u g 4096 Jan  1  2025 sub', attrs: { size: 4096, mtime: 0, mode: 0o040755 } },
+        { filename: 'a.txt', longname: '-rw-r--r-- 1 u g 5 Jan  1  2025 a.txt', attrs: { size: 5, mtime: 0, mode: 0o100644 } },
+      ]),
+      stat: vi.fn((_p: string, cb: any) => cb(null, { size: 5, mtime: 0, mode: 0o100644 })),
+      lstat: (_p: string, cb: any) => cb(null, { size: 5, mtime: 0, mode: 0o100644 }),
+      createReadStream: () => Readable.from([Buffer.from('hello')]),
+      createWriteStream: () => new Writable({
+        write(chunk: Buffer, _enc: string, done: () => void) { state.written += chunk.toString(); done(); },
+      }),
+      fastPut: vi.fn((_l: string, _r: string, cb: any) => cb(null)),
+      fastGet: vi.fn((_r: string, _l: string, cb: any) => cb(null)),
+      ...overrides,
+    };
+    return { sftp, state };
+  };
+
+  const clusterCtx = (sftp: any, overrides: Record<string, unknown> = {}) => ({
+    sid: 'session-1',
+    run: vi.fn(async () => ''),
+    getSftp: () => sftp,
+    home: '/home/u',
+    profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+    ...overrides,
+  });
+
+  const runWithTools = async (ctx: any, invoke: (tools: any) => Promise<void>) => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        await invoke(options.tools);
+      })(),
+    }));
+    await runAgent(ctx as any, cbs as any, [{ role: 'user', content: 'x' }]);
+  };
+
+  beforeEach(() => {
+    toolResults.length = 0;
+  });
+
+  it('documents the ported tools in the TOOLS section of the system prompt', () => {
+    const prompt = buildAgentSystemPrompt(normalizeAgentRuntimeConfig({}), false);
+    expect(prompt).toContain('cluster_fs');
+    expect(prompt).toContain('wheatomics_query');
+    expect(prompt).toContain('github_mirror_scout');
+  });
+
+  it('registers the three tools only when a cluster home is present', async () => {
+    const captured: any[] = [];
+    mockStreamText.mockImplementation((options: any) => {
+      captured.push(options.tools);
+      return { fullStream: (async function* () { /* no stream parts */ })() };
+    });
+    const { sftp } = makeFakeSftp();
+    await runAgent(clusterCtx(sftp) as any, cbs as any, [{ role: 'user', content: 'x' }]);
+    // 无 HOME 的调用方（如 QQ bot）：三个移植工具一律不挂。
+    await runAgent(
+      { sid: 'qq-bot', run: vi.fn(), profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'k' } } as any,
+      cbs as any,
+      [{ role: 'user', content: 'x' }],
+    );
+    expect(Object.keys(captured[0])).toEqual(expect.arrayContaining(['cluster_fs', 'wheatomics_query', 'github_mirror_scout']));
+    expect(Object.keys(captured[1])).not.toContain('cluster_fs');
+    expect(Object.keys(captured[1])).not.toContain('wheatomics_query');
+    expect(Object.keys(captured[1])).not.toContain('github_mirror_scout');
+  });
+
+  it('cluster_fs list formats directory entries like the dsh render', async () => {
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp), async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'list', path: '/home/u/data' });
+      expect(result).toContain('/home/u/data (2 entries)');
+      expect(result).toContain('directory');
+      expect(result).toContain('sub');
+      expect(result).toContain('a.txt');
+    });
+  });
+
+  it('cluster_fs read returns file content and flags server-side truncation', async () => {
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp), async (tools) => {
+      const full = await tools.cluster_fs.execute({ action: 'read', path: '/home/u/a.txt' });
+      expect(full).toBe('hello');
+      const capped = await tools.cluster_fs.execute({ action: 'read', path: '/home/u/a.txt', maxBytes: 3 });
+      expect(capped).toContain('hel');
+      expect(capped).toContain('...[truncated by server]');
+    });
+  });
+
+  it('cluster_fs write requires confirmation under state_changes and writes via SFTP once approved', async () => {
+    const { sftp, state } = makeFakeSftp();
+    const confirmCommand = vi.fn(async () => true);
+    const ctx = clusterCtx(sftp, { confirmCommand, runtimeConfig: { confirmationPolicy: 'state_changes' as const } });
+    await runWithTools(ctx, async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'write', path: '/home/u/scripts/step.sh', content: 'echo hi' });
+      expect(result).toBe('wrote 7 bytes to /home/u/scripts/step.sh');
+    });
+    expect(confirmCommand).toHaveBeenCalledWith(
+      'cluster_fs write /home/u/scripts/step.sh',
+      expect.objectContaining({ risk: 'write' }),
+    );
+    expect(state.written).toBe('echo hi');
+  });
+
+  it('cluster_fs write does not prompt under the default dangerous policy but still enforces the home guard', async () => {
+    const { sftp, state } = makeFakeSftp();
+    const confirmCommand = vi.fn(async () => true);
+    await runWithTools(clusterCtx(sftp, { confirmCommand }), async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'write', path: '/home/u/ok.txt', content: 'x' });
+      expect(result).toBe('wrote 1 bytes to /home/u/ok.txt');
+      const escaped = await tools.cluster_fs.execute({ action: 'write', path: '/etc/evil.sh', content: 'x' });
+      expect(escaped).toContain('cluster_fs write failed');
+      expect(escaped).toContain('outside the authorized root');
+      const escapedRead = await tools.cluster_fs.execute({ action: 'read', path: '/etc/passwd' });
+      expect(escapedRead).toContain('outside the authorized root');
+    });
+    // 默认 dangerous 策略：write 级操作与 run_command 一致，不额外打扰用户。
+    expect(confirmCommand).not.toHaveBeenCalled();
+    expect(state.written).toBe('x');
+  });
+
+  it('cluster_fs write stops without executing when confirmation is rejected', async () => {
+    const { sftp, state } = makeFakeSftp();
+    const confirmCommand = vi.fn(async () => false);
+    const ctx = clusterCtx(sftp, { confirmCommand, runtimeConfig: { confirmationPolicy: 'every_command' as const } });
+    await runWithTools(ctx, async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'write', path: '/home/u/a.txt', content: 'nope' });
+      expect(result).toContain('not authorized');
+    });
+    expect(state.written).toBe('');
+  });
+
+  it('cluster_fs reports sftp_not_ready honestly instead of retrying', async () => {
+    const ctx = clusterCtx(null, { getSftp: () => { throw new Error('SFTP is not ready'); } });
+    await runWithTools(ctx, async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'list', path: '/home/u' });
+      expect(result).toContain('sftp_not_ready');
+    });
+  });
+
+  it('cluster_fs push uploads a workspace file and refuses paths outside the workspaces', async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-fs-')));
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-fs-out-')));
+    try {
+      fs.writeFileSync(path.join(tmp, 'in.txt'), 'LOCAL');
+      fs.writeFileSync(path.join(outside, 'evil.txt'), 'NOPE');
+      const { sftp } = makeFakeSftp();
+      await runWithTools(clusterCtx(sftp, { workspaces: [tmp] }), async (tools) => {
+        const result = await tools.cluster_fs.execute({ action: 'push', path: '/home/u/in.txt', destPath: path.join(tmp, 'in.txt') });
+        expect(result).toContain('pushed');
+        expect(result).toContain('-> /home/u/in.txt (5 bytes)');
+        const escaped = await tools.cluster_fs.execute({ action: 'push', path: '/home/u/evil.txt', destPath: path.join(outside, 'evil.txt') });
+        expect(escaped).toContain('outside the selected workspace');
+      });
+      expect(sftp.fastPut).toHaveBeenCalledTimes(1);
+      expect((sftp.fastPut as any).mock.calls[0][1]).toBe('/home/u/in.txt');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('cluster_fs push explains the missing local workspace instead of guessing a local root', async () => {
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp), async (tools) => {
+      const result = await tools.cluster_fs.execute({ action: 'push', path: '/home/u/in.txt', destPath: 'D:\\nowhere\\in.txt' });
+      expect(result).toContain('no_local_workspace');
+    });
+    expect(sftp.fastPut).not.toHaveBeenCalled();
+  });
+
+  it('cluster_fs pull refuses to overwrite an existing local file unless overwrite=true', async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-fs-')));
+    try {
+      fs.writeFileSync(path.join(tmp, 'out.txt'), 'OLD');
+      const { sftp } = makeFakeSftp();
+      await runWithTools(clusterCtx(sftp, { workspaces: [tmp] }), async (tools) => {
+        const refused = await tools.cluster_fs.execute({ action: 'pull', path: '/home/u/a.txt', destPath: path.join(tmp, 'out.txt') });
+        expect(refused).toContain('already exists');
+        expect(sftp.fastGet).not.toHaveBeenCalled();
+        const pulled = await tools.cluster_fs.execute({ action: 'pull', path: '/home/u/a.txt', destPath: path.join(tmp, 'out.txt'), overwrite: true });
+        expect(pulled).toContain('pulled /home/u/a.txt ->');
+        expect(sftp.fastGet).toHaveBeenCalledTimes(1);
+        const escaped = await tools.cluster_fs.execute({ action: 'pull', path: '/etc/passwd', destPath: path.join(tmp, 'p.txt'), overwrite: true });
+        expect(escaped).toContain('outside the authorized root');
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('wheatomics_query runs the bundled CLI with subcommand args and returns stdout', async () => {
+    mockSpawn.mockImplementation(() => makeFakeChild('VRN1 cloned gene record', '', 0));
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp, { skillsDir: appPath('skills') }), async (tools) => {
+      const result = await tools.wheatomics_query.execute({ subcommand: 'known-search', args: ['VRN1'] });
+      expect(result).toContain('VRN1 cloned gene record');
+    });
+    expect(mockSpawn).toHaveBeenCalledWith('python', [
+      expect.stringContaining(path.join('wheatomics-query', 'scripts', 'wheatomics.py')),
+      'known-search',
+      'VRN1',
+    ], expect.anything());
+  });
+
+  it('wheatomics_query surfaces non-zero exits in the dsh render format', async () => {
+    mockSpawn.mockImplementation(() => makeFakeChild('partial', 'boom', 2));
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp, { skillsDir: appPath('skills') }), async (tools) => {
+      const result = await tools.wheatomics_query.execute({ subcommand: 'known-gene', args: ['X'] });
+      expect(result).toContain('wheatomics_query exited with code 2');
+      expect(result).toContain('stderr: boom');
+      expect(result).toContain('stdout: partial');
+    });
+  });
+
+  it('wheatomics_query reports honestly when the bundled script is missing', async () => {
+    const empty = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-noskills-')));
+    try {
+      const { sftp } = makeFakeSftp();
+      const ctx = clusterCtx(sftp, { skillsDir: empty, userSkillsDir: empty, lsfSkillDir: empty });
+      await runWithTools(ctx, async (tools) => {
+        const result = await tools.wheatomics_query.execute({ subcommand: 'health' });
+        expect(result).toContain('不可用');
+        expect(result).toContain('wheatomics.py');
+      });
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('github_mirror_scout always prepends --github and defaults to top 5', async () => {
+    mockSpawn.mockImplementation(() => makeFakeChild('1. https://ghproxy.net 12.3 MB/s', '', 0));
+    const { sftp } = makeFakeSftp();
+    await runWithTools(clusterCtx(sftp, { skillsDir: appPath('skills') }), async (tools) => {
+      const result = await tools.github_mirror_scout.execute({});
+      expect(result).toContain('ghproxy.net');
+      await tools.github_mirror_scout.execute({ args: ['--top', '3'] });
+    });
+    expect(mockSpawn).toHaveBeenNthCalledWith(1, 'python', [
+      expect.stringContaining(path.join('github-mirror', 'scripts', 'mirror-scout.py')),
+      '--github', '--top', '5',
+    ], expect.anything());
+    expect(mockSpawn).toHaveBeenNthCalledWith(2, 'python', [
+      expect.stringContaining(path.join('github-mirror', 'scripts', 'mirror-scout.py')),
+      '--github', '--top', '3',
+    ], expect.anything());
+  });
+});
+
 describe('local mode (no cluster session)', () => {
   let tmpWorkspace = '';
 
   beforeEach(() => {
-    tmpWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-agent-local-')));
+    tmpWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-local-')));
   });
 
   afterEach(() => {
@@ -1609,7 +1942,7 @@ describe('local mode (no cluster session)', () => {
   });
 
   it('full access can select another configured root, overwrite files, and clean task outputs without prompting', async () => {
-    const secondWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-agent-local-second-')));
+    const secondWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-agent-local-second-')));
     const confirmCommand = vi.fn();
     fs.writeFileSync(path.join(secondWorkspace, 'result.txt'), 'old');
     fs.writeFileSync(path.join(secondWorkspace, 'cleanup.txt'), 'remove me');
@@ -1702,5 +2035,236 @@ describe('local mode (no cluster session)', () => {
     const en = buildLocalWorkspacePromptSection(undefined, 'en-US');
     expect(en).toContain('(not set)');
     expect(en).toContain('existing files may be overwritten');
+  });
+});
+
+
+describe('plan review gate', () => {
+  const makePlan = (titles: string[]) => ({
+    goal: '测试计划',
+    steps: titles.map((title, index) => ({
+      id: String(index + 1), title, verification: `验证 ${title}`, status: 'pending' as const,
+    })),
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  it('auto policy reviews plans with 3+ steps or job/write-like steps only', () => {
+    expect(planNeedsReview(makePlan(['读目录', '看日志']), 'auto')).toBe(false);
+    expect(planNeedsReview(makePlan(['读目录', '看日志', '汇总']), 'auto')).toBe(true);
+    expect(planNeedsReview(makePlan(['提交 fastqc 作业']), 'auto')).toBe(true);
+    expect(planNeedsReview(makePlan(['写入 step-01.sh 脚本']), 'auto')).toBe(true);
+    expect(planNeedsReview(makePlan(['查看目录']), 'always')).toBe(true);
+  });
+
+  const reviewCtx = (reviewPlan: (plan: any) => Promise<any>, runtimeConfig?: Record<string, unknown>) => ({
+    sid: 'session-1',
+    run: vi.fn(),
+    profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+    reviewPlan,
+    runtimeConfig,
+  });
+  const reviewCbs = (collected: { plans: any[]; dones: string[]; toolResults: string[] }) => ({
+    onText: vi.fn(),
+    onReason: vi.fn(),
+    onToolCall: vi.fn(),
+    onToolResult: (_name: string, result: string) => collected.toolResults.push(result),
+    onStep: vi.fn(),
+    onAsk: vi.fn(),
+    onPlan: (plan: any) => collected.plans.push(plan),
+    onPlanUpdate: vi.fn(),
+    onDone: (text: string) => collected.dones.push(text),
+    onErr: vi.fn(),
+    sig: () => undefined,
+  });
+  const twoRiskySteps = [
+    { title: '生成并提交 bsub 作业', verification: '调度器返回 Job ID' },
+    { title: '核实输出文件', verification: '结果文件存在且非空' },
+  ];
+
+  it('approve continues with the original plan', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({ goal: '质控', steps: twoRiskySteps });
+        expect(created).toContain('经用户批准');
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'done', summary: '已提交 12345' });
+        await options.tools.update_plan_step.execute({ id: '2', status: 'running' });
+        await options.tools.update_plan_step.execute({ id: '2', status: 'done', summary: 'fastqc.html 存在' });
+        yield { type: 'text-delta', text: '已完成。' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async (plan: any) => ({ action: 'approve' as const, reason: 'approved' as const }));
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan) as any, reviewCbs(collected) as any, [{ role: 'user', content: '跑质控' }]);
+    expect(reviewPlan).toHaveBeenCalledTimes(1);
+    expect(reviewPlan.mock.calls[0][0].steps).toHaveLength(2);
+    expect(collected.dones[0]).toContain('已完成');
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+  });
+
+  it('edit replaces the plan steps with the user-edited ones', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({ goal: '质控', steps: twoRiskySteps });
+        expect(created).toContain('修改后批准');
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'done', summary: '只看了一个目录' });
+        yield { type: 'text-delta', text: '按修改后的计划完成。' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async () => ({
+      action: 'edit' as const,
+      reason: 'edited' as const,
+      steps: [{ title: '只查看目录', verification: 'ls 输出可见' }],
+    }));
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan) as any, reviewCbs(collected) as any, [{ role: 'user', content: '跑质控' }]);
+    // 第一次 onPlan 是原始计划，第二次是用户编辑后的计划
+    expect(collected.plans).toHaveLength(2);
+    expect(collected.plans[1].steps).toEqual([
+      expect.objectContaining({ id: '1', title: '只查看目录', verification: 'ls 输出可见' }),
+    ]);
+    expect(collected.dones[0]).toContain('按修改后的计划完成');
+  });
+
+  it('cancel marks the plan cancelled and ends the turn without executing', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({ goal: '质控', steps: twoRiskySteps });
+        expect(created).toContain('已取消');
+        yield { type: 'text-delta', text: '不应继续执行。' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async () => ({ action: 'cancel' as const, reason: 'cancelled' as const }));
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan) as any, reviewCbs(collected) as any, [{ role: 'user', content: '跑质控' }]);
+    expect(collected.plans.at(-1)?.status).toBe('cancelled');
+    expect(collected.dones[0]).toContain('计划已被用户取消');
+    expect(mockStreamText).toHaveBeenCalledTimes(1);
+  });
+
+  it('pauses the turn (without cancelling the plan) when the review is unanswered', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({ goal: '质控', steps: twoRiskySteps });
+        expect(created).toContain('审批未确认');
+        yield { type: 'text-delta', text: 'x' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async () => null); // 超时/断线：不是用户拒绝
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan) as any, reviewCbs(collected) as any, [{ role: 'user', content: '跑质控' }]);
+    expect(collected.plans.at(-1)?.status).not.toBe('cancelled');
+    expect(collected.dones[0]).toContain('审批未确认');
+  });
+
+  it('skips review for small read-only plans under auto, and for formal workflows', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({
+          goal: '看一眼', steps: [{ title: '读取日志', verification: '看到日志末尾' }],
+        });
+        expect(created).toContain('计划已创建');
+        expect(created).not.toContain('批准');
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'done', summary: '日志已读' });
+        yield { type: 'text-delta', text: '看完。' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async () => ({ action: 'approve' as const, reason: 'approved' as const }));
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan, { planReview: 'auto' }) as any, reviewCbs(collected) as any, [{ role: 'user', content: '看日志' }]);
+    expect(reviewPlan).not.toHaveBeenCalled();
+  });
+
+  it('always policy reviews even a single read-only step', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const created = await options.tools.set_plan.execute({
+          goal: '看一眼', steps: [{ title: '读取日志', verification: '看到日志末尾' }],
+        });
+        expect(created).toContain('经用户批准');
+        await options.tools.update_plan_step.execute({ id: '1', status: 'running' });
+        await options.tools.update_plan_step.execute({ id: '1', status: 'done', summary: '日志已读' });
+        yield { type: 'text-delta', text: '看完。' };
+      })(),
+    }));
+    const reviewPlan = vi.fn(async () => ({ action: 'approve' as const, reason: 'approved' as const }));
+    const collected = { plans: [] as any[], dones: [] as string[], toolResults: [] as string[] };
+    await runAgent(reviewCtx(reviewPlan, { planReview: 'always' }) as any, reviewCbs(collected) as any, [{ role: 'user', content: '看日志' }]);
+    expect(reviewPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('documents plan approval in the chat-mode system prompt only', () => {
+    const prompt = buildAgentSystemPrompt(normalizeAgentRuntimeConfig({}), false);
+    expect(prompt).toContain('计划会先交给用户审批');
+    const workflowPrompt = buildAgentSystemPrompt(normalizeAgentRuntimeConfig({}), true);
+    expect(workflowPrompt).not.toContain('计划会先交给用户审批');
+  });
+});
+
+describe('steering injection', () => {
+  const baseCtx = (steer?: { take: () => string[] }) => ({
+    sid: 'session-1',
+    run: vi.fn(),
+    profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'test-key' },
+    steer,
+  });
+
+  it('prepareStep injects queued steer text as the latest user message with a system note', async () => {
+    let consumed = false;
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const step = await options.prepareStep({
+          messages: [{ role: 'user', content: '原始任务' }],
+          stepNumber: 1, steps: [], model: undefined, experimental_context: undefined,
+        });
+        expect(step.messages.at(-2).role).toBe('system');
+        expect(step.messages.at(-2).content).toContain('插话');
+        expect(step.messages.at(-1)).toEqual({ role: 'user', content: '先别 bsub，改看日志' });
+        expect(options.allowSystemInMessages).toBe(true);
+        yield { type: 'text-delta', text: '收到，先看日志。' };
+      })(),
+    }));
+    const onSteer = vi.fn();
+    const steer = { take: () => (consumed ? [] : (consumed = true, ['先别 bsub，改看日志'])) };
+    const onDone = vi.fn();
+    await runAgent(
+      baseCtx(steer) as any,
+      { onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onSteer, onDone, onErr: vi.fn(), sig: () => undefined } as any,
+      [{ role: 'user', content: '原始任务' }],
+    );
+    expect(onSteer).toHaveBeenCalledWith(['先别 bsub，改看日志']);
+    expect(onDone).toHaveBeenCalledWith('收到，先看日志。');
+  });
+
+  it('prepareStep returns undefined when the queue is empty, and is absent without a steer channel', async () => {
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        const step = await options.prepareStep({ messages: [], stepNumber: 0, steps: [], model: undefined, experimental_context: undefined });
+        expect(step).toBeUndefined();
+        yield { type: 'text-delta', text: '正常回复' };
+      })(),
+    }));
+    const onSteer = vi.fn();
+    await runAgent(
+      baseCtx({ take: () => [] }) as any,
+      { onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onSteer, onDone: vi.fn(), onErr: vi.fn(), sig: () => undefined } as any,
+      [{ role: 'user', content: 'x' }],
+    );
+    expect(onSteer).not.toHaveBeenCalled();
+
+    mockStreamText.mockImplementation((options: any) => ({
+      fullStream: (async function* () {
+        expect(options.prepareStep).toBeUndefined();
+        yield { type: 'text-delta', text: '无插话通道' };
+      })(),
+    }));
+    await runAgent(
+      baseCtx() as any,
+      { onText: vi.fn(), onReason: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onStep: vi.fn(), onAsk: vi.fn(), onDone: vi.fn(), onErr: vi.fn(), sig: () => undefined } as any,
+      [{ role: 'user', content: 'x' }],
+    );
   });
 });

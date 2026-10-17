@@ -6,8 +6,8 @@ import path from 'path';
 
 // DATA_ROOT 在模块加载时定型，必须先设环境再动态导入被测模块；
 // 同一文件内共享一个临时目录，逐用例清空存储文件实现隔离。
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-learn-drafts-'));
-process.env.HPCLAW_DATA_ROOT = dir;
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-learn-drafts-'));
+process.env.TRACE_DATA_ROOT = dir;
 const storePromise = import('./learnDraftStore');
 let store: typeof import('./learnDraftStore');
 

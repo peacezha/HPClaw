@@ -1,6 +1,6 @@
 import { LogOut, Bot, FolderOpen, TerminalSquare, Sun, Moon, Activity, MessageCircle, RefreshCw } from 'lucide-react';
 import { LanguageToggle } from '../i18n';
-import { HPCLAW_DISPLAY_NAME, IS_COMPETITION_EDITION } from '../edition';
+import { TRACE_DISPLAY_NAME, IS_COMPETITION_EDITION } from '../edition';
 
 interface HeaderProps {
   username: string;
@@ -35,7 +35,7 @@ export default function Header({
           <TerminalSquare className="w-4.5 h-4.5 text-accent" />
         </div>
         <div className="min-w-0">
-          <h1 className="font-semibold text-scholar-50 text-sm font-sans tracking-wide leading-tight">{HPCLAW_DISPLAY_NAME}</h1>
+          <h1 className="font-semibold text-scholar-50 text-sm font-sans tracking-wide leading-tight">{TRACE_DISPLAY_NAME}</h1>
           {IS_COMPETITION_EDITION && (
             <span className="inline-flex mt-0.5 rounded bg-accent/15 px-1.5 py-0.5 text-[9px] font-medium text-accent">轻量竞赛版</span>
           )}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UserQuestionAnswer, UserQuestionOption } from '@/shared/aiQuestions';
 import { ensureUserChoiceOptions } from '@/shared/askOptions';
+import { normalizeQuestionAnswer } from '@/shared/questionIntent';
 
 export interface PendingUserQuestion {
   key: string; id?: string; question: string; options: UserQuestionOption[]; multiSelect: boolean; expiresAt?: number;
@@ -32,6 +33,7 @@ export function useUserQuestions(opts: { english: boolean; onAnswered: (text: st
     refresh();
   };
   const reply = useCallback(async (answer: UserQuestionAnswer | null): Promise<void> => {
+    if (answer) answer = normalizeQuestionAnswer(answer);
     const pending = queue.current.values().next().value;
     if (!pending || sending.current.has(pending.key)) return;
     const epoch = generation.current;
@@ -48,7 +50,7 @@ export function useUserQuestions(opts: { english: boolean; onAnswered: (text: st
         return;
       }
       const response = await fetch('/api/ai/question', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: pending.id, ...(answer ? { answer } : { cancelled: true }) }), signal: AbortSignal.timeout(30_000) });
+        body: JSON.stringify({ id: pending.id, ...(answer ? { answer } : { cancelled: true }) }), signal: AbortSignal.timeout(10_000) });
       const receipt = await response.json();
       if (epoch !== generation.current) return;
       if (!response.ok || receipt.success !== true) {
@@ -61,7 +63,7 @@ export function useUserQuestions(opts: { english: boolean; onAnswered: (text: st
       }
       remove(pending.key);
       if (answer) recordAnswer(pending.key, text);
-      setNotice(answer ? 'answered' : 'cancelled');
+      setNotice(answer ? answer.intent === 'clarification' ? 'clarification' : 'answered' : 'cancelled');
     } catch {
       if (epoch === generation.current && queue.current.has(pending.key)) setError('delivery_unverified');
     } finally { if (epoch === generation.current) { sending.current.delete(pending.key); refresh(); } }
@@ -102,11 +104,13 @@ export function useUserQuestions(opts: { english: boolean; onAnswered: (text: st
   const notices: Record<string, string> = opts.english ? {
     settled: 'This question is no longer pending. No new task was submitted.',
     answered: 'Answer delivered. The agent will continue the existing task.',
+    clarification: 'Explanation requested. No option was selected and no execution was authorized.',
     cancelled: 'Question cancelled; no cluster job was terminated.',
     ended: 'The question expired or was cancelled; this was not a user rejection. No cluster job was terminated.',
   } : {
     settled: '该问题已回答、过期或取消；没有重新提交任务。',
     answered: '回答已送达，Agent 将继续原任务。',
+    clarification: '已要求 Agent 解释方案；未替你选择，也未授权执行。',
     cancelled: '已取消本次问答，未终止任何集群作业。',
     ended: '问答已过期或取消，不代表你拒绝了操作；未终止任何集群作业。',
   };

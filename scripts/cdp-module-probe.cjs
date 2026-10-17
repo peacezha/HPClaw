@@ -1,11 +1,11 @@
-// Read-only probe of the module system through the currently connected HPClaw terminal.
+// Read-only probe of the module system through the currently connected TRACE terminal.
 const http = require('http');
 const port = process.argv[2] || '9226';
 const command = process.argv.slice(3).join(' ') ||
-  `printf '\n__HPCLAW_MODULE_PROBE_BEGIN__\n'; type module 2>&1; ` +
+  `printf '\n__TRACE_MODULE_PROBE_BEGIN__\n'; type module 2>&1; ` +
   `printf '%s\n' '__FASTQC_AVAIL__'; module -t avail FastQC 2>&1 | head -20; ` +
   `printf '%s\n' '__FASTQC_SPIDER__'; module spider FastQC 2>&1 | head -20; ` +
-  `printf '%s\n' '__HPCLAW_MODULE_PROBE_END__'`;
+  `printf '%s\n' '__TRACE_MODULE_PROBE_END__'`;
 
 function getJson(path) {
   return new Promise((resolve, reject) => {
@@ -22,7 +22,7 @@ function getJson(path) {
 (async () => {
   const targets = await getJson('/json');
   const target = targets.find(item => item.type === 'page' && !item.url.startsWith('devtools'));
-  if (!target) throw new Error('没有找到 HPClaw 页面');
+  if (!target) throw new Error('没有找到 TRACE 页面');
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();

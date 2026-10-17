@@ -85,9 +85,9 @@ describe('chat flow helpers', () => {
     let messages = upsertAgentPlanCheckpoint([{ role: 'user', content: '开始分析' }], first);
     messages = upsertAgentPlanCheckpoint(messages, updated);
 
-    expect(messages.filter(message => message.content.startsWith('[HPCLAW_AGENT_PLAN]')).length).toBe(1);
+    expect(messages.filter(message => message.content.startsWith('[TRACE_AGENT_PLAN]')).length).toBe(1);
     expect(findLatestAgentPlanCheckpoint(messages)).toEqual(updated);
-    expect(prepareMessagesForAiTransport(messages).some(message => message.content.includes('HPCLAW_AGENT_PLAN'))).toBe(false);
+    expect(prepareMessagesForAiTransport(messages).some(message => message.content.includes('TRACE_AGENT_PLAN'))).toBe(false);
     expect(upsertAgentPlanCheckpoint(messages, null)).toEqual([{ role: 'user', content: '开始分析' }]);
   });
 });

@@ -12,9 +12,11 @@ import type { Context } from '@deepseek-ai/cordis';
 import { Config } from './config.ts';
 import { name } from './state.ts';
 export { Config, name };
+/** Services required by workspace instruction projection. */
+export declare const inject: string[];
 export { discoverBaselineInstructionFiles, loadBaselineInstructions, } from './files.ts';
 export type { InstructionFile, LoadedInstructionFile, } from './files.ts';
-export { renderWorkspaceContext } from './render.ts';
-export type { RenderedWorkspaceContext, TruncatedInstruction } from './render.ts';
+export { renderAgentInstructions } from './render.ts';
+export type { RenderedAgentInstructions, TruncatedInstruction } from './render.ts';
 export declare function apply(ctx: Context, config: Config): void;
 //# sourceMappingURL=index.d.ts.map

@@ -4,12 +4,26 @@
  *
  * @module @deepseek-ai/dsh-agent-loop
  */
+import type { Volatile } from '@deepseek-ai/cosmokit';
 import { Context, Service } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-import type { Agent, AgentFactory, AgentHandle, AgentOptions, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent';
-import { SessionId } from '@deepseek-ai/dsh-session';
-import type { SessionHeader } from '@deepseek-ai/dsh-session';
+import { z as zod } from 'zod';
+import type { Agent, AgentFactory, AgentHandle, AgentOptions, CreateAgentOptions, ResumeAgentOptions, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent';
+import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session';
 import { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from './constants.ts';
+/** Host projection of agent turn and step boundaries. */
+export declare const turnBoundaryProjectionDefinition: {
+    key: "turnBoundary";
+    stateVersion: number;
+    stateSchema: zod.ZodType<TurnBoundaryProjection, unknown, zod.core.$ZodTypeInternals<TurnBoundaryProjection, unknown>>;
+    init: () => {
+        openTurnStartSeq: null;
+        lastStepStartSeq: null;
+        lastStepBoundary: null;
+        lastTurn: number;
+    };
+    apply: (state: NoInfer<TurnBoundaryProjection>, event: import("@deepseek-ai/dsh-session").SessionEvent) => TurnBoundaryProjection;
+};
 declare module '@deepseek-ai/cordis' {
     interface Context {
         agentLoop: AgentLoop;
@@ -62,26 +76,13 @@ export interface ConfiguredAgentIdentities extends Readonly<Record<string, Launc
  * repointing the row's model route cannot drop them.
  */
 export declare const CONFIGURED_AGENT_IDENTITIES_KEY = "configuredAgentIdentities";
-/** Settings namespace carrying the tool-call parallelism a user owns. */
-export declare const AGENT_LOOP_SETTINGS_NAMESPACE: import("@deepseek-ai/dsh-settings").SettingsNamespace;
-/**
- * The agent-loop fields a user owns. Deliberately a strict subset of
- * {@link Config}: `agents` is a boot-time composition array consumed once when
- * the service starts, so a stored change could only look like it had an effect.
- */
-export interface AgentLoopSettings {
-    /** Maximum parallel-safe calls in flight per agent step. */
-    maxParallelToolCalls: number;
-}
-/** Schema of the agent-loop settings section. */
-export declare const AGENT_LOOP_SETTINGS_SCHEMA: z<AgentLoopSettings>;
 /** Agent-loop plugin configuration. */
 export interface Config {
     /**
      * Maximum parallel-safe calls in flight per agent step. `1` is serial;
      * omission defaults to {@link DEFAULT_MAX_PARALLEL_TOOL_CALLS}.
      */
-    maxParallelToolCalls?: number;
+    maxParallelToolCalls: Volatile<number>;
     /** Agents created or resumed at plugin startup. */
     agents: (AgentOptions & {
         /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -94,17 +95,16 @@ export interface Config {
         resumeSessionId?: SessionId;
     })[];
 }
-/** Agent-loop configuration after defaults and load-time validation. */
-type ResolvedConfig = Config & {
-    maxParallelToolCalls: number;
-};
 /** Concrete agent factory and driver service. */
 export declare class AgentLoop extends Service implements AgentFactory {
     static inject: string[];
     /** Runtime schema for declarative agents. */
-    static Config: z<Config>;
+    static Config: z<{
+        agents?: Config['agents'];
+        maxParallelToolCalls?: number;
+    }, Config>;
     /** Validated configuration owned by the agent-loop service. */
-    readonly config: ResolvedConfig;
+    readonly config: Config;
     private readonly ownership;
     /** Plain holder prevents Cordis from re-tracing the factory's dependency context through a caller shadow. */
     private readonly runtime;
@@ -125,26 +125,50 @@ export declare class AgentLoop extends Service implements AgentFactory {
     /**
      * Create an agent and session under one caller-supplied identity, owned by
      * the accessing fiber. Constructor-driven config calls mint a fresh combined
-     * id before entering this boundary.
+     * id before entering this boundary. When a persistence backend is mounted,
+     * the session's durable identity and any seed are stored before publication.
      * @param id - shared agent/session identity.
      * @param options - concrete loop options.
      * @param meta - optional fresh-session workspace metadata.
      * @returns the published running agent.
      */
-    create(id: SessionId, options?: AgentOptions, meta?: Pick<SessionHeader, 'cwd'>): Agent;
+    create(id: SessionId, options?: AgentOptions, meta?: Pick<SessionHeader, 'cwd'>): Promise<Agent>;
+    /**
+     * Take a fresh session's write ownership when persistence is mounted.
+     * Nothing is appended here: the constructor seed (which never re-emits
+     * through `session/event`) is stored by `appendUnstoredSuffix` at the
+     * publication commit point, so a failed or cancelled validation or setup
+     * closes an unmaterialized handle and leaves no stored residue — the same
+     * id can be created again.
+     * @param session - the unpublished session to store.
+     * @param signal - optional cancellation forwarded to the backend create.
+     * @returns the owned handle and stored cursor, or `undefined` without a backend.
+     */
+    private createStoredSession;
+    /**
+     * Durably store the session events appended since the last stored cursor.
+     * Pre-publication appends (constructor seed markers, setup-window events
+     * such as delegation policy records) never re-emit through `session/event`,
+     * so publication must flush them through the handle before live events
+     * start routing into it.
+     * @param stored - the session's owned handle and stored cursor, if any.
+     * @param session - the unpublished session whose suffix is stored.
+     */
+    private appendUnstoredSuffix;
     /**
      * Create an owned agent on a caller-supplied session id.
      * @param ownerCtx - caller context that structurally owns the lifecycle.
-     * @param options - identities, session seed/metadata, loop options, setup, and cancellation.
+     * @param options - identities, optional live parent, session seed/metadata, loop options, setup, and cancellation.
      * @returns the published handle.
      */
     createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle>;
     /** Prepare one Agent around an acquired Session, run setup, and publish it. */
     private setupAndPublish;
+    private initializeAgent;
     /**
      * Resume an owned agent from the configured persistence service.
      * @param ownerCtx - caller context that owns load, setup, and the live lifecycle.
-     * @param options - persisted identity, loop options, setup, and cancellation.
+     * @param options - persisted identity, optional live parent, loop options, setup, and cancellation.
      * @returns the published handle.
      */
     resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>;

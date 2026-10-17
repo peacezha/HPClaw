@@ -100,8 +100,8 @@ async function post(base: string, urlPath: string, body: unknown, token: string 
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { 'X-HPClaw-Bridge': token } : {}),
-      'X-HPClaw-Dsh-Session': DSH_SESSION,
+      ...(token ? { 'X-TRACE-Bridge': token } : {}),
+      'X-TRACE-Dsh-Session': DSH_SESSION,
     },
     body: JSON.stringify(body),
   });
@@ -109,6 +109,25 @@ async function post(base: string, urlPath: string, body: unknown, token: string 
 }
 
 describe('bridgeRoutes fs endpoints', () => {
+  it('blocks write and transfers during clarification even if confirmed, while retaining read access', async () => {
+    const service = makeService(), sftp = makeSftp();
+    const deps = makeDeps({ createSftpService: () => service, getSession: () => makeSession({ sftp }) });
+    const binding = deps.getDshSessionBinding(DSH_SESSION)!;
+    deps.getDshSessionBinding = () => ({ ...binding, readOnly: true });
+    const base = await startApp(deps);
+    for (const [action, body] of [
+      ['write', { path: REMOTE, content: 'do not write' }],
+      ['push', { remotePath: REMOTE, localPath: 'fixture.txt' }],
+      ['pull', { remotePath: REMOTE, localPath: 'fixture.txt' }],
+    ] as const) {
+      const result = await post(base, '/api/bridge/fs/' + action, { ...body, confirmed: true });
+      expect(result).toEqual({ status: 409, body: { error: 'clarification_read_only' } });
+    }
+    expect(service.writeFile).not.toHaveBeenCalled();
+    expect(sftp.fastGet).not.toHaveBeenCalled(); expect(sftp.fastPut).not.toHaveBeenCalled();
+    expect((await post(base, '/api/bridge/fs/read', { path: REMOTE })).status).toBe(200);
+  });
+
   it('rejects requests without the bridge token with 403', async () => {
     const base = await startApp(makeDeps());
     const res = await post(base, '/api/bridge/fs/list', { path: '/home/u' }, null);

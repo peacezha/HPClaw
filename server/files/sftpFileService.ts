@@ -175,7 +175,7 @@ export class SftpFileService {
     const safePath = assertSafeRemoteMutation(remotePath, this.home);
     if (!this.exec) throw new Error('touch requires the authenticated remote command channel');
     await this.exec(
-      `sh -c 'if [ -e "$1" ]; then echo "already exists: $1" >&2; exit 17; fi; touch -- "$1"' hpclaw ${shellQuote(safePath)}`,
+      `sh -c 'if [ -e "$1" ]; then echo "already exists: $1" >&2; exit 17; fi; touch -- "$1"' trace ${shellQuote(safePath)}`,
       15_000,
     );
   }
@@ -334,7 +334,7 @@ export class SftpFileService {
 
   private async removeRecursively(remotePath: string): Promise<number> {
     if (!this.exec) throw new Error('recursive removal requires the authenticated remote command channel');
-    const command = `sh -c 'find -P -- "$1" -depth -delete -printf .' hpclaw ${shellQuote(remotePath)}`;
+    const command = `sh -c 'find -P -- "$1" -depth -delete -printf .' trace ${shellQuote(remotePath)}`;
     const output = await this.exec(command, 30_000);
     let count = 0;
     for (let i = 0; i < output.length; i++) {

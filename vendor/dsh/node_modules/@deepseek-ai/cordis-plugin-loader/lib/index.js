@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { Context, Inject, Service, composeError } from "@deepseek-ai/cordis";
-import { deepEqual, defineProperty, isNonNullable, isNullable, valueMap } from "@deepseek-ai/cosmokit";
+import { Context, Inject, Service, composeError, resolveConfig } from "@deepseek-ai/cordis";
+import { deepEqual, defineProperty, isNonNullable, isNullable, updateVolatile, valueMap, volatileEntries } from "@deepseek-ai/cosmokit";
 //#region lib/types/internal.js
 /** Helpers for locating the current Node internal module loader. */
 var ModuleLoader;
@@ -15,16 +15,26 @@ var ModuleLoader;
 			return require("node-addon-require-builtin").requireBuiltin(id);
 		} catch {}
 	}
+	/**
+	* Locate and classify the running Node internal module loader.
+	*
+	* The shape is decided by which module-job API the loader owns, never by the
+	* Node version: v2 landed in 24.12.0, so a major-version test mistags every
+	* 24.0–24.11.1 loader as v2 and makes consumers call `resolveSync` with
+	* reversed parameters. Arity is not usable either — `resolveSync` reports 2
+	* under both shapes. A loader owning neither API is left unclassified rather
+	* than guessed, so consumers take their documented no-internals path.
+	* @returns the classified loader, or `undefined` when none is reachable or its shape is unknown.
+	*/
 	function fromInternal() {
 		if (_cachedLoader) return _cachedLoader;
 		const [major] = process.versions.node.split(".").map(Number);
-		if (major >= 24) {
-			const raw = requireInternal("internal/modules/esm/loader")?.getOrInitializeCascadedLoader();
-			if (raw) return _cachedLoader = Object.assign(raw, { version: "v2" });
-		} else if (major >= 22) {
-			const raw = requireInternal("internal/modules/esm/loader")?.getOrInitializeCascadedLoader();
-			if (raw) return _cachedLoader = Object.assign(raw, { version: "v1" });
-		}
+		if (major < 22) return;
+		const raw = requireInternal("internal/modules/esm/loader")?.getOrInitializeCascadedLoader();
+		if (!raw) return;
+		const version = typeof raw.getOrCreateModuleJob === "function" ? "v2" : typeof raw.getModuleJobForImport === "function" ? "v1" : void 0;
+		if (!version) return;
+		return _cachedLoader = Object.assign(raw, { version });
 	}
 	ModuleLoader.fromInternal = fromInternal;
 })(ModuleLoader || (ModuleLoader = {}));
@@ -47,17 +57,9 @@ var EntryGroup = class {
 	}
 	async create(options) {
 		const id = this.tree.ensureId(options);
-		const existing = this.tree.store[id];
-		const entry = existing ?? (this.tree.store[id] = new Entry(this.ctx.loader));
-		const previousParent = entry.parent;
+		const entry = this.tree.store[id] ??= new Entry(this.ctx.loader);
 		entry.parent = this;
-		try {
-			await entry.update(options, true, true);
-		} catch (error) {
-			if (existing) entry.parent = previousParent;
-			else delete this.tree.store[id];
-			throw error;
-		}
+		await entry.update(options, true, true);
 		return entry.id;
 	}
 	unlink(options) {
@@ -65,54 +67,32 @@ var EntryGroup = class {
 		const index = config.indexOf(options);
 		if (index >= 0) config.splice(index, 1);
 	}
-	async remove(id, isDispose = false) {
+	remove(id, isDispose = false) {
 		const entry = this.tree.store[id];
 		if (!entry) return;
-		await entry._dispose();
+		entry.fiber?.dispose();
 		if (!isDispose) this.unlink(entry.options);
 		delete this.tree.store[id];
 		this.context.emit("loader/partial-dispose", entry, entry.options, false);
 	}
 	async update(config) {
 		const oldConfig = this.data;
-		const seen = /* @__PURE__ */ new Set();
-		for (const options of config) {
-			const id = this.tree.ensureId(options);
-			if (seen.has(id)) throw new TypeError(`duplicate loader entry id: ${id}`);
-			seen.add(id);
-		}
+		this.data = config;
 		const oldMap = Object.fromEntries(oldConfig.map((options) => [options.id, options]));
-		const newMap = Object.fromEntries(config.map((options) => [options.id, options]));
-		try {
-			const outcomes = await Promise.allSettled(config.map((options) => this.create(options)));
-			if (this.ctx.fiber.uid === null) return;
-			const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
-			if (failures.length === 1) throw failures[0];
-			if (failures.length > 1) throw new AggregateError(failures, "loader entries failed to apply");
-			for (const id of Object.keys(oldMap)) if (!newMap[id]) await this.remove(id, true);
-			this.data = config;
-		} catch (error) {
-			const rollbackErrors = [];
-			for (const id of Object.keys(newMap).reverse()) {
-				if (oldMap[id]) continue;
-				try {
-					await this.remove(id, true);
-				} catch (rollbackError) {
-					rollbackErrors.push(rollbackError);
-				}
-			}
-			for (const options of oldConfig) try {
-				await this.create(options);
-			} catch (rollbackError) {
-				rollbackErrors.push(rollbackError);
-			}
-			this.data = oldConfig;
-			if (rollbackErrors.length) throw new AggregateError([error, ...rollbackErrors], "loader entry rollback failed");
-			throw error;
-		}
+		const newMap = Object.fromEntries(config.map((options) => [options.id ?? Symbol("anonymous"), options]));
+		const ids = Reflect.ownKeys({
+			...oldMap,
+			...newMap
+		});
+		await Promise.all(ids.map(async (id) => {
+			if (newMap[id]) await this.create(newMap[id]).catch((error) => {
+				this.ctx.logger.error(error);
+			});
+			else this.remove(id);
+		}));
 	}
-	async stop() {
-		for (const options of this.data) await this.remove(options.id, true);
+	stop() {
+		for (const options of this.data) this.remove(options.id, true);
 	}
 };
 /** Plugin that mounts a nested loader entry group. */
@@ -125,7 +105,9 @@ var Group = class extends EntryGroup {
 		super(ctx, ctx.fiber.entry.parent.tree);
 		this.ctx = ctx;
 		this.config = config;
-		ctx.on("internal/update", (config) => this.update(config));
+		ctx.on("internal/update", (config) => {
+			this.update(config);
+		});
 	}
 	async *[Service.init]() {
 		yield () => this.stop();
@@ -168,22 +150,12 @@ var EntryTree = class EntryTree {
 	getTasks() {
 		return [...this.entries()].map((entry) => entry._initTask || entry.fiber?.inertia).filter(isNonNullable);
 	}
-	/**
-	* Wait until this tree has no active import or lifecycle tasks.
-	* @throws a settled fiber failure, or an aggregate when several fibers failed.
-	*/
+	/** Wait until this tree has no pending import or lifecycle tasks. */
 	async await() {
 		while (true) {
 			const tasks = this.getTasks();
-			if (tasks.length) {
-				await Promise.allSettled(tasks);
-				continue;
-			}
-			const failures = (await Promise.allSettled([...this.entries()].map((entry) => entry._await()))).filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
-			if (failures.length === 1) throw failures[0];
-			if (failures.length > 1) throw new AggregateError(failures, "loader fibers failed");
-			this.ctx.reflect.notify(["loader"]);
-			if (!this.getTasks().length) return;
+			if (!tasks.length) return;
+			await Promise.allSettled(tasks);
 		}
 	}
 	ensureId(options) {
@@ -214,47 +186,29 @@ var EntryTree = class EntryTree {
 	/** Create an entry in the root group or a nested group. */
 	async create(options, parent = null, position = Infinity) {
 		const group = this.resolveGroup(parent);
-		const id = await group.create(options);
-		const entry = this.resolve(id);
-		group.data.splice(position, 0, entry.options);
+		group.data.splice(position, 0, options);
 		group.tree.write();
-		return id;
+		return group.create(options);
 	}
 	/** Stop and remove an entry from its parent group. */
-	async remove(id) {
+	remove(id) {
 		const entry = this.resolve(id);
-		await entry.parent.remove(id);
+		entry.parent.remove(id);
 		entry.parent.tree.write();
 	}
 	/** Update an entry and optionally move it to another group. */
 	async update(id, options, parent, position) {
 		const entry = this.resolve(id);
 		const source = entry.parent;
-		const sourceIndex = source.data.indexOf(entry.options);
-		let target = source;
 		if (parent !== void 0) {
-			target = this.resolveGroup(parent);
+			const target = this.resolveGroup(parent);
 			source.unlink(entry.options);
 			target.data.splice(position ?? Infinity, 0, entry.options);
+			target.tree.write();
 			entry.parent = target;
 		}
-		try {
-			await entry.update(options, false, true);
-		} catch (error) {
-			if (parent !== void 0) {
-				target.unlink(entry.options);
-				source.data.splice(sourceIndex < 0 ? source.data.length : sourceIndex, 0, entry.options);
-				entry.parent = source;
-				try {
-					await entry.update({}, false, true);
-				} catch (rollbackError) {
-					throw new AggregateError([error, rollbackError], `failed to roll back loader entry move ${id}`);
-				}
-			}
-			throw error;
-		}
 		source.tree.write();
-		if (target !== source) target.tree.write();
+		return entry.update(options, false, true);
 	}
 	/** Import a plugin module from a specifier or `cordis:` builtin. */
 	import(name, getOuterStack) {
@@ -281,7 +235,7 @@ const evaluate = new Function("ctx", "expr", `
     return eval(expr)
   }
 `);
-/** Recursively replace YAML `!js` expression nodes with evaluated values. */
+/** Recursively replace YAML `!!js` expression nodes with evaluated values. */
 function interpolate(ctx, value) {
 	if (isJsExpr(value)) return evaluate(ctx, value.__jsExpr);
 	else if (!value || typeof value !== "object") return value;
@@ -293,11 +247,46 @@ function isJsExpr(value) {
 	return value instanceof Object && "__jsExpr" in value;
 }
 //#endregion
-//#region lib/types/config/entry.js
-function updateError(stage, options, cause) {
-	const detail = cause instanceof Error ? cause.message : String(cause);
-	return new Error(`failed to ${stage} loader entry ${options.id} (${options.name}): ${detail}`, { cause });
+//#region lib/types/config/diff.js
+function isSchemastery(schema) {
+	return schema?.["~standard"].vendor === "schemastery";
 }
+function isRecord(value) {
+	if (!value || typeof value !== "object" || isJsExpr(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+function equal(a, b, schema, ancestors) {
+	if (schema?.meta?.volatile) return true;
+	if (schema?.type !== "object" || !schema.dict || ancestors.has(schema)) return deepEqual(a, b, true);
+	const left = a ?? schema.meta?.default;
+	const right = b ?? schema.meta?.default;
+	if (!isRecord(left) || !isRecord(right)) return deepEqual(left, right, true);
+	const { dict } = schema;
+	ancestors.add(schema);
+	try {
+		return Object.keys({
+			...left,
+			...right
+		}).every((key) => equal(left[key], right[key], Object.hasOwn(dict, key) ? dict[key] : void 0, ancestors));
+	} finally {
+		ancestors.delete(schema);
+	}
+}
+/**
+* Compare two raw configs, treating schema-declared volatile fields at fixed object paths as equal and absent objects as their schema default.
+* Schema backedges, expressions, unknown fields and opaque values keep strict raw equality; an absent or non-Schemastery schema compares everything raw.
+* @param previous - previous raw config.
+* @param next - next raw config.
+* @param schema - the plugin's config schema.
+* @returns Whether the configs differ at most in volatile fields, without evaluating expressions, validating config or modifying inputs.
+* @internal
+*/
+function equalExceptVolatile(previous, next, schema) {
+	return isSchemastery(schema) ? equal(previous, next, schema, /* @__PURE__ */ new Set()) : deepEqual(previous, next, true);
+}
+//#endregion
+//#region lib/types/config/entry.js
 function takeEntries(object, keys) {
 	const result = [];
 	for (const key of keys) {
@@ -317,22 +306,19 @@ function sortKeys(object, prepend = ["id", "name"], append = ["config"]) {
 		...part2
 	]));
 }
-function replaceKeys(target, source) {
-	for (const key of Object.keys(target)) Reflect.deleteProperty(target, key);
-	return Object.assign(target, source);
-}
 /** One configured plugin node inside an `EntryTree`. */
 var Entry = class Entry {
 	loader;
 	static key = Symbol.for("cordis.entry");
 	ctx;
 	fiber;
+	/** Raw import result before export normalization; HMR updates it after a successful reload. */
+	moduleNamespace;
 	parent;
 	options = {};
 	subgroup;
 	subtree;
 	_initTask;
-	_disposing = 0;
 	constructor(loader) {
 		this.loader = loader;
 		this.ctx = loader.ctx.extend({ [Entry.key]: this });
@@ -348,16 +334,12 @@ var Entry = class Entry {
 	}
 	/** True when this entry or any owning parent entry is disabled. */
 	get disabled() {
-		return this._disabled(this.options);
-	}
-	_disabled(options) {
-		if (options.group) return false;
-		if (this.disabledOf(options)) return true;
-		let entry = this.parent.ctx.fiber.entry;
-		while (entry) {
+		if (this.options.group) return false;
+		let entry = this;
+		do {
 			if (this.disabledOf(entry.options)) return true;
 			entry = entry.parent.ctx.fiber.entry;
-		}
+		} while (entry);
 		return false;
 	}
 	/**
@@ -370,10 +352,10 @@ var Entry = class Entry {
 	evaluate(expr) {
 		return evaluate(this.ctx, expr);
 	}
-	async _patchContext(diff) {
-		await this.context.waterfall("loader/patch-context", this, async () => {
+	_patchContext(diff) {
+		this.context.waterfall("loader/patch-context", this, () => {
 			Object.setPrototypeOf(this.ctx, this.parent.ctx);
-			if (this.fiber?.uid && (diff.includes("config") || this.options.group)) await this.fiber.update(this.options.config, true);
+			if (this.fiber?.uid && (diff.includes("config") || this.options.group)) this.fiber.update(this.options.config, true);
 		});
 	}
 	async refresh() {
@@ -381,104 +363,67 @@ var Entry = class Entry {
 		if (this.disabled) return;
 		await this.init();
 	}
-	async _dispose(fiber = this.fiber) {
-		if (!fiber) return;
-		if (this.fiber === fiber) this.fiber = void 0;
-		this._disposing += 1;
-		try {
-			await fiber.dispose();
-		} finally {
-			this._disposing -= 1;
-		}
-	}
 	/** Merge new options, restart as needed, and persist through the parent tree. */
 	async update(options, create = false, force = false) {
-		const previousOptions = this.options;
-		const legacy = { ...previousOptions };
-		const candidate = create ? options : { ...previousOptions };
-		if (!create) for (const [key, value] of Object.entries(options)) if (isNullable(value)) delete candidate[key];
-		else candidate[key] = value;
-		sortKeys(candidate);
-		const diff = Object.keys({
-			...candidate,
-			...legacy
-		}).filter((key) => !deepEqual(candidate[key], legacy[key]));
-		if (!diff.length && !force) return;
-		const commit = () => {
-			if (create) return;
-			this.options = replaceKeys(previousOptions, candidate);
-		};
-		const previous = this.fiber;
-		if (!previous?.uid) {
-			this.fiber = void 0;
-			this.options = candidate;
-			try {
-				if (!this._disabled(candidate)) await this.init();
-			} catch (error) {
-				this.options = previousOptions;
-				throw error;
-			}
-			commit();
+		const legacy = { ...this.options };
+		if (create) this.options = options;
+		else for (const [key, value] of Object.entries(options)) if (isNullable(value)) delete this.options[key];
+		else this.options[key] = value;
+		sortKeys(this.options);
+		if (this.disabled) {
+			this.fiber?.dispose();
 			return;
 		}
-		if (this._disabled(candidate)) {
-			this.options = candidate;
-			try {
-				await this._dispose(previous);
-			} catch (error) {
-				this.options = previousOptions;
-				throw updateError("dispose", candidate, error);
-			}
-			commit();
+		if (this.fiber?.uid) {
+			const changes = Object.keys({
+				...this.options,
+				...legacy
+			}).filter((key) => !deepEqual(this.options[key], legacy[key], key === "config"));
+			const volatileOnly = changes.length === 1 && changes[0] === "config" && this.fiber.state === 2 && Object.getPrototypeOf(this.ctx) === this.parent.ctx && equalExceptVolatile(legacy.config, this.options.config, this.fiber.runtime?.Config);
+			if (volatileOnly) this.fiber._config = this.options.config;
+			const pending = volatileOnly && this._commitVolatile() ? [] : changes;
+			if (!pending.length && !force) return;
 			this.context.emit("loader/partial-dispose", this, legacy, true);
-			return;
-		}
-		if (!diff.some((key) => key === "name" || key === "inject" || key === "group")) {
-			this.options = candidate;
-			try {
-				await this._patchContext(diff);
-			} catch (error) {
-				this.options = previousOptions;
-				try {
-					await this._patchContext(diff);
-				} catch (rollbackError) {
-					throw updateError("rollback", legacy, new AggregateError([error, rollbackError]));
-				}
-				this.context.emit("loader/partial-dispose", this, candidate, true);
-				throw updateError("apply", candidate, error);
-			}
-			commit();
-			this.context.emit("loader/partial-dispose", this, legacy, true);
-			return;
-		}
-		let plugin;
+			this._patchContext(pending);
+		} else await this.init();
+	}
+	/**
+	* Parse a volatile-only raw config change and commit its values into the running fiber's references.
+	* An invalid candidate is logged and leaves the running references unchanged; the raw config stays retained for the next activation.
+	* @returns `false` when an ordinary effective value changed, so the caller applies the ordinary update lifecycle.
+	*/
+	_commitVolatile() {
+		const fiber = this.fiber;
+		const refs = volatileEntries(fiber.config);
+		if (!refs.length) return true;
+		const raw = this.options.config;
+		let candidate;
 		try {
-			plugin = diff.includes("name") ? this.loader.unwrapExports(await this.parent.tree.import(candidate.name, this.getOuterStack)) : previous.runtime.callback;
+			candidate = resolveConfig(fiber.runtime, fiber.ctx.waterfall(fiber, "internal/config", raw, () => raw));
 		} catch (error) {
-			throw updateError("import", candidate, error);
+			this.ctx.logger.warn("volatile config update failed for %C", this.options.id);
+			this.ctx.logger.warn(error);
+			return true;
 		}
-		const previousPlugin = previous.runtime.callback;
-		this.options = candidate;
+		if (!deepEqual(fiber.config, candidate, true)) {
+			this.ctx.logger.debug("ordinary config values of %C changed with its volatile values; applying the ordinary update", this.options.id);
+			return false;
+		}
+		const paths = refs.flatMap(({ path, ref }) => {
+			const source = path.reduce((value, key) => Reflect.get(value, key), candidate);
+			if (deepEqual(ref.get(), source.get(), true)) return [];
+			updateVolatile(ref, source);
+			return [path];
+		});
+		if (!paths.length) return true;
+		const self = Object.create(fiber.ctx);
+		self[Context.filter] = (owner) => owner.fiber === fiber;
 		try {
-			await this._dispose(previous);
+			fiber.ctx.emit(self, "loader/volatile-update", paths);
 		} catch (error) {
-			this.options = previousOptions;
-			throw updateError("dispose", candidate, error);
+			this.ctx.logger.warn(error);
 		}
-		try {
-			await this._start(plugin);
-		} catch (error) {
-			this.options = previousOptions;
-			try {
-				await this._start(previousPlugin);
-			} catch (rollbackError) {
-				throw updateError("rollback", legacy, new AggregateError([error, rollbackError]));
-			}
-			this.context.emit("loader/partial-dispose", this, candidate, true);
-			throw updateError("apply", candidate, error);
-		}
-		commit();
-		this.context.emit("loader/partial-dispose", this, legacy, true);
+		return true;
 	}
 	getOuterStack = () => {
 		let entry = this;
@@ -495,41 +440,28 @@ var Entry = class Entry {
 			await (this._initTask ??= this._init());
 		} finally {
 			this._initTask = void 0;
-			if (!this.loader.getTasks().length) this.ctx.reflect.notify(["loader"]);
 		}
-		await this._await();
-	}
-	async _await() {
-		try {
-			await this.fiber?.await();
-		} catch (error) {
-			throw updateError("apply", this.options, error);
-		}
+		const notify = () => {
+			if (this.loader.getTasks().length) return;
+			this.ctx.reflect.notify(["loader"]);
+		};
+		this.fiber?.await().then(notify, notify);
 	}
 	async _init() {
-		let plugin;
+		let moduleNamespace;
 		try {
-			plugin = this.loader.unwrapExports(await this.parent.tree.import(this.options.name, this.getOuterStack));
+			moduleNamespace = await this.parent.tree.import(this.options.name, this.getOuterStack);
 		} catch (error) {
-			throw updateError("import", this.options, error);
+			this.ctx.logger.error(error);
+			return;
+		} finally {
+			this._initTask = void 0;
 		}
-		try {
-			await this._start(plugin);
-		} catch (error) {
-			throw updateError("apply", this.options, error);
-		}
-	}
-	async _start(plugin) {
-		let fiber;
-		try {
-			await this._patchContext([]);
-			this.loader.showLog(this, "apply");
-			fiber = this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuterStack);
-			await fiber.await();
-		} catch (error) {
-			await this._dispose(fiber);
-			throw error;
-		}
+		const plugin = this.loader.unwrapExports(moduleNamespace);
+		this._patchContext([]);
+		this.loader.showLog(this, "apply");
+		this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuterStack).ctx.fiber;
+		this.moduleNamespace = moduleNamespace;
 	}
 };
 //#endregion
@@ -591,7 +523,7 @@ function isolate(ctx) {
 		entry.ctx[Context.intercept] = Object.create(entry.ctx[Context.intercept]);
 		entry.ctx[Context.isolate] = Object.create(entry.ctx[Context.isolate]);
 	});
-	ctx.on("loader/patch-context", async (entry, next) => {
+	ctx.on("loader/patch-context", (entry, next) => {
 		const newMap = Object.create(entry.parent.ctx[Context.isolate]);
 		for (const name of Object.keys(entry.options.isolate ?? {})) newMap[name] = access(entry, name, true);
 		const diff = Object.create(null);
@@ -623,7 +555,7 @@ function isolate(ctx) {
 		Object.setPrototypeOf(entry.ctx[Context.intercept], entry.parent.ctx[Context.intercept]);
 		swap(entry.ctx[Context.isolate], newMap);
 		swap(entry.ctx[Context.intercept], entry.options.intercept);
-		await next();
+		next();
 		for (const [symbol1, symbol2, flag1, flag2] of Object.values(diff)) if (flag1 === flag2 && entry.ctx.reflect.store[symbol1] && !entry.ctx.reflect.store[symbol2]) {
 			entry.ctx.reflect.store[symbol2] = entry.ctx.reflect.store[symbol1];
 			delete entry.ctx.reflect.store[symbol1];
@@ -678,12 +610,12 @@ var Loader = class extends EntryTree {
 			if ((this.runtime?.callback)?.[EntryGroup.key]) return config;
 			return interpolate(this.ctx, config);
 		}, { global: true });
-		ctx.on("internal/update", async function(config, noSave, next) {
+		ctx.on("internal/update", function(config, noSave, next) {
 			if (!this.entry || noSave || this.parent.fiber?.entry === this.entry) return next();
-			await next();
 			const unparse = this.runtime?.Config?.["simplify"];
-			this.entry.options.config = unparse ? unparse(config) : config;
+			this.entry.options.config = unparse ? unparse.call(this.runtime.Config, config) : config;
 			this.entry.parent.tree.write();
+			return next();
 		}, {
 			global: true,
 			prepend: true
@@ -704,7 +636,6 @@ var Loader = class extends EntryTree {
 			if (!ctx.registry.has(fiber.runtime.callback)) return;
 			const treeOwner = fiber.entry.parent.tree.ctx.fiber;
 			if (!treeOwner.uid || treeOwner.state === 5) return;
-			if (fiber.entry._disposing) return;
 			this.showLog(fiber.entry, "unload");
 			if (fiber.entry.disabled) return;
 			fiber.entry.options.disabled = true;

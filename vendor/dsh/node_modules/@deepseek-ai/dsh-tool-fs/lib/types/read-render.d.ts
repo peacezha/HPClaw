@@ -64,13 +64,16 @@ export declare function buildWindow(chunks: AsyncIterable<string> | Iterable<str
  */
 export declare function formatReadOutput(displayPath: string, outcome: FileReadOutcome): string;
 /**
- * Derive a syntax-highlighting language hint from a read path's file extension.
- * Pure and case-insensitive on the extension; a dotfile with no extension
- * (`.gitignore`) and an unknown extension both yield `undefined`.
+ * Derive the persisted `lang` hint from a read path's file extension. The shared
+ * table in `@deepseek-ai/dsh-util-code-language` owns the recognized suffixes and
+ * the path rules (both separators, a leading dot as the extension separator, and
+ * prototype-key safety); `readLangHintForPath` projects the read card's short ids
+ * over it, so a suffix whose value a recorded session already holds keeps it
+ * byte-identical while every other suffix uses its language's short name.
  * @param path - the model-facing path the read reported.
- * @returns the language hint for {@link LANG_BY_EXTENSION}, or `undefined` when the extension maps to none.
+ * @returns the persisted language hint, or `undefined` when the extension maps to none.
  */
-export declare function langFromPath(path: string): string | undefined;
+export { readLangHintForPath as langFromPath } from '@deepseek-ai/dsh-util-code-language';
 /**
  * The `read` tool's private `tool/result` `meta` payload: the structured
  * line-numbered window a capable UI renders as a code view. Attached opaquely (as

@@ -25,7 +25,7 @@ describe('workflow display language', () => {
     render(<LocaleProvider><LanguageToggle /><WorkflowPanel onUseWorkflow={vi.fn()} onOpenRunner={vi.fn()} aiProfile={{ provider: 'openai', model: 'test', apiKey: '' }} /></LocaleProvider>);
     await screen.findByText(workflow.name);
     fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
-    fireEvent.click(await screen.findByText('ENCODE TF ChIP-seq Analysis and QC (Chinese template)'));
+    fireEvent.click(await screen.findByText('ENCODE-aligned TF ChIP-seq Analysis and QC'));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     expect(screen.getByDisplayValue('Narrow-peak calling with MACS2')).toBeTruthy();
     expect(screen.getByDisplayValue('Threads')).toBeTruthy();

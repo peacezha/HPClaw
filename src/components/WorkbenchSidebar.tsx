@@ -28,6 +28,7 @@ import { WORKFLOW_CATEGORIES } from '@/shared/workflow';
 import { isPendingDisposal, WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
 import WorkflowCatalogActionDialog, { type WorkflowCatalogAction } from './WorkflowCatalogActionDialog';
 import { listWorkflows } from '../features/workflows/api';
+import { useAllClusterJobs, type AllClusterJobsEntry } from '../hooks/useAllClusterJobs';
 import type { ComputeBackendTarget } from './ComputeBackendDrawer';
 import ConversationList from './ConversationList';
 import ClusterFileTree from './ClusterFileTree';
@@ -62,6 +63,33 @@ function orderWorkflowCategories(categories: Iterable<string>): string[] {
     .filter(c => c !== UNCATEGORIZED_CATEGORY && !(WORKFLOW_CATEGORIES as readonly string[]).includes(c))
     .sort((a, b) => a.localeCompare(b, 'zh-CN'));
   return [...WORKFLOW_CATEGORIES, ...custom, UNCATEGORIZED_CATEGORY].filter(c => present.has(c));
+}
+
+/** 集群条目下的作业状态行：数据来自聚合接口 /api/jobs/summary/all，按 sessionId 匹配当前条目。
+ *  条目自身已标注 user@host 与调度器，状态行紧跟其后，标明属于哪个集群。 */
+function ClusterJobsStatusLine({ entry, refreshFailed }: { entry?: AllClusterJobsEntry; refreshFailed: boolean }) {
+  if (entry && !entry.error) {
+    const hasJobs = entry.running > 0 || entry.pending > 0;
+    const color = !hasJobs ? 'text-scholar-500' : entry.running > 0 ? 'text-emerald-500' : 'text-amber-500';
+    return (
+      <span
+        data-cluster-jobs-status={entry.sessionId}
+        className={`mt-0.5 block truncate text-[10px] ${color}`}
+        title={`${entry.username}@${entry.host} 的调度器作业`}
+      >
+        {hasJobs ? `运行 ${entry.running} · 排队 ${entry.pending}` : '无作业'}
+      </span>
+    );
+  }
+  if (entry?.error || refreshFailed) {
+    return (
+      <span className="mt-0.5 block truncate text-[10px] text-red-400" title={entry?.error || '作业状态查询失败'}>
+        状态未知
+      </span>
+    );
+  }
+  // 首次查询尚未返回
+  return <span className="mt-0.5 block truncate text-[10px] text-scholar-500">查询中…</span>;
 }
 
 interface WorkbenchSidebarProps {
@@ -142,6 +170,9 @@ export default function WorkbenchSidebar({
   const [catalogueAction, setCatalogueAction] = useState<WorkflowCatalogAction | null>(null);
   // 流程分组折叠状态：默认全部展开，记忆在组件内
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  // 多集群作业概况：仅"计算资源"页签且有已连接集群时轮询（折叠/未登录/无集群不发请求）
+  const hasClusterTargets = computeTargets.some(target => target.kind === 'cluster');
+  const allClusterJobs = useAllClusterJobs({ enabled: activeTab === 'compute' && hasClusterTargets });
 
   const refreshWorkflows = useCallback(async () => {
     setLoadingWorkflows(true);
@@ -184,7 +215,7 @@ export default function WorkbenchSidebar({
       {catalogueAction && <WorkflowCatalogActionDialog key={catalogueAction.workflow.id} action={catalogueAction} onClose={() => setCatalogueAction(null)} onDone={() => { void refreshWorkflows(); }} />}
       {/* 品牌块 */}
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3.5 pb-1.5">
-        <span className="text-sm font-semibold tracking-wide text-scholar-50">HPClaw</span>
+        <span className="text-sm font-semibold tracking-wide text-scholar-50">TRACE</span>
       </div>
 
       <div className="px-3 pt-1.5 pb-2 shrink-0">
@@ -286,6 +317,12 @@ export default function WorkbenchSidebar({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-xs font-medium text-scholar-100">{target.label}</span>
                       <span className="mt-0.5 block truncate text-[10px] text-scholar-400">{target.detail}</span>
+                      {target.kind === 'cluster' && (
+                        <ClusterJobsStatusLine
+                          entry={allClusterJobs.bySessionId[target.id]}
+                          refreshFailed={Boolean(allClusterJobs.error)}
+                        />
+                      )}
                     </span>
                     {active && <Check className="h-3.5 w-3.5 shrink-0 text-accent" />}
                   </button>

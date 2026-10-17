@@ -5,6 +5,14 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'tool-goal': {
+            kind: 'tool-goal';
+        } & ContextFormed;
+    }
+}
 export declare const name = "tool-goal";
 export declare const inject: string[];
 /** Model policy and hard lower bounds for goal-state updates. */

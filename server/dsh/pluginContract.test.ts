@@ -7,7 +7,7 @@ const temporary: string[] = [];
 afterEach(() => { vi.unstubAllGlobals(); for (const dir of temporary.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 function commandTool(approval: any) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-approval-test-')); temporary.push(dir);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-approval-test-')); temporary.push(dir);
   const bridgeStateFile = path.join(dir, 'bridge.json');
   fs.writeFileSync(bridgeStateFile, JSON.stringify({ token: 'mock-only', baseUrl: 'http://127.0.0.1:3999' }));
   const tools: any[] = [];
@@ -15,7 +15,7 @@ function commandTool(approval: any) {
   return tools.find(tool => tool.name === 'run_command');
 }
 
-describe('HPClaw DSH plugin output contracts', () => {
+describe('TRACE DSH plugin output contracts', () => {
   it('repairs the DSH never=auto-reject mismatch without bypassing the one-shot user decision', async () => {
     let policy = 'never';
     const approval = { effectivePolicy: () => policy, setPolicy: vi.fn((_agent, value) => { policy = value; }),

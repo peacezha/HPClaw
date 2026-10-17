@@ -44,6 +44,20 @@ export interface TransferAdapter {
     sourceSessionId: string;
     destinationSessionId: string;
   }): Promise<void>;
+  /** ssh2 fastPut 并行块上传（非断点续传的全新上传用）；缺失时回退单流 pipeline */
+  fastPut?(
+    localPath: string,
+    remotePath: string,
+    sessionId: string,
+    onProgress: (transferred: number) => void,
+  ): Promise<void>;
+  /** ssh2 fastGet 并行块下载（非断点续传的全新下载用）；缺失时回退单流 pipeline */
+  fastGet?(
+    remotePath: string,
+    localPath: string,
+    sessionId: string,
+    onProgress: (transferred: number) => void,
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +96,7 @@ def totp(secret):
 def main():
     password = secret = ''
     try:
-        for line in open(os.environ.get('HPCLAW_OTP_CREDS', '')):
+        for line in open(os.environ.get('TRACE_OTP_CREDS', '')):
             line = line.rstrip('\\n')
             if line.startswith('password='):
                 password = line[len('password='):]
@@ -249,6 +263,7 @@ export class TransferEngine {
     }
 
     task.state = 'paused';
+    task.bytesPerSecond = 0;
     task.updatedAt = Date.now();
     this.emitTaskUpdated(task);
     void this.persist();
@@ -322,6 +337,7 @@ export class TransferEngine {
     await this.cleanupTempFile(task);
 
     task.state = 'cancelled';
+    task.bytesPerSecond = 0;
     task.updatedAt = Date.now();
     this.emitTaskUpdated(task);
     void this.persist();
@@ -371,8 +387,9 @@ export class TransferEngine {
     await this.resume(id, sessionId);
   }
 
-  setConcurrency(value: 1 | 2 | 3 | 4): void {
-    this.concurrency = value;
+  setConcurrency(value: number): void {
+    // 并发上限 8：fastPut/fastGet 单任务已是多路并发块，任务级并发不宜再高
+    this.concurrency = Math.max(1, Math.min(8, Math.trunc(value)));
     this.processQueue();
   }
 
@@ -494,6 +511,7 @@ export class TransferEngine {
 
       task.state = 'completed';
       task.transferredBytes = task.totalBytes;
+      task.bytesPerSecond = 0;
       task.updatedAt = Date.now();
       this.emitTaskUpdated(task);
       void this.persist();
@@ -506,6 +524,7 @@ export class TransferEngine {
       if (isRetryable && task.retryCount < 3) {
         task.retryCount++;
         task.state = 'retrying';
+        task.bytesPerSecond = 0;
         task.error = message;
         task.updatedAt = Date.now();
         this.emitTaskUpdated(task);
@@ -520,6 +539,7 @@ export class TransferEngine {
       }
 
       task.state = 'failed';
+      task.bytesPerSecond = 0;
       task.error = message;
       task.updatedAt = Date.now();
       this.emitTaskUpdated(task);
@@ -602,12 +622,12 @@ export class TransferEngine {
     // 之后指纹变更即拒绝（堵住已知主机被替换的中间人攻击）；需 OpenSSH 7.6+（2017 年后），
     // UserKnownHostsFile 保持默认（~/.ssh/known_hosts），不再使用 no（等于放弃主机校验）
     const keySshPrefix = `ssh -p ${info.port} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new`;
-    const probe = `${keySshPrefix} ${TransferEngine.sq(`${info.username}@${info.host}`)} echo hpclaw-ok`;
+    const probe = `${keySshPrefix} ${TransferEngine.sq(`${info.username}@${info.host}`)} echo trace-ok`;
     let probeErr = '';
     const tryProbe = async (): Promise<boolean> => {
       try {
         const out = await exec(probe, srcSessionId, 20_000);
-        return out.includes('hpclaw-ok');
+        return out.includes('trace-ok');
       } catch (e: any) {
         probeErr = (e?.message || String(e)).slice(0, 200);
         return false;
@@ -626,14 +646,14 @@ export class TransferEngine {
     // 传输工具（rsync/scp）的选择在 tryDirectCopy 里做，这里只建立 ssh 通道
     try {
       const pub = await exec(
-        '[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -t ed25519 -N "" -C "hpclaw-direct" -f ~/.ssh/id_ed25519 -q; cat ~/.ssh/id_ed25519.pub',
+        '[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -t ed25519 -N "" -C "trace-direct" -f ~/.ssh/id_ed25519 -q; cat ~/.ssh/id_ed25519.pub',
         srcSessionId, 20_000,
       );
       const pubkey = pub.trim().split('\n').pop() || '';
       if (!pubkey.startsWith('ssh-')) throw new Error('no pubkey');
       await exec(
         `mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && ` +
-        `grep -q 'hpclaw-direct' ~/.ssh/authorized_keys || echo ${TransferEngine.sq(pubkey)} >> ~/.ssh/authorized_keys`,
+        `grep -q 'trace-direct' ~/.ssh/authorized_keys || echo ${TransferEngine.sq(pubkey)} >> ~/.ssh/authorized_keys`,
         dstSessionId, 20_000,
       );
       ok = await tryProbe();
@@ -678,14 +698,14 @@ export class TransferEngine {
   ): Promise<DirectLink | null> {
     const exec = this.adapter.execRemote!;
     const safe = `${info.username}@${info.host}:${info.port}`.replace(/[^A-Za-z0-9@._-]/g, '_');
-    const credsFile = `~/.hpclaw/.creds-${safe}`;
-    const wrapper = `~/.hpclaw/otp-ssh-${safe}`;
+    const credsFile = `~/.trace/.creds-${safe}`;
+    const wrapper = `~/.trace/otp-ssh-${safe}`;
 
     // 1) 共享 python 应答脚本（每次覆盖写入，保证逻辑为最新版）
     const scriptB64 = Buffer.from(OTP_SSH_PY, 'utf8').toString('base64');
     await exec(
-      `mkdir -p ~/.hpclaw && chmod 700 ~/.hpclaw && ` +
-      `echo ${TransferEngine.sq(scriptB64)} | base64 -d > ~/.hpclaw/otp-ssh.py`,
+      `mkdir -p ~/.trace && chmod 700 ~/.trace && ` +
+      `echo ${TransferEngine.sq(scriptB64)} | base64 -d > ~/.trace/otp-ssh.py`,
       srcSessionId, 20_000,
     );
 
@@ -701,8 +721,8 @@ export class TransferEngine {
     const credsName = `.creds-${safe}`;
     const wrapperContent = [
       '#!/bin/sh',
-      `export HPCLAW_OTP_CREDS="$HOME/.hpclaw/${credsName}"`,
-      'exec python3 "$HOME/.hpclaw/otp-ssh.py" "$@"',
+      `export TRACE_OTP_CREDS="$HOME/.trace/${credsName}"`,
+      'exec python3 "$HOME/.trace/otp-ssh.py" "$@"',
       '',
     ].join('\n');
     await exec(
@@ -716,9 +736,9 @@ export class TransferEngine {
     // host key 用 accept-new（同公钥路线，首次接受、之后变更拒绝）
     const sshPrefix = `${wrapper} -p ${info.port} -o StrictHostKeyChecking=accept-new`;
     try {
-      const probeCmd = `out=$(${sshPrefix} ${TransferEngine.sq(`${info.username}@${info.host}`)} echo hpclaw-ok 2>&1); rc=$?; printf 'RC=%s\\n' "$rc"; printf '%s\\n' "$out" | tail -4`;
+      const probeCmd = `out=$(${sshPrefix} ${TransferEngine.sq(`${info.username}@${info.host}`)} echo trace-ok 2>&1); rc=$?; printf 'RC=%s\\n' "$rc"; printf '%s\\n' "$out" | tail -4`;
       const out = await exec(probeCmd, srcSessionId, 60_000);
-      if (out.includes('hpclaw-ok')) return { ...info, sshPrefix, otpTempFiles: { credsFile, wrapper } };
+      if (out.includes('trace-ok')) return { ...info, sshPrefix, otpTempFiles: { credsFile, wrapper } };
       this.lastDirectFailReason = `OTP 探测失败: ${out.trim().slice(-240)}`;
     } catch (e: any) {
       this.lastDirectFailReason = `OTP 探测异常: ${(e?.message || String(e)).slice(0, 300)}`;
@@ -740,7 +760,7 @@ export class TransferEngine {
     if (!exec) return false;
     const src = task.sourceSessionId!;
     const dst = task.sessionId!;
-    const logPath = `/tmp/hpclaw-direct-${task.id}.log`;
+    const logPath = `/tmp/trace-direct-${task.id}.log`;
 
     const hasCmd = async (sid: string, cmd: string): Promise<boolean> => {
       try {
@@ -820,7 +840,9 @@ export class TransferEngine {
     signal.addEventListener('abort', onAbort, { once: true });
 
     try {
-      // 轮询：进程存活 + 目标端临时文件大小 → 进度
+      // 轮询：进程存活 + 目标端临时文件大小 → 进度与速度（差值/间隔）
+      let lastPollBytes = task.transferredBytes;
+      let lastPollTime = Date.now();
       for (;;) {
         if (signal.aborted) return true; // 中止时静默退出（状态由外层设置）
         await new Promise(r => setTimeout(r, 2000));
@@ -830,8 +852,12 @@ export class TransferEngine {
         } catch { alive = false; }
         const size = await this.adapter.remoteSize(task.temporaryPath, dst).catch(() => 0);
         if (size !== task.transferredBytes) {
+          const now = Date.now();
+          this.applySpeedSample(task, size, now - lastPollTime, lastPollBytes);
+          lastPollBytes = size;
+          lastPollTime = now;
           task.transferredBytes = size;
-          task.updatedAt = Date.now();
+          task.updatedAt = now;
           this.emitTaskUpdated(task);
         }
         if (!alive) break;
@@ -936,6 +962,19 @@ export class TransferEngine {
       }
     }
 
+    // 全新上传（非断点续传）优先走 fastPut：64 路并发块，
+    // 吞吐远高于单流 64KB 一问一答；.part + 原子 rename 由外层保证，不变
+    if (offset === 0 && this.adapter.fastPut) {
+      await this.adapter.fastPut(
+        task.localPath,
+        task.temporaryPath,
+        sessionId,
+        this.createProgressTracker(task, 0),
+      );
+      task.updatedAt = Date.now();
+      return;
+    }
+
     const readStream = this.adapter.openLocalRead(task.localPath, offset);
     const writeStream = this.adapter.openRemoteWrite(task.temporaryPath, offset, sessionId);
     const counter = this.progressCounter(task, offset);
@@ -962,6 +1001,18 @@ export class TransferEngine {
       }
     }
 
+    // 全新下载（非断点续传）优先走 fastGet 并行块通道
+    if (offset === 0 && this.adapter.fastGet) {
+      await this.adapter.fastGet(
+        task.remotePath,
+        task.temporaryPath,
+        sessionId,
+        this.createProgressTracker(task, 0),
+      );
+      task.updatedAt = Date.now();
+      return;
+    }
+
     const readStream = this.adapter.openRemoteRead(task.remotePath, offset, sessionId);
     const writeStream = this.adapter.openLocalWrite(task.temporaryPath, offset);
     const counter = this.progressCounter(task, offset);
@@ -974,19 +1025,55 @@ export class TransferEngine {
   //  Progress
   // -----------------------------------------------------------------------
 
+  /** 指数移动平均速度：0.7 × 本次瞬时值（字节差/时间差）+ 0.3 × 历史值 */
+  private applySpeedSample(
+    task: TransferTask,
+    transferred: number,
+    elapsedMs: number,
+    previousBytes: number,
+  ): void {
+    if (elapsedMs <= 0) return;
+    const instant = Math.max(0, ((transferred - previousBytes) * 1000) / elapsedMs);
+    task.bytesPerSecond = task.bytesPerSecond > 0
+      ? Math.round(0.7 * instant + 0.3 * task.bytesPerSecond)
+      : Math.round(instant);
+  }
+
+  /**
+   * 250ms 节流的进度回调：更新已传字节并发射 transfer:updated，
+   * 发射点顺带计算 EMA 速度（任务进入终态时由外层清零）。
+   */
+  private createProgressTracker(
+    task: TransferTask,
+    initialOffset: number,
+  ): (transferred: number) => void {
+    let lastEmit = 0;
+    let lastSampleBytes = initialOffset;
+    let lastSampleTime = 0;
+
+    return (transferred: number) => {
+      task.transferredBytes = transferred;
+      const now = Date.now();
+      if (now - lastEmit < 250) return;
+      lastEmit = now;
+      // 首个样本只建立基准，没有可参照的时间差，不产生速度
+      if (lastSampleTime > 0) {
+        this.applySpeedSample(task, transferred, now - lastSampleTime, lastSampleBytes);
+      }
+      lastSampleBytes = transferred;
+      lastSampleTime = now;
+      this.emitTaskUpdated(task);
+    };
+  }
+
   private progressCounter(task: TransferTask, initialOffset: number): PassThrough {
     let bytesSoFar = initialOffset;
-    let lastEmit = 0;
+    const trackProgress = this.createProgressTracker(task, initialOffset);
 
     const counter = new PassThrough();
     counter.on('data', (chunk: Buffer) => {
       bytesSoFar += chunk.length;
-      task.transferredBytes = bytesSoFar;
-      const now = Date.now();
-      if (now - lastEmit >= 250) {
-        lastEmit = now;
-        this.emitTaskUpdated(task);
-      }
+      trackProgress(bytesSoFar);
     });
     return counter;
   }
@@ -1025,10 +1112,10 @@ export class TransferEngine {
   /**
    * 直连互传的任务终态清理（在 executeTransfer 的 finally 调用，成功/失败/取消/回退中转都会经过）。
    * 覆盖两条直连路径落盘的临时文件：
-   * - OTP 喂码路径：源集群 ~/.hpclaw/.creds-*（明文密码+TOTP 种子，必须删除）与
-   *   ~/.hpclaw/otp-ssh-* wrapper；删除后同步失效直连缓存，否则后续任务会引用已删凭据。
-   *   共享应答脚本 ~/.hpclaw/otp-ssh.py 无敏感数据且被多目标复用，保留。
-   * - 传输日志 /tmp/hpclaw-direct-<id>.log：同主机时写在目标端、跨集群时写在源端，两端幂等删除。
+   * - OTP 喂码路径：源集群 ~/.trace/.creds-*（明文密码+TOTP 种子，必须删除）与
+   *   ~/.trace/otp-ssh-* wrapper；删除后同步失效直连缓存，否则后续任务会引用已删凭据。
+   *   共享应答脚本 ~/.trace/otp-ssh.py 无敏感数据且被多目标复用，保留。
+   * - 传输日志 /tmp/trace-direct-<id>.log：同主机时写在目标端、跨集群时写在源端，两端幂等删除。
    * 公钥免密路径生成的 ~/.ssh/id_ed25519 与 authorized_keys 条目属于持久免密配置，不在此清理。
    * 全部尽力而为：清理失败（如文件已不存在）不影响任务本身的状态报告。
    */
@@ -1037,7 +1124,7 @@ export class TransferEngine {
     if (!exec || task.direction !== 'remote-copy') return;
     const src = task.sourceSessionId!;
     const dst = task.sessionId!;
-    const logPath = `/tmp/hpclaw-direct-${task.id}.log`;
+    const logPath = `/tmp/trace-direct-${task.id}.log`;
 
     const cacheKey = `${src}->${dst}`;
     const link = this.directLinkCache.get(cacheKey);

@@ -4,7 +4,8 @@ import path from 'node:path';
 import { dataPath } from '../paths';
 import {
   loadSchedulerType, jobsCommand, parseJobsOutput, lsfFinalStateCommand, slurmFinalStateCommand,
-  pbsFinalStateCommand, lsfOutputTailCommand, slurmOutputTailCommand, type SchedulerType,
+  pbsFinalStateCommand, lsfOutputTailCommand, slurmOutputTailCommand, lsfJobsByIdsCommand,
+  parseLsfJobsByIdsOutput, type SchedulerType,
 } from './scheduler';
 import type { JobEntry } from '../ai/types';
 import { loadNotifyConfig, sendNotification, type NotifyConfig } from './notifyService';
@@ -27,6 +28,10 @@ const MAX_EVENTS = 50;
 const EXCERPT_MAX_CHARS = 2000;
 /** 已通知作业 ID 去重集合上限：桌面应用长期运行只增不减会膨胀，超出时淘汰最早插入的 */
 const MAX_NOTIFIED_JOB_IDS = 1000;
+/** 大 LSF 集群上 bjobs/sacct 可能要排队很久：本地轮询给 60s（远端命令自身 50s 自杀，见 scheduler.ts）。 */
+const POLL_EXEC_TIMEOUT_MS = 60_000;
+/** 消失作业的终态补查：本地 30s，远端 25s 自杀。 */
+const FINAL_STATE_EXEC_TIMEOUT_MS = 30_000;
 
 export async function loadJobEvents(): Promise<JobEvent[]> {
   try {
@@ -172,7 +177,7 @@ export class JobWatcher {
   /** Slurm 作业从 squeue 消失后用 sacct 补查；空结果或活跃态仍待核查。 */
   private async resolveSlurmFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
-      const raw = await session.cluster.exec(slurmFinalStateCommand(jobId), 10_000);
+      const raw = await session.cluster.exec(slurmFinalStateCommand(jobId), FINAL_STATE_EXEC_TIMEOUT_MS);
       const state = raw.trim().split(/\s+/)[0]?.toUpperCase() || '';
       if (state === 'COMPLETED') return 'DONE';
       if (/^(FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE|REVOKED)(?:[+]|$)/.test(state)) return 'EXIT';
@@ -185,7 +190,7 @@ export class JobWatcher {
   /** PBS 作业离开 qstat 后用 qstat -x -f 补查：Exit_status=0 判 DONE。 */
   private async resolvePbsFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
-      const raw = await session.cluster.exec(pbsFinalStateCommand(jobId), 10_000);
+      const raw = await session.cluster.exec(pbsFinalStateCommand(jobId), FINAL_STATE_EXEC_TIMEOUT_MS);
       const exit = raw.match(/Exit_status\s*=\s*(-?\d+)\b/i);
       if (!/job_state\s*=\s*[CF]\b/i.test(raw) || !exit) return undefined;
       return Number(exit[1]) === 0 ? 'DONE' : 'EXIT';
@@ -196,7 +201,7 @@ export class JobWatcher {
 
   private async resolveLsfFinalStatus(session: WatchSessionLike, jobId: string): Promise<'DONE' | 'EXIT' | undefined> {
     try {
-      const raw = await session.cluster.exec(lsfFinalStateCommand(jobId), 10_000);
+      const raw = await session.cluster.exec(lsfFinalStateCommand(jobId), FINAL_STATE_EXEC_TIMEOUT_MS);
       const state = raw.trim().split(/\s+/)[0]?.toUpperCase() || '';
       return state === 'DONE' || state === 'EXIT' ? state : undefined;
     } catch {
@@ -217,15 +222,42 @@ export class JobWatcher {
   private async pollOnce(sessionId: string, session: WatchSessionLike): Promise<void> {
     // 会话级调度器标签优先（登录探测打标）；老会话无标签时回退全局手动配置
     const scheduler = session.scheduler ?? await loadSchedulerType();
+    const prev = this.prevJobs.get(sessionId);
     let jobs: JobEntry[];
-    try {
-      const raw = await session.cluster.exec(jobsCommand(scheduler), 15_000);
-      jobs = parseJobsOutput(scheduler, raw);
-    } catch {
-      return; // 采集失败跳过本轮
+    // 大 LSF 集群减负：已有监控基线且仍有未终态作业时，按 ID 定点查询（一条命令查全部），
+    // 不再每轮全量 bjobs -w；定点结果里查不到 ID 等同消失，仍走既有终态补查逻辑。
+    // 没有未终态作业可看护时回退全量快照，保住手动提交作业的完成通知与首轮基线。
+    const watchIds = scheduler === 'lsf'
+      ? (prev ?? []).filter(j => j.status !== 'DONE' && j.status !== 'EXIT').map(j => j.jobId)
+      : [];
+    if (watchIds.length > 0) {
+      let raw: string;
+      try {
+        raw = await session.cluster.exec(lsfJobsByIdsCommand(watchIds), POLL_EXEC_TIMEOUT_MS);
+      } catch {
+        return; // 采集失败跳过本轮
+      }
+      const prevById = new Map((prev ?? []).map(j => [j.jobId, j]));
+      jobs = parseLsfJobsByIdsOutput(raw).map(entry => {
+        const known = prevById.get(entry.jobId);
+        return {
+          jobId: entry.jobId,
+          name: known?.name || `Job ${entry.jobId}`,
+          status: entry.status,
+          cores: known?.cores ?? 0,
+          queue: known?.queue || 'unknown',
+          runtime: known?.runtime ?? '',
+        };
+      });
+    } else {
+      try {
+        const raw = await session.cluster.exec(jobsCommand(scheduler), POLL_EXEC_TIMEOUT_MS);
+        jobs = parseJobsOutput(scheduler, raw);
+      } catch {
+        return; // 采集失败跳过本轮
+      }
     }
 
-    const prev = this.prevJobs.get(sessionId);
     this.prevJobs.set(sessionId, jobs);
     if (!prev) {
       // 首轮只记录基线：已经在 DONE/EXIT 的历史作业不提醒。

@@ -9,7 +9,7 @@ function createLocalAdapter(): FilePaneAdapter {
     side: 'local' as FileSide,
 
     async list(path: string, signal: AbortSignal): Promise<FileEntry[]> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       // 盘符列表层级（此电脑）：列盘符而不是目录内容。
       // 条目 kind 为 directory，双击即走既有导航进入盘符根。
@@ -27,19 +27,19 @@ function createLocalAdapter(): FilePaneAdapter {
     },
 
     async mkdir(path: string): Promise<void> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       return desktop.localFiles.mkdir(path);
     },
 
     async createFile(path: string): Promise<void> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       return desktop.localFiles.createFile(path);
     },
 
     async rename(from: string, to: string): Promise<void> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       return desktop.localFiles.rename(from, to);
     },
@@ -49,7 +49,7 @@ function createLocalAdapter(): FilePaneAdapter {
       total: number;
       recursive?: boolean;
     }> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       // Stat each path to build a preview approximation
       const entries: FileEntry[] = [];
@@ -71,7 +71,7 @@ function createLocalAdapter(): FilePaneAdapter {
     },
 
     async remove(paths: string[]): Promise<void> {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       for (const p of paths) {
         await desktop.localFiles.trash(p);
@@ -91,7 +91,7 @@ interface LocalFilePaneProps
 
 export default function LocalFilePane(props: LocalFilePaneProps) {
   const desktop =
-    typeof window !== 'undefined' && window.hpclawDesktop;
+    typeof window !== 'undefined' && window.traceDesktop;
 
   if (!desktop) {
     return (

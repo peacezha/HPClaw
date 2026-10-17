@@ -116,8 +116,8 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
   it('does not turn missing, unavailable or still-active LSF accounting into DONE; retries without losing the job', async () => {
     let state = '';
     const h = makePollHarness({ exec: cmd => {
-      if (cmd.startsWith('bjobs -w')) return bjobsRaw();
-      if (cmd.startsWith('bjobs -a')) { if (state === 'ERROR') throw new Error('connection failed'); return state; }
+      if (cmd.includes('bjobs -w')) return bjobsRaw();
+      if (cmd.includes('bjobs -a')) { if (state === 'ERROR') throw new Error('connection failed'); return state; }
       return '';
     } });
     h.watcher.trackJobs('sess-1', ['111']);
@@ -128,6 +128,26 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
     }
     state = 'DONE';
     await h.poll();
+    expect(h.events()).toEqual([expect.objectContaining({ jobId: '111', status: 'DONE' })]);
+  });
+
+  it('LSF 已跟踪作业按 ID 定点查询（一条命令查全部），消失作业走 30s 终态补查', async () => {
+    let targeted = '111 RUN\n222 PEND\n';
+    const h = makePollHarness({ exec: cmd => {
+      if (cmd.includes('bjobs -noheader')) return targeted;
+      if (cmd.includes('bjobs -a')) return 'DONE\n';
+      return '';
+    } });
+    h.watcher.trackJobs('sess-1', ['111', '222']);
+    await h.poll();
+    // 定点查询：远端 timeout 50 自杀包装，本地 60s；不再全量 bjobs -w
+    expect(h.exec).toHaveBeenCalledWith('timeout 50 bjobs -noheader -o "jobid stat" 111 222 2>/dev/null; true', 60_000);
+    expect(h.exec.mock.calls.some(([cmd]) => String(cmd).includes('bjobs -w'))).toBe(false);
+    expect(h.events()).toHaveLength(0); // 两个作业都还在跑
+    // 下一轮 111 从定点结果消失 → 终态补查（远端 timeout 25，本地 30s）→ DONE 事件
+    targeted = '222 PEND\n';
+    await h.poll();
+    expect(h.exec).toHaveBeenCalledWith('timeout 25 bjobs -a -noheader -o stat 111 2>/dev/null | head -1', 30_000);
     expect(h.events()).toEqual([expect.objectContaining({ jobId: '111', status: 'DONE' })]);
   });
 
@@ -160,9 +180,9 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
   it('终态事件带 bpeek 输出尾部摘要，并持久化到 job-events.json', async () => {
     const h = makePollHarness({
       exec: cmd => {
-        if (cmd.startsWith('bjobs -w')) return bjobsRaw(); // 作业已从列表消失
-        if (cmd.startsWith('bjobs -a')) return 'DONE\n';
-        if (cmd.startsWith('bpeek')) return 'result line A\nresult line B\n';
+        if (cmd.includes('bjobs -w')) return bjobsRaw(); // 作业已从列表消失
+        if (cmd.includes('bjobs -a')) return 'DONE\n';
+        if (cmd.includes('bpeek')) return 'result line A\nresult line B\n';
         return '';
       },
     });
@@ -181,9 +201,9 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
     const tail = `${'a'.repeat(2500)}${'b'.repeat(2500)}`;
     const h = makePollHarness({
       exec: cmd => {
-        if (cmd.startsWith('bjobs -w')) return bjobsRaw();
-        if (cmd.startsWith('bjobs -a')) return 'EXIT\n';
-        if (cmd.startsWith('bpeek')) return tail;
+        if (cmd.includes('bjobs -w')) return bjobsRaw();
+        if (cmd.includes('bjobs -a')) return 'EXIT\n';
+        if (cmd.includes('bpeek')) return tail;
         return '';
       },
     });
@@ -199,8 +219,8 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
   it('bpeek 失败或无输出时 excerpt 缺省，不阻塞事件', async () => {
     const h = makePollHarness({
       exec: cmd => {
-        if (cmd.startsWith('bjobs -w')) return bjobsRaw('313 u DONE normal h n1 gone Jan 1');
-        if (cmd.startsWith('bpeek')) return '   \n';
+        if (cmd.includes('bjobs -noheader')) return '313 DONE\n'; // 定点查询直接看到终态
+        if (cmd.includes('bpeek')) return '   \n';
         return '';
       },
     });
@@ -214,14 +234,14 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
   it('首轮基线：有未唤醒绑定的终态作业发事件，无绑定的历史作业静默', async () => {
     const h = makePollHarness({
       exec: cmd => {
-        if (cmd.startsWith('bjobs -w')) {
+        if (cmd.includes('bjobs -w')) {
           return bjobsRaw(
             '777 u DONE normal h n1 bound-job Jan 1',
             '999 u EXIT normal h n1 history-job Jan 1',
             '888 u RUN normal h n1 running-job Jan 1',
           );
         }
-        if (cmd.startsWith('bpeek')) return 'bound output';
+        if (cmd.includes('bpeek')) return 'bound output';
         return '';
       },
       hasPendingBinding: (_sessionId, jobId) => jobId === '777',
@@ -238,8 +258,8 @@ describe('JobWatcher.poll excerpt 与首轮绑定例外', () => {
   it('重启恢复：trackJobs 后首轮即终态的绑定作业只发一次事件', async () => {
     const h = makePollHarness({
       exec: cmd => {
-        if (cmd.startsWith('bjobs -w')) return bjobsRaw('555 u DONE normal h n1 restored Jan 1');
-        if (cmd.startsWith('bpeek')) return 'restored output';
+        if (cmd.includes('bjobs -noheader')) return '555 DONE\n'; // 定点查询：已跟踪作业首轮即终态
+        if (cmd.includes('bpeek')) return 'restored output';
         return '';
       },
       hasPendingBinding: () => true,

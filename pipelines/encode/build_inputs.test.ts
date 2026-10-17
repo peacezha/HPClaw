@@ -16,7 +16,7 @@ function findPython(): string {
 }
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'hpclaw-encode-input-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'trace-encode-input-'));
   temporaryDirectories.push(directory);
   return directory;
 }

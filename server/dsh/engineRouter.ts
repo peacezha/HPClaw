@@ -1,9 +1,11 @@
-// dsh 引擎路由：决定 /api/ai/stream 的 agent 请求走 dsh sidecar 还是 HPClaw 自有
+// dsh 引擎路由：决定 /api/ai/stream 的 agent 请求走 dsh sidecar 还是 TRACE 自有
 // legacy 引擎（runAgent）。纯函数，不感知 sidecar 可用性——可用性由调用方
 // （ensureSidecar）另行检查，不可用时回退 legacy。
+// v0.4.57 起默认收敛到 TRACE 原生引擎（统一的 prompt / ask / confirm / plan 语义，
+// 且支持全部 provider）；dsh 仅作为显式回滚通道保留（用户设置 dsh 或 TRACE_AI_ENGINE=dsh）。
 
 export interface SelectDshEngineOptions {
-  /** 环境变量 HPCLAW_AI_ENGINE 一类显式覆盖：'dsh' | 'legacy' */
+  /** 环境变量 TRACE_AI_ENGINE 一类显式覆盖：'dsh' | 'legacy' */
   envEngine?: string;
   mode: string;
   hasWorkflowRunContext: boolean;
@@ -31,5 +33,5 @@ export function selectDshEngine(opts: SelectDshEngineOptions): EngineSelection {
   if (opts.requestedEngine === 'native') return { engine: 'legacy', reason: 'user selected native' };
   if (opts.requestedEngine === 'dsh') return { engine: 'dsh', reason: 'user selected dsh' };
   if (opts.envEngine === 'dsh') return { engine: 'dsh', reason: 'env override' };
-  return { engine: 'dsh', reason: 'default' };
+  return { engine: 'legacy', reason: 'default (native engine since v0.4.57)' };
 }

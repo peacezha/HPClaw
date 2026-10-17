@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   annotateRuns, attachJobStates, collectActiveJobIds, collectStaleJobIds, isStaleRun,
-  parseBjobsStates, reconcileRunsWithScheduler, STALE_AFTER_MS,
+  needsSchedulerStateQuery, parseBjobsStates, reconcileRunsWithScheduler, seedPersistedTerminalStates,
+  STALE_AFTER_MS,
 } from './runAnnotate';
 
 const NOW = 1_800_000_000_000;
@@ -128,5 +129,39 @@ describe('调度器主动对账', () => {
     expect(unknown.status).toBe('waiting_jobs');
     const paused = reconcileRunsWithScheduler([{ ...last, error: '用户要求暂停' }], new Map([['2', 'DONE']]))[0];
     expect(paused.error).toBe('用户要求暂停');
+  });
+});
+
+describe('持久化终态播种与补查跳过', () => {
+  const run = {
+    runDir: '/flows/r1', status: 'waiting_jobs', totalSteps: 1, currentStep: 1,
+    steps: [{ n: 1, status: 'running', jobIds: ['11', '22'] }],
+  };
+
+  it('续跑记录终态与 run.jobStates 终态都算数；活跃态/其他 RUN 的记录不带入', () => {
+    const states = seedPersistedTerminalStates(
+      { ...run, jobStates: { '22': 'DONE', '33': 'RUN' } },
+      [
+        { runDir: '/flows/r1', jobId: '11', terminalStatus: 'DONE' },
+        { runDir: '/flows/r1', jobId: '77' }, // 无终态：忽略
+        { runDir: '/other', jobId: '99', terminalStatus: 'EXIT' }, // 其他 RUN：忽略
+      ],
+    );
+    expect(states.get('11')).toBe('DONE');
+    expect(states.get('22')).toBe('DONE'); // run.jobStates 里的调度器终态可复用
+    expect(states.has('33')).toBe(false); // RUN 不是终态
+    expect(states.has('77')).toBe(false);
+    expect(states.has('99')).toBe(false);
+    // 该 RUN 的全部活动作业（11、22）都已有可信终态 → 不再向调度器补查
+    expect(needsSchedulerStateQuery({ ...run, jobStates: { '22': 'DONE' } }, states)).toBe(false);
+  });
+
+  it('任一活动作业缺少可信状态时仍需补查', () => {
+    const states = seedPersistedTerminalStates(run, [{ runDir: '/flows/r1', jobId: '11', terminalStatus: 'DONE' }]);
+    expect(needsSchedulerStateQuery(run, states)).toBe(true); // 22 仍无状态
+    states.set('22', 'EXIT');
+    expect(needsSchedulerStateQuery(run, states)).toBe(false);
+    // 终态运行不再产生活动作业，自然无需补查
+    expect(needsSchedulerStateQuery({ ...run, status: 'done' }, new Map())).toBe(false);
   });
 });

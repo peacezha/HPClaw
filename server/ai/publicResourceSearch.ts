@@ -7,7 +7,7 @@ export interface PublicResourceSearchInput {
   maxResults?: number;
 }
 
-const USER_AGENT = 'HPClaw/0.2 (public resource lookup)';
+const USER_AGENT = 'TRACE/0.2 (public resource lookup)';
 
 async function getJson(url: URL): Promise<any> {
   const response = await fetch(url, {

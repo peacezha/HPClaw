@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# HPClaw 染色质流程中英文确定性报告生成器
+# TRACE 染色质流程中英文确定性报告生成器
 # 只依赖 Python 标准库：扫描 RUN 目录与输入目录里的真实产物（QC JSON/TSV、
 # 峰文件、指纹图、IGV 快照、FastQC 结果、run.json 步骤记录），生成固定结构的
 # 图文并茂报告（report.html 自包含 + report.md）。不允许编造：缺什么就写"无数据"。
@@ -139,7 +139,7 @@ def collect(run_dir, input_dir):
     data['dup_metrics'] = all_hits(['qc/*.dup_metrics.txt'])
 
     # 峰文件与峰数
-    for bed in all_hits(['peaks/*.peaks.final.bed', 'peaks/*.peaks.narrowPeak', 'peaks/*_peaks.narrowPeak', 'peaks/*.regionPeak', '*.peaks.final.bed']):
+    for bed in all_hits(['idr/final/*.peaks.final.bed', 'peaks/*.peaks.final.bed', 'peaks/*.peaks.narrowPeak', 'peaks/*_peaks.narrowPeak', 'peaks/*.regionPeak', '*.peaks.final.bed']):
         try:
             count = sum(1 for line in open(bed, encoding='utf-8', errors='ignore') if line.strip() and not line.startswith('#'))
         except Exception:
@@ -232,6 +232,11 @@ def build_qc_rows(data, language='zh', assay=''):
     if repro.get('rescue_ratio') is not None:
         sym, css = verdict(repro['rescue_ratio'], 2, 3, higher_better=False)
         rows.append((labels['IDR'], labels['all'], repro['rescue_ratio'], sym, css))
+    dap = idr.get('_dap_idr') or {}
+    for identity, group in (dap.get('groups') or {}).items():
+        label = 'IDR 可重复峰数' if language == 'zh' else 'IDR-reproducible peak count'
+        passed = group.get('status') == 'pass'
+        rows.append((label, identity, group.get('accepted_peaks', 0), '✓' if passed else '✗', 'pass' if passed else 'fail'))
     return rows
 
 
@@ -245,6 +250,7 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
         'zh': {
             'report': '分析与质控报告', 'date': '生成日期', 'host': '主机', 'run_status': '运行状态', 'run_dir': '运行目录',
             'done': '完成', 'failed': '失败', 'running': '运行中', 'waiting_jobs': '后台作业中', 'unknown': '未知',
+            'pending': '待执行', 'waiting_user': '等待用户确认', 'blocked_env': '环境缺项', 'skipped': '已跳过', 'cancelled': '已取消',
             'summary': '概要', 'libraries': '文库质控结论', 'sample': '文库', 'verdict': '结论', 'reason': '依据',
             'library_fail': '文库质控失败', 'library_pass': '文库质控通过', 'no_verdict': '未找到文库质控结论文件',
             'inputs': '样本与输入', 'item': '项目', 'content': '内容', 'input_dir': '输入目录', 'fastqc': 'FastQC 报告', 'tracks': '信号轨迹（bigWig）',
@@ -256,6 +262,7 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
         'en': {
             'report': 'Analysis and QC Report', 'date': 'Generated', 'host': 'Host', 'run_status': 'Run status', 'run_dir': 'Run directory',
             'done': 'Completed', 'failed': 'Failed', 'running': 'Running', 'waiting_jobs': 'Cluster jobs running', 'unknown': 'Unknown',
+            'pending': 'Pending', 'waiting_user': 'Awaiting user confirmation', 'blocked_env': 'Missing environment requirements', 'skipped': 'Skipped', 'cancelled': 'Cancelled',
             'summary': 'Summary', 'libraries': 'Library QC conclusions', 'sample': 'Library', 'verdict': 'Conclusion', 'reason': 'Evidence',
             'library_fail': 'Library QC failed', 'library_pass': 'Library QC passed', 'no_verdict': 'No library QC conclusion file was found',
             'inputs': 'Samples and inputs', 'item': 'Item', 'content': 'Content', 'input_dir': 'Input directory', 'fastqc': 'FastQC reports', 'tracks': 'Signal tracks (bigWig)',
@@ -265,7 +272,14 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
             'step_failed': 'Step failed', 'skipped_steps': 'Skipped steps',
         },
     }[language]
-    status_label = {key: text[key] for key in ('done', 'failed', 'running', 'waiting_jobs')}.get(run.get('status'), run.get('status') or text['unknown'])
+    def localized_status(value):
+        return text.get(value, value or text['unknown'])
+    status_label = localized_status(run.get('status'))
+    completed = sum(1 for step in steps if step.get('status') == 'done')
+    failed = sum(1 for step in steps if step.get('status') == 'failed')
+    skipped_count = sum(1 for step in steps if step.get('status') == 'skipped')
+    step_counts = (f'共 {len(steps)} 步；完成 {completed} 步，失败 {failed} 步，跳过 {skipped_count} 步。' if language == 'zh'
+                   else f'{len(steps)} steps; {completed} completed, {failed} failed, {skipped_count} skipped.')
 
     peak_items = [(name, count) for name, count, _ in data['peaks'] if count]
     peak_svg = svg_bar_chart(peak_items, '各文库最终峰数' if language == 'zh' else 'Final peak count per library')
@@ -282,7 +296,7 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
     ) or ('<tr><td colspan="4">未找到质控数据</td></tr>' if language == 'zh' else '<tr><td colspan="4">No QC data found</td></tr>')
 
     step_rows = ''.join(
-        f'<tr><td>{s.get("n")}</td><td>{s.get("title")}</td><td>{s.get("status")}</td><td>{(s.get("summary") or "")[:120]}</td></tr>'
+        f'<tr><td>{s.get("n")}</td><td>{s.get("title")}</td><td>{localized_status(s.get("status"))}</td><td>{(s.get("summary") or "")[:120]}</td></tr>'
         for s in steps
     ) or f'<tr><td colspan="4">{text["no_steps"]}</td></tr>'
 
@@ -293,6 +307,8 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
     skipped = [s for s in steps if s.get('status') == 'skipped']
     verdict_rows = [row for row in data['library_verdict'] if row and row[0].lower() != 'sample']
     failed_libraries = [row for row in verdict_rows if len(row) >= 2 and row[1].upper() == 'FAILED']
+    dap_idr = (data['qc'].get('idr') or {}).get('_dap_idr') or {}
+    dap_idr_failed = assay == 'dap' and dap_idr.get('status') != 'pass'
     reason_zh = {
         'FRiP below QC threshold': 'FRiP 低于质控阈值', 'SPOT unavailable': '未产出 SPOT 值',
         'SPOT below QC threshold': 'SPOT 低于质控阈值', 'TSS enrichment unavailable': '未产出 TSS 富集分数与曲线',
@@ -315,6 +331,9 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
         if language == 'zh' else
         ' '.join(f'{row[0]}: {text["library_fail"]}.' for row in failed_libraries)
     )
+    if dap_idr_failed:
+        failure_summary += (' 重复一致性未通过或尚未评估，不建议继续下游分析。' if language == 'zh' else
+                            ' Replicate reproducibility failed or has not been assessed; downstream analysis is not recommended.')
     figures_block = ''.join(figures_html) if figures_html else f'<p class="meta">{text["no_figures"]}</p>'
     issues_block = (
         '<ul>' + ''.join(
@@ -322,6 +341,15 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
             for s in problems
         ) + '</ul>' if problems else f'<p>{text["no_failures"]}</p>'
     )
+    if assay == 'dap':
+        status = dap_idr.get('status', 'not_assessed')
+        header = 'DAP-seq 重复一致性（IDR）' if language == 'zh' else 'DAP-seq replicate reproducibility (IDR)'
+        conclusion = ('通过' if status == 'pass' else '未通过或尚未评估') if language == 'zh' else ('Passed' if status == 'pass' else 'Failed or not assessed')
+        threshold_label = '全局 IDR' if language == 'zh' else 'global IDR'
+        issues_block += f'<h3>{header}</h3><p>{conclusion} · {threshold_label} ≤ {dap_idr.get("global_idr_threshold", "—")}</p>'
+        for identity, group in (dap_idr.get('groups') or {}).items():
+            count_label = '可重复峰数' if language == 'zh' else 'Reproducible peaks'
+            issues_block += f'<p>{identity}: {count_label} = {group.get("accepted_peaks", 0)}</p>'
     skipped_block = (
         f'<p>{text["skipped_steps"]}: ' + ', '.join(f'{s.get("n")}.{s.get("title")}' for s in skipped) + '</p>'
         if skipped else ''
@@ -330,11 +358,11 @@ def render(workflow_name, run_dir, input_dir, data, language='zh', assay=''):
     threshold_note = (
         'ATAC-seq 采用检测限：TSS 富集分数≥6、FRiP≥0.2；SPOT 和 TSS 曲线必须完整产出。'
         if language == 'zh' and assay == 'atac' else
-        'ChIP-seq/DAP-seq 中的 SPOT 和 TSS 富集曲线为 HPClaw 扩展质控；TSS 曲线形态受靶标类型影响，不使用统一 ENCODE 阈值。'
+        'ChIP-seq/DAP-seq 中的 SPOT 和 TSS 富集曲线为 TRACE 扩展质控；TSS 曲线形态受靶标类型影响，不使用统一 ENCODE 阈值。'
         if language == 'zh' else
         'ATAC-seq detection limits: TSS enrichment ≥6 and FRiP ≥0.2; both the SPOT value and TSS profile must be produced.'
         if assay == 'atac' else
-        'SPOT and TSS-enrichment profiles are HPClaw extended QC for ChIP-seq/DAP-seq. TSS profile shape is target-dependent and is not assigned a universal ENCODE cutoff.'
+        'SPOT and TSS-enrichment profiles are TRACE extended QC for ChIP-seq/DAP-seq. TSS profile shape is target-dependent and is not assigned a universal ENCODE cutoff.'
     )
 
     html = f"""<!DOCTYPE html>
@@ -357,8 +385,8 @@ figcaption{{font-size:12px;color:#64748b;margin-top:4px}}
 {text['run_dir']}：<span class="mono">{run_dir}</span></p>
 
 <h2>1. {text['summary']}</h2>
-<p>{(failure_summary if failed_libraries else (text['library_pass'] if verdict_rows else text['no_verdict']))}</p>
-<p>{len(steps)} steps; {sum(1 for s in steps if s.get('status') == 'done')} completed, {len(problems)} failed, {len(skipped)} skipped.</p>
+<p>{(failure_summary if failed_libraries or dap_idr_failed else (text['library_pass'] if verdict_rows else text['no_verdict']))}</p>
+<p>{step_counts}</p>
 
 <h2>2. {text['libraries']}</h2>
 <table><tr><th>{text['sample']}</th><th>{text['verdict']}</th><th>{text['reason']}</th></tr>{library_table}</table>
@@ -393,6 +421,7 @@ figcaption{{font-size:12px;color:#64748b;margin-top:4px}}
         f'# {workflow_name} · {text["report"]}', '',
         f'- {text["date"]}: {today} | {text["host"]}: {host} | {text["run_status"]}: {status_label}',
         f'- {text["run_dir"]}: `{run_dir}`', '',
+        *([failure_summary, ''] if failed_libraries or dap_idr_failed else []),
         f'## {text["libraries"]}', '',
         *[f'- {row[0]}: **{text["library_fail"] if row[1].upper() == "FAILED" else text["library_pass"]}** — {localized_reason(row)}' for row in verdict_rows],
         '', f'## {text["qc"]}', '',
@@ -407,12 +436,12 @@ figcaption{{font-size:12px;color:#64748b;margin-top:4px}}
 
 
 def main():
-    ap = argparse.ArgumentParser(description='HPClaw deterministic bilingual chromatin-workflow report generator')
+    ap = argparse.ArgumentParser(description='TRACE deterministic bilingual chromatin-workflow report generator')
     ap.add_argument('--run-dir', required=True)
     ap.add_argument('--input-dir', default='')
     ap.add_argument('--workflow', default='', help='缺省读取 run.json 的 workflowName')
     ap.add_argument('--report-dir', required=True)
-    ap.add_argument('--language', choices=['zh', 'en'], default='zh')
+    ap.add_argument('--language', choices=['zh', 'en'], default=os.environ.get('TRACE_REPORT_LANGUAGE', 'zh'))
     ap.add_argument('--assay', choices=['dap', 'chip-tf', 'chip-histone', 'atac'], default='chip-tf')
     args = ap.parse_args()
 
@@ -431,6 +460,8 @@ def main():
         'peaks': {n: c for n, c, _ in data['peaks']},
         'qcRows': len(build_qc_rows(data, args.language, args.assay)),
         'failedLibraries': [row[0] for row in data['library_verdict'][1:] if len(row) >= 2 and row[1].upper() == 'FAILED'],
+        'language': args.language,
+        'dapIdr': (data['qc'].get('idr') or {}).get('_dap_idr') if args.assay == 'dap' else None,
     }
     with open(os.path.join(args.report_dir, 'report_summary.json'), 'w', encoding='utf-8') as fh:
         json.dump(summary, fh, indent=2, ensure_ascii=False)

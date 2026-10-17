@@ -6,8 +6,8 @@
  * and drains started calls.
  *
  * Abort records synthetic error results for skipped calls so replay stays
- * valid. A terminal scheduler failure preserves already-recorded `tool/call`
- * events without fabricating results.
+ * valid. A terminal scheduler failure rejects after draining; the owning step
+ * records conservative recovery results before closing.
  * @module dsh-agent-loop/tool-calls
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -20,8 +20,8 @@ import type { UserMessage } from '@deepseek-ai/dsh-session';
  * the signal still aborted after accepting started-call context through the
  * caller-supplied acceptor (the machine stages it in its next-step inbox for the
  * step boundary). An internal scheduler failure stops new dispatches, drains
- * already-started dispatches, and rejects with the first failure without
- * fabricating tool results.
+ * already-started dispatches, and rejects with the first failure. The owning
+ * step supplies error results for requests without a committed outcome.
  * The committed step's AgentLoop driver boundary supplies the initiating Agent
  * that becomes each explicit {@link ToolExecutionInput.agent}.
  *

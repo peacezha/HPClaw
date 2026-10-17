@@ -4,12 +4,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTransferAdapter, registerTransferRoutes } from './registerTransferRoutes';
 
-vi.mock('./transferStore', () => ({ loadTasks: vi.fn(async () => []) }));
+vi.mock('./transferStore', () => ({
+  loadTasks: vi.fn(async () => []),
+  saveTasks: vi.fn(async () => {}),
+}));
 
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hpclaw-transfer-routes-'));
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'trace-transfer-routes-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -67,16 +70,16 @@ describe('createTransferAdapter', () => {
     } as any));
 
     await expect(adapter.remoteRename(
-      '/public/home/hpzhang/.minimap.err.hpclaw-test.part',
+      '/public/home/hpzhang/.minimap.err.trace-test.part',
       '/public/home/hpzhang/minimap.err',
       'ssh-1',
     )).resolves.toBeUndefined();
 
     expect(calls).toEqual([
-      'rename:/public/home/hpzhang/.minimap.err.hpclaw-test.part->/public/home/hpzhang/minimap.err',
+      'rename:/public/home/hpzhang/.minimap.err.trace-test.part->/public/home/hpzhang/minimap.err',
       'stat:/public/home/hpzhang/minimap.err',
       'unlink:/public/home/hpzhang/minimap.err',
-      'rename:/public/home/hpzhang/.minimap.err.hpclaw-test.part->/public/home/hpzhang/minimap.err',
+      'rename:/public/home/hpzhang/.minimap.err.trace-test.part->/public/home/hpzhang/minimap.err',
     ]);
   });
 
@@ -93,7 +96,7 @@ describe('createTransferAdapter', () => {
 
     await adapter.prepareRemoteCopy!({
       sourcePath: '/private/alice/project/a.fa',
-      destinationPath: '/scratch/bob/results/.a.fa.hpclaw.part',
+      destinationPath: '/scratch/bob/results/.a.fa.trace.part',
       sourceSessionId: 'source',
       destinationSessionId: 'destination',
     });
@@ -135,5 +138,136 @@ describe('registerTransferRoutes', () => {
     expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
       error: expect.objectContaining({ code: 'SSH_SESSION_REQUIRED' }),
     }));
+  });
+});
+
+describe('registerTransferRoutes batch enqueue', () => {
+  // SFTP 桩：传输启动后会在后台失败，路由响应在此之前已发出，互不影响
+  const session = {
+    cluster: {
+      getSftp: () => ({
+        stat: (_path: string, cb: (err?: Error) => void) => cb(new Error('no sftp in test')),
+        fastPut: (_l: string, _r: string, _o: unknown, cb: (err?: Error) => void) => cb(new Error('no sftp in test')),
+        fastGet: (_r: string, _l: string, _o: unknown, cb: (err?: Error) => void) => cb(new Error('no sftp in test')),
+      }),
+      exec: async () => '',
+    },
+    home: '/home/alice',
+  };
+
+  const validItem = {
+    profileId: 'p1',
+    direction: 'upload',
+    localPath: 'D:\\a.bin',
+    remotePath: '/data/a.bin',
+    temporaryPath: '/data/.a.bin.trace-t1.part',
+    totalBytes: 4096,
+    transferredBytes: 0,
+    conflictPolicy: 'overwrite',
+    verificationMode: 'size',
+  };
+
+  async function setup() {
+    const handlers = new Map<string, (req: any, res: any) => unknown>();
+    const app = {
+      get: vi.fn(),
+      post: vi.fn((route: string, handler: (req: any, res: any) => unknown) => { handlers.set(route, handler); }),
+      put: vi.fn((route: string, handler: (req: any, res: any) => unknown) => { handlers.set(route, handler); }),
+      delete: vi.fn(),
+    };
+    const io = { emit: vi.fn() };
+    await registerTransferRoutes(
+      app as any,
+      io as any,
+      ((id: string) => (id === 'ssh-1' ? session : undefined)) as any,
+    );
+    return {
+      batch: handlers.get('/api/transfers/batch')!,
+      settings: handlers.get('/api/transfers/settings')!,
+      io,
+    };
+  }
+
+  function makeReq(body: unknown, sessionId = 'ssh-1'): any {
+    return {
+      session: {},
+      get: (name: string) => (name === 'X-SSH-Session-Id' ? sessionId : undefined),
+      body,
+    };
+  }
+
+  function makeRes(): any {
+    const res: any = { status: vi.fn(), json: vi.fn() };
+    res.status.mockReturnValue(res);
+    return res;
+  }
+
+  it('rejects batch enqueue without an SSH session (401)', async () => {
+    const { batch } = await setup();
+    const res = makeRes();
+    await batch(makeReq([validItem], 'stale-session'), res);
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects a non-array or empty batch (400)', async () => {
+    const { batch } = await setup();
+    for (const body of [[], { transfers: [] }, { nope: true }]) {
+      const res = makeRes();
+      await batch(makeReq(body), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    }
+  });
+
+  it('rejects batches over 500 items (400)', async () => {
+    const { batch } = await setup();
+    const res = makeRes();
+    await batch(makeReq(Array(501).fill(validItem)), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.objectContaining({ message: expect.stringContaining('500') }),
+    }));
+  });
+
+  it('rejects the whole batch with the offending index when one item is invalid', async () => {
+    const { batch } = await setup();
+    const res = makeRes();
+    await batch(makeReq([validItem, { ...validItem, localPath: '' }]), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.objectContaining({ message: expect.stringContaining('transfers[1]') }),
+    }));
+  });
+
+  it('enqueues every item and returns all tasks (201)', async () => {
+    const { batch, io } = await setup();
+    const res = makeRes();
+    const second = {
+      ...validItem,
+      remotePath: '/data/b.bin',
+      temporaryPath: '/data/.b.bin.trace-t2.part',
+    };
+    await batch(makeReq([validItem, second]), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.transfers).toHaveLength(2);
+    expect(payload.transfers[0].id).toBeTruthy();
+    expect(payload.transfers[0].sessionId).toBe('ssh-1');
+    expect(payload.transfers[1].remotePath).toBe('/data/b.bin');
+    expect(io.emit).toHaveBeenCalledWith(
+      'transfer:summary',
+      expect.objectContaining({ total: expect.any(Number) }),
+    );
+  });
+
+  it('accepts concurrency up to 8 and rejects higher values', async () => {
+    const { settings } = await setup();
+    const okRes = makeRes();
+    await settings(makeReq({ concurrency: 8 }), okRes);
+    expect(okRes.json).toHaveBeenCalledWith({ ok: true });
+
+    const badRes = makeRes();
+    await settings(makeReq({ concurrency: 9 }), badRes);
+    expect(badRes.status).toHaveBeenCalledWith(400);
   });
 });

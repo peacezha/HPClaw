@@ -1,7 +1,7 @@
 import type { Workflow, WorkflowLifecycle } from './workflow';
 
 export const PENDING_DISPOSAL_CATEGORY = '待弃置';
-export const WORKFLOW_CATALOG_CHANGED = 'hpclaw:workflows-changed';
+export const WORKFLOW_CATALOG_CHANGED = 'trace:workflows-changed';
 export const isPendingDisposal = (workflow: Pick<Workflow, 'lifecycle'>): boolean => workflow.lifecycle?.state === 'pending_disposal';
 
 export function workflowDisposalReason(workflow: Pick<Workflow, 'lifecycle'>): string {

@@ -1,3 +1,4 @@
+import { isClarificationRequest } from '../../shared/questionIntent';
 export type WorkflowTurnMode = 'execute' | 'inspect';
 
 const EXPLICIT_EXECUTION_PATTERNS = [
@@ -14,7 +15,9 @@ const EXPLICIT_EXECUTION_PATTERNS = [
 const PURE_STATUS_PATTERNS = [
   /^(?:请问|请问一下|帮我看|看看|看下|麻烦看|查一下|查询)?(?:目前|现在|当前)?(?:作业|流程|任务|步骤|运行|job)?\s*\d*\s*(?:的)?(?:状态|进度|排队情况|排到|还要多久|预计|什么时候能|什么时候会|到哪一步)/i,
   /(?:作业|流程|任务|job)\s*[\d#]*\s*(?:现在|目前|当前)?(?:的)?(?:状态|进度|情况|怎么样|如何|排到)/i,
-  /(?:为什么|为啥|怎么).{0,15}(?:失败|报错|挂|卡住|排队|不动)/i,
+  // 纯"为什么"类解释型问题(问原因,不是下指令)走只读,避免像旧版那样
+  // 用户问"为什么会运行那么长时间"时,执行器不答原因反而反问"如何处理"。
+  /(?:为什么|为啥|怎么).{0,15}(?:失败|报错|挂|卡住|排队|不动|这么慢|那么慢|这么久|那么久|长时间|没跑完|没完成|没结束|还没有)/i,
   /(?:排队|等待|卡住).{0,8}(?:多久|多长时间|何时|什么时候)/i,
   /(?:查看|看一下|看看|显示|展示|读出)(?:一下)?(?:作业|流程|任务|job)?\s*[\d#]*\s*(?:的)?(?:日志|输出|报错|结果文件)/i,
   /^(?:status|progress|eta|how long|when will|why did|why is|what happened|show\s+(?:me\s+)?[\w\s]{0,24}?(?:log|status|output|progress))\b/i,
@@ -29,6 +32,7 @@ const PURE_STATUS_PATTERNS = [
 export function classifyWorkflowTurn(text: string): WorkflowTurnMode {
   const normalized = String(text || '').trim();
   if (!normalized) return 'execute';
+  if (isClarificationRequest(normalized)) return 'inspect';
   if (EXPLICIT_EXECUTION_PATTERNS.some(pattern => pattern.test(normalized))) return 'execute';
   if (PURE_STATUS_PATTERNS.some(pattern => pattern.test(normalized))) return 'inspect';
   // 模糊表达默认是工作指令：用户放开权限后，executor 负责执行；

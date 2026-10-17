@@ -6,13 +6,14 @@ import { getPath7za } from 'app-builder-lib/out/toolsets/7zip.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-// 默认输出到 release/；HPCLAW_RELEASE_DIR 可改到别的目录（例如 release/ 里的旧
+// 默认输出到 release/；TRACE_RELEASE_DIR 可改到别的目录（例如 release/ 里的旧
 // win-unpacked 被别的进程占用时，换个干净目录构建，构建产物不受影响）。
-const releaseDir = process.env.HPCLAW_RELEASE_DIR
-  ? path.resolve(root, process.env.HPCLAW_RELEASE_DIR)
+const configuredReleaseDir = process.env.TRACE_RELEASE_DIR || process.env.TRACE_RELEASE_DIR;
+const releaseDir = configuredReleaseDir
+  ? path.resolve(root, configuredReleaseDir)
   : path.join(root, 'release');
-const intermediateArchive = path.join(releaseDir, `hpclaw-${pkg.version}-x64.nsis.7z`);
-const installer = path.join(releaseDir, `HPClaw-Setup-${pkg.version}-x64.exe`);
+const intermediateArchive = path.join(releaseDir, `${pkg.name}-${pkg.version}-x64.nsis.7z`);
+const installer = path.join(releaseDir, `TRACE-Setup-${pkg.version}-x64.exe`);
 const blockmap = `${installer}.blockmap`;
 
 // electron-builder skips an archive whose timestamp looks current. A crashed

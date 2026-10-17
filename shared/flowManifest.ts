@@ -83,9 +83,32 @@ export interface PreflightResult {
   ready: boolean;
 }
 
+/** 启动前整体检查发现的单个问题（POST /api/workflows/:id/preflight-run 返回） */
+export interface PreflightRunIssue {
+  kind: 'software' | 'reference' | 'param' | 'input' | 'placeholder';
+  /** 步骤序号（1-based）；仅步骤级参数与步骤脚本占位符问题携带 */
+  step?: number;
+  /** 稳定标识：软件名 / 参考数据名 / 参数名 / 输入路径 / 占位符名（多个用英文逗号连接） */
+  name: string;
+  /** 展示名 */
+  label: string;
+  message: string;
+  /** blocker 必须解决后才允许开始运行；warn 可由用户明确接受后继续 */
+  severity: 'blocker' | 'warn';
+}
+
+/** 启动前整体检查结果：用本次运行配置一次性扫描软件/参考数据/输入数据/参数/脚本占位符 */
+export interface PreflightRunReport {
+  /** 无 blocker 问题 */
+  ok: boolean;
+  issues: PreflightRunIssue[];
+  /** 环境（软件+参考数据）核查结果；无 manifest 或核查失败降级时为 null */
+  preflight: PreflightResult | null;
+}
+
 /** 流程在集群上的家目录（不含 run 层） */
 export function flowHome(slug: string): string {
-  return `~/hpclaw_flows/${slug}`;
+  return `~/trace_flows/${slug}`;
 }
 
 /** 简单字符串 hash（djb2 → 6 位 hex），用于中文名折叠后的去重后缀 */

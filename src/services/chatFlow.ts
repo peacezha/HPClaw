@@ -24,9 +24,11 @@ export function buildOutgoingMessages(
 
 // 0.2.9 与此前版本都只传 18 条 / 2 万字符。隔离 dsh 会话后，这个窗口
 // 容易让原生引擎在长对话中丢掉刚刚确认的参数。服务端仍会按模型 token
-// 预算二次裁剪，因此这里扩大到一个保守的连续窗口，不会无限增长请求体。
-const MAX_TRANSPORT_MESSAGES = 32;
-const MAX_TRANSPORT_TOTAL_CHARS = 48_000;
+// 预算二次裁剪（conversation 段申请约 5 万 token），因此这里放宽到一个
+// 仍受控的连续窗口：64 条 / 12 万字符之内，请求体不会无限增长，
+// 而长流程对话里"刚刚确认过的路径/参数"不再被提前截掉（v0.4.57）。
+const MAX_TRANSPORT_MESSAGES = 64;
+const MAX_TRANSPORT_TOTAL_CHARS = 120_000;
 const MAX_TRANSPORT_USER_CHARS = 8_000;
 const MAX_TRANSPORT_ASSISTANT_CHARS = 8_000;
 const MAX_TRANSPORT_SYSTEM_CHARS = 2_000;

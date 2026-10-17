@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const output = path.join(root, 'release-web');
 fs.mkdirSync(output, { recursive: true });
-const name = `HPClaw-${pkg.version}-web-linux-x64`;
+const name = `TRACE-${pkg.version}-web-linux-x64`;
 const stage = path.join(output, name);
 if (fs.existsSync(stage)) throw new Error('Web staging directory already exists; use a fresh checkout for reproducible packaging');
 fs.mkdirSync(stage);
@@ -22,7 +22,7 @@ for (const directory of ['dist', 'dist-electron', 'skills', 'lsf_skills', 'pipel
 }
 // An immutable deployment manifest installs only the external backend dependency.
 fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({
-  name: 'hpclaw-web', version: pkg.version, private: true, type: 'module',
+  name: 'trace-web', version: pkg.version, private: true, type: 'module',
   engines: { node: '>=22' }, scripts: { start: 'node scripts/start-web.mjs' }, dependencies: { ssh2: '1.17.0' },
 }, null, 2));
 const lock = spawnSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund'], { cwd: stage, stdio: 'inherit' });

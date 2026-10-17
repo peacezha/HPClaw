@@ -68,7 +68,7 @@ function buildSysMessage(binding: JobAgentBinding, jobId: string, status: string
 
 export async function maybeResumeLegacyAgent(evt: LegacyResumeJobEvent, deps: LegacyResumeDeps): Promise<void> {
   try {
-    if (process.env.HPCLAW_JOB_RESUME === 'off') return;
+    if (process.env.TRACE_JOB_RESUME === 'off') return;
     const binding = deps.getBinding(evt.jobId, evt.sessionId);
     // 只接管 legacy 绑定；dsh 绑定（engine 缺省）仍由 dshJobResumer 处理。
     if (!binding || binding.engine !== 'legacy') return;

@@ -8,7 +8,7 @@ function shq(value: string): string {
 }
 
 function indexFile(home: string): string {
-  return `${home.replace(/\/+$/, '')}/hpclaw_flows/.hpclaw/run-index.txt`;
+  return `${home.replace(/\/+$/, '')}/trace_flows/.trace/run-index.txt`;
 }
 
 export function appendWorkflowRunIndexCommand(home: string, runDir: string): string {
@@ -19,7 +19,8 @@ export function appendWorkflowRunIndexCommand(home: string, runDir: string): str
 
 export async function readWorkflowRunIndex(exec: RunExec, home: string, limit = MAX_INDEXED_RUNS): Promise<string[]> {
   const bounded = Math.max(1, Math.min(MAX_INDEXED_RUNS, limit));
-  const raw = await exec(`tail -n ${bounded * 2} ${shq(indexFile(home))} 2>/dev/null || true`, 10_000);
+  const oldIndex = `${home.replace(/\/+$/, '')}/hpclaw_flows/.hpclaw/run-index.txt`;
+  const raw = await exec(`tail -q -n ${bounded * 2} ${shq(oldIndex)} ${shq(indexFile(home))} 2>/dev/null || true`, 10_000);
   const seen = new Set<string>();
   const dirs: string[] = [];
   for (const line of raw.split(/\r?\n/).reverse()) {
@@ -58,7 +59,7 @@ export async function importLegacyWorkflowRunIndex(exec: RunExec, home: string):
   const file = indexFile(home);
   const dir = file.replace(/\/[^/]+$/, '');
   const raw = await exec(
-    `for f in ${shq(`${home}/hpclaw_flows`)}/*/03_workspace/runs/*/run.json; do ` +
+    `for f in ${shq(`${home}/hpclaw_flows`)}/*/03_workspace/runs/*/run.json ${shq(`${home}/trace_flows`)}/*/03_workspace/runs/*/run.json; do ` +
     `[ -f "$f" ] && dirname "$f"; done 2>/dev/null | tail -n ${MAX_INDEXED_RUNS}`,
     20_000,
   );

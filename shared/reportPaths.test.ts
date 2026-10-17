@@ -4,7 +4,7 @@ import { formatWorkflowExecutionContext } from './workflowExecution';
 
 describe('report directory hints', () => {
   it('recovers project and RUN directories from a long conversation', () => {
-    const runDir = '/home/u/hpclaw_flows/dap/03_workspace/runs/dap-1';
+    const runDir = '/home/u/trace_flows/dap/03_workspace/runs/dap-1';
     const messages = [
       { role: 'user', content: `Analyze /home/u/project\n${formatWorkflowExecutionContext({ workflowId: 'dap', runId: 'dap-1', runDir })}` },
       ...Array.from({ length: 674 }, () => ({ role: 'assistant', content: 'Still running.' })),

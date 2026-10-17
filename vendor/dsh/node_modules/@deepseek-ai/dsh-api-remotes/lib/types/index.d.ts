@@ -1,8 +1,10 @@
 /** Host BFF entry and Loader shell for the Remote contribution assembly. */
-export { ApiRemoteSessionNotFound, ApiRemoteSubagentSessionOwnership, apiRemoteSubagentOwnershipError, createApiRemoteAgentResolver, hasApiRemoteSubagentOwner, inspectApiRemoteSession, } from './agent-lookup.ts';
-export type { ApiRemoteAgentOptions, ApiRemoteAgentResult, ApiRemoteLookupError, } from './agent-lookup.ts';
+import type { Context } from '@deepseek-ai/cordis';
+export type {} from '@deepseek-ai/dsh-api-session-controller/types';
 export { API_REMOTE_FORWARDED_EVENTS } from './remote-events.ts';
 export type { ApiRemoteForwardedEvent } from './types.ts';
-/** Host plugin body; the selected contributions mount only in Client environments. */
-export declare function apply(): void;
+/** Required Host service: the Gateway owns the physical Remote stream mux. */
+export declare const inject: string[];
+/** Host plugin body registering this application's selected Cordis event source. */
+export declare function apply(ctx: Context): void;
 //# sourceMappingURL=index.d.ts.map

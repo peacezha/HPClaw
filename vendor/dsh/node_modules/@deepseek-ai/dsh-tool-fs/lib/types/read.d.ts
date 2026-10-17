@@ -40,7 +40,7 @@ export declare function parseReadArgs(args: {
     limit?: number;
 }, maxLimit: number): ReadInput;
 /**
- * Register the `read` tool and its system-prompt guidance.
+ * Register the `read` tool and its scope-aware system-prompt guidance.
  * @param ctx - the plugin context; registrations are effects scoped to it, and execution uses its `fs` service.
  * @param caps - the deployment's resolved read caps (plugin config after defaulting).
  */

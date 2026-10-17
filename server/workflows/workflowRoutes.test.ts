@@ -82,22 +82,22 @@ describe('catalogue lifecycle API', () => {
 });
 
 describe('resolveRunLogDir 路径校验', () => {
-  it('允许 home 下 hpclaw_flows / hpclaw_runs 内路径（含 ~ 写法）', () => {
-    expect(resolveRunLogDir(HOME, '~/hpclaw_flows/wf/03_workspace/runs/r1')).toBe('~/hpclaw_flows/wf/03_workspace/runs/r1');
-    expect(resolveRunLogDir(HOME, `${HOME}/hpclaw_flows/wf/03_workspace/runs/r1`)).toBe(`${HOME}/hpclaw_flows/wf/03_workspace/runs/r1`);
-    expect(resolveRunLogDir(HOME, `${HOME}/hpclaw_runs/old-run`)).toBe(`${HOME}/hpclaw_runs/old-run`);
+  it('允许 home 下 trace_flows / trace_runs 内路径（含 ~ 写法）', () => {
+    expect(resolveRunLogDir(HOME, '~/trace_flows/wf/03_workspace/runs/r1')).toBe('~/trace_flows/wf/03_workspace/runs/r1');
+    expect(resolveRunLogDir(HOME, `${HOME}/trace_flows/wf/03_workspace/runs/r1`)).toBe(`${HOME}/trace_flows/wf/03_workspace/runs/r1`);
+    expect(resolveRunLogDir(HOME, `${HOME}/trace_runs/old-run`)).toBe(`${HOME}/trace_runs/old-run`);
   });
 
   it('拒绝工作区外与穿越路径', () => {
     expect(resolveRunLogDir(HOME, '/etc')).toBeNull();
     expect(resolveRunLogDir(HOME, `${HOME}/other/dir`)).toBeNull();
-    expect(resolveRunLogDir(HOME, '~/hpclaw_flows/../../etc')).toBeNull();
+    expect(resolveRunLogDir(HOME, '~/trace_flows/../../etc')).toBeNull();
     expect(resolveRunLogDir(HOME, '')).toBeNull();
     expect(resolveRunLogDir(HOME, '  ')).toBeNull();
   });
 
   it('home 末尾斜杠不影响判断', () => {
-    expect(resolveRunLogDir(`${HOME}/`, '~/hpclaw_flows/wf/runs/r1')).toBe('~/hpclaw_flows/wf/runs/r1');
+    expect(resolveRunLogDir(`${HOME}/`, '~/trace_flows/wf/runs/r1')).toBe('~/trace_flows/wf/runs/r1');
   });
 });
 
@@ -331,7 +331,7 @@ describe('ENCODE 内置流程经 sanitize 字段不丢（抽查 encode-chipseq-t
       manifest: unknown;
       steps: Array<{ title: string; command: string; notes?: string; params?: unknown[] }>;
     }>;
-    const workflow = exported.find(item => item.id === 'encode-chipseq-tf');
+    const workflow = exported.find(item => item.id === 'encode-chipseq-tf-dag');
     expect(workflow).toBeDefined();
     // sanitizeParams 全字段透传（type/options/placeholder/required/min/max/step/pattern/help）
     expect(sanitizeParams(workflow!.params)).toEqual(workflow!.params);

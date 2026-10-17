@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'hpclaw_agent_workspace';
+const STORAGE_KEY = 'trace_agent_workspace';
 
 export function normalizeAgentWorkspace(value: unknown): string {
   return typeof value === 'string' ? value : '';

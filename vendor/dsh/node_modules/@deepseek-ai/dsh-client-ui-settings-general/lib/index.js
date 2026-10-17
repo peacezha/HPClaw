@@ -1,15 +1,14 @@
 import z from "@deepseek-ai/schemastery";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 //#region lib/types/index.js
-/** Host loader entry for the browser implementation exported from `./client`. */
-/** Durable settings namespace for product-wide GUI onboarding facts. */
-const ONBOARDING_SETTINGS_NAMESPACE = "ui-onboarding";
-const OnboardingSettingsSchema = z.object({ welcomeNoticeVersion: z.string() });
-/** Register the durable GUI-onboarding section when a settings provider exists. */
+/** Live welcome preference. */
+const Config = z.object({ welcomeNoticeVersion: z.string().volatile() });
+/** The browser consumes the configuration form projection.
+* @param ctx Plugin context used for optional settings presentation.
+*/
 function apply(ctx) {
-	ctx.inject(["settings"], (settingsCtx) => {
-		settingsCtx.settings.register(settingsNamespace(ONBOARDING_SETTINGS_NAMESPACE), OnboardingSettingsSchema);
+	ctx.inject(["settings"], (child) => {
+		child.effect(() => child.settings.configure({ auto: false }, ctx.fiber));
 	});
 }
 //#endregion
-export { apply };
+export { Config, apply };

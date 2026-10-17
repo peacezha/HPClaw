@@ -57,4 +57,26 @@ describe('consumeAgentStream', () => {
       onPart: vi.fn(),
     })).rejects.toMatchObject({ phase: 'idle' });
   });
+
+  it('suspends the idle deadline while a human wait (confirm/plan review) is pending', async () => {
+    let humanWait = true;
+    const parts: string[] = [];
+    async function* stream(): AsyncGenerator<{ type: string; text?: string }> {
+      yield { type: 'tool-call', toolName: 'set_plan' };
+      // 模拟审批挂起：60ms 后解除（远超 20ms 空闲上限），随后正常出文本。
+      await new Promise(resolve => setTimeout(resolve, 60));
+      humanWait = false;
+      yield { type: 'text-delta', text: '审批后继续' };
+    }
+
+    const result = await consumeAgentStream(stream(), {
+      signal: new AbortController().signal,
+      firstResponseTimeoutMs: 100,
+      idleTimeoutMs: 20,
+      isHumanWait: () => humanWait,
+      onPart: part => { if (part.text) parts.push(part.text); },
+    });
+    expect(result).toEqual({ aborted: false, receivedProviderResponse: true });
+    expect(parts).toEqual(['审批后继续']);
+  });
 });

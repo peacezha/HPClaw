@@ -11,10 +11,9 @@ import type { AnthropicResponse, ContentBlock } from './types.ts';
 /** Stable id this provider registers under. */
 export declare const DEEPSEEK_PROVIDER_ID = "deepseek-official";
 /**
- * Default endpoint: DeepSeek's Anthropic-compatible API, `/v1` included
- * (`/messages` is appended). This is NOT the chat-completions base
- * (`https://api.deepseek.com`) `@deepseek-ai/dsh-llm-deepseek` uses, so this
- * provider does NOT reuse `$DEEPSEEK_BASE_URL` — only the API key is shared.
+ * Default auxiliary-search endpoint, including `/v1`; `/messages` is appended.
+ * `$DEEPSEEK_SEARCH_BASE_URL` overrides it independently of the conversation
+ * adapter's endpoint. Both providers share the API key.
  */
 export declare const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic/v1";
 /** Default Anthropic-format model name (aligned with the repo's DeepSeek model vocabulary). */
@@ -66,6 +65,12 @@ declare module '@deepseek-ai/dsh-session/types' {
 }
 /** Resolved provider options (the plugin's `apply` supplies credential and constant defaults). */
 export interface DeepSeekSearchProviderOptions {
+    /**
+     * Resolve the DeepSeek account token for one search endpoint. A token takes
+     * precedence over every API key and is sent only as `x-dsh-auth-token`;
+     * `undefined` selects API-key authentication.
+     */
+    resolveAccountToken?: (endpoint: string) => Promise<string | undefined>;
     /** Literal DeepSeek API key; when present it wins over {@link resolveApiKey}. */
     apiKey?: string;
     /** Resolve the current DeepSeek API key for one search operation. */
@@ -110,7 +115,10 @@ export declare function citationSnippets(blocks: readonly ContentBlock[]): Map<s
  * @throws {@link WebError} when native search produced no result block.
  */
 export declare function mapAnthropicResponse(response: AnthropicResponse): WebSearchResult;
-/** The DeepSeek-backed search provider; HTTP redirects fail as `WEB_PROVIDER_ERROR`. */
+/**
+ * The DeepSeek-backed search provider. HTTP redirects fail as `WEB_PROVIDER_ERROR`;
+ * failures after dispatch name the endpoint and tell the model how the user can configure it.
+ */
 export declare class DeepSeekSearchProvider implements WebSearchProvider {
     private readonly resolveOptions;
     readonly id = "deepseek-official";
@@ -125,7 +133,15 @@ export declare class DeepSeekSearchProvider implements WebSearchProvider {
     available(): boolean;
     search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult>;
     /**
-     * Resolve one operation's credential without retaining it on the provider.
+     * Resolve one operation's authentication headers without retaining a credential on the provider.
+     * @param options - the caller's snapshot, so the credential and the endpoint it is sent to come from one section.
+     * @param endpoint - the Messages endpoint this operation dispatches to.
+     * @param signal - abort signal for the surrounding search.
+     * @returns the account-token header when one resolves, otherwise the API-key headers, tagged by credential kind.
+     */
+    private authHeaders;
+    /**
+     * Resolve one operation's API key without retaining it on the provider.
      * @param options - the caller's snapshot, so the key and the endpoint it is sent to come from one section.
      * @param signal - abort signal for the surrounding search.
      * @returns the resolved key.

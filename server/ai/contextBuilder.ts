@@ -7,6 +7,11 @@ import { formatMemoryForAI } from './memoryOrchestrator';
 import { formatPlanForAI } from './agentPlanner';
 import { fileRecognizer } from './fileRecognizer';
 import { clusterContext } from './clusterContext';
+import {
+  planConversationCompaction,
+  resolveConversationCompaction,
+  type CompactionSummarizer,
+} from './contextCompactor';
 import path from 'node:path';
 import { appPath, dataPath } from '../paths';
 
@@ -33,6 +38,14 @@ export interface SmartContextInput {
   skillIndex?: SkillIndex;
   /** 正式流程逐步读取自己的来源，不做通用技能匹配和正文注入。 */
   skipSkills?: boolean;
+  /** 会话 ID：提供后启用长对话自动压缩（摘要按会话缓存）；缺省保持旧的纯截断行为。 */
+  conversationId?: string;
+  /** 压缩执行器（把被挤出的旧消息摘要为结构化记忆）；缺省不压缩，仅截断。 */
+  compactSummarize?: CompactionSummarizer;
+  /** 本轮确有新消息被压缩进摘要并注入时回调一次（用于 SSE 通知前端）。 */
+  onCompacted?: (info: { count: number; summaryChars: number }) => void;
+  /** 等待压缩结果的最长时间；超时回退截断，后台完成的摘要写入缓存供下轮使用。 */
+  compactionTimeoutMs?: number;
 }
 
 function clipByTokens(text: string, maxTokens: number): string {
@@ -195,13 +208,47 @@ export async function buildSmartContext(input: SmartContextInput): Promise<AIMes
       merged.push({ role: msg.role, content: msg.content || '' });
     }
   }
-  const conversation = trimConversationByTokens(merged, convTokens);
+
+  // 历史超出 conversation 段实际预算时，优先把被挤出的最旧消息压缩成摘要
+  // 注入历史最前面（摘要按 conversationId 缓存、增量更新）；压缩不可用、
+  // 超时或失败时回退为旧的纯截断行为，绝不因压缩阻塞对话。
+  let conversation: AIMessage[];
+  let compactionNotice: { count: number; summaryChars: number } | undefined;
+  const compactionPlan = input.conversationId && input.compactSummarize
+    ? planConversationCompaction(merged, convTokens)
+    : null;
+  if (compactionPlan && input.conversationId && input.compactSummarize) {
+    const compacted = await resolveConversationCompaction({
+      conversationId: input.conversationId,
+      overflow: compactionPlan.overflow,
+      summarize: input.compactSummarize,
+      timeoutMs: input.compactionTimeoutMs,
+      locale: input.locale,
+    });
+    if (compacted) {
+      const header = input.locale === 'en-US'
+        ? `## Earlier conversation summary (${compacted.count} oldest messages auto-compressed)`
+        : `## 早期对话摘要（已自动压缩 ${compacted.count} 条最早消息）`;
+      conversation = [
+        { role: 'system', content: `${header}\n${compacted.summaryText}` },
+        ...compactionPlan.kept,
+      ];
+      if (compacted.notify) {
+        compactionNotice = { count: compacted.count, summaryChars: compacted.summaryChars };
+      }
+    } else {
+      conversation = trimConversationByTokens(merged, convTokens);
+    }
+  } else {
+    conversation = trimConversationByTokens(merged, convTokens);
+  }
 
   const systemMessage: AIMessage = {
     role: 'system',
     content: fragments.filter(Boolean).join('\n\n---\n\n'),
   };
 
+  if (compactionNotice) input.onCompacted?.(compactionNotice);
   return [systemMessage, ...conversation];
 }
 
@@ -210,7 +257,7 @@ function latestUserText(messages: AIMessage[]): string {
 }
 
 function modePersona(mode: ContextBuildOptions['mode']): string {
-  const base = 'You are HPClaw, a skill-aware AI partner for HPC and bioinformatics work.';
+  const base = 'You are TRACE, a skill-aware AI partner for HPC and bioinformatics work.';
 
   switch (mode) {
     case 'autocomplete':
@@ -222,7 +269,7 @@ function modePersona(mode: ContextBuildOptions['mode']): string {
 Mode: stateful agent with planning, workflow and tool access (set_plan, update_plan_step, run_command, ask_user, search_skills, get_workflow, get_workflow_step, get_workflow_run, update_workflow_run, save_skill).
 Use the provided tools for all actions. Never output XML tags.`;
     default:
-      return `${base}\nMode: HPClaw AI workspace. Ground answers in current terminal, conversation, observations, and installed skills.`;
+      return `${base}\nMode: TRACE AI workspace. Ground answers in current terminal, conversation, observations, and installed skills.`;
   }
 }
 
@@ -248,7 +295,7 @@ export function buildGatewayMessages(options: ContextBuildOptions): AIMessage[] 
   const systemMessages = rawMessages.filter(m => m.role === 'system').map(m => m.content);
 
   const fragments = [
-    'You are HPClaw, a skill-aware AI partner for HPC and bioinformatics work.',
+    'You are TRACE, a skill-aware AI partner for HPC and bioinformatics work.',
     ...systemMessages,
   ];
 

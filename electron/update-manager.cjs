@@ -4,15 +4,15 @@ const path = require('node:path');
 const AUTO_CHECK_DELAY_MS = 20_000;
 const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 
-// 内置默认更新源：GitHub Releases（peacezha/HPClaw）。
+// 内置默认更新源：GitHub Releases（peacezha/TRACE）。
 // 每个 Release 需附带 electron-builder 生成的 latest.yml 与安装包；
 // 用户在设置里填写自建地址时优先使用自建 generic 源。
 const GITHUB_FEED = Object.freeze({
   provider: 'github',
   owner: 'peacezha',
-  repo: 'HPClaw',
+  repo: 'TRACE',
 });
-const GITHUB_RELEASES_LABEL = 'GitHub Releases（peacezha/HPClaw）';
+const GITHUB_RELEASES_LABEL = 'GitHub Releases（peacezha/TRACE）';
 
 /**
  * 用户在“自定义更新服务器地址”里填的很可能就是 GitHub 仓库地址
@@ -25,7 +25,8 @@ function parseGithubRepoUrl(value) {
   const match = raw.match(/^https?:\/\/(?:www\.)?github\.com\/([^/?#]+)\/([^/?#]+)/i);
   if (!match) return null;
   const owner = match[1];
-  const repo = match[2].replace(/\.git$/i, '').replace(/\/+$/, '');
+  let repo = match[2].replace(/\.git$/i, '').replace(/\/+$/, '');
+  if (owner.toLowerCase() === 'peacezha' && repo.toLowerCase() === 'hpclaw') repo = 'TRACE';
   if (!owner || !repo) return null;
   return { owner, repo };
 }
@@ -120,7 +121,7 @@ function createUpdateManager(options) {
       if (broadcast) broadcast(snapshot);
       else {
         const window = getWindow();
-        if (window && !window.isDestroyed()) window.webContents.send('hpclaw:update:status', snapshot);
+        if (window && !window.isDestroyed()) window.webContents.send('trace:update:status', snapshot);
       }
     } catch {
       // Renderer may be reloading; state remains available through getState().
@@ -264,8 +265,8 @@ function createUpdateManager(options) {
       buttons: ['安装并重启', '取消'],
       defaultId: 1,
       cancelId: 1,
-      title: '安装 HPClaw 更新',
-      message: 'HPClaw 将关闭并安装更新。请先确认没有正在传输的文件或未保存的工作。',
+      title: '安装 TRACE 更新',
+      message: 'TRACE 将关闭并安装更新。请先确认没有正在传输的文件或未保存的工作。',
     };
     const result = window && !window.isDestroyed()
       ? await dialog.showMessageBox(window, options)
@@ -280,9 +281,9 @@ function createUpdateManager(options) {
     if (platform !== 'win32') return setState({ phase: 'error', message: '本地安装包更新仅支持 Windows' });
     const window = getWindow();
     const picker = {
-      title: '选择 HPClaw 安装包',
+      title: '选择 TRACE 安装包',
       properties: ['openFile'],
-      filters: [{ name: 'HPClaw Windows 安装包', extensions: ['exe'] }],
+      filters: [{ name: 'TRACE Windows 安装包', extensions: ['exe'] }],
     };
     const selection = window && !window.isDestroyed()
       ? await dialog.showOpenDialog(window, picker)
@@ -290,7 +291,7 @@ function createUpdateManager(options) {
     if (selection.canceled || !selection.filePaths?.[0]) return getState();
     const installerPath = path.resolve(selection.filePaths[0]);
     if (path.extname(installerPath).toLowerCase() !== '.exe') {
-      return setState({ phase: 'error', message: '请选择 .exe 格式的 HPClaw 安装包' });
+      return setState({ phase: 'error', message: '请选择 .exe 格式的 TRACE 安装包' });
     }
     const confirmation = window && !window.isDestroyed()
       ? await dialog.showMessageBox(window, {
@@ -304,7 +305,7 @@ function createUpdateManager(options) {
     if (confirmation.response !== 0) return getState();
     const openError = await shell.openPath(installerPath);
     if (openError) return setState({ phase: 'error', message: `无法运行安装包：${openError}` });
-    setState({ phase: 'installing', message: '安装包已启动，HPClaw 即将退出…' });
+    setState({ phase: 'installing', message: '安装包已启动，TRACE 即将退出…' });
     setTimeoutImpl(() => app.quit(), 800);
     return getState();
   };

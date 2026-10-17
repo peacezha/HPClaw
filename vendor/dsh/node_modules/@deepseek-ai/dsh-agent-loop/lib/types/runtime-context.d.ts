@@ -1,10 +1,59 @@
 /**
- * Durable projection state for dynamic runtime context.
+ * Durable projection state for the two loop-owned surface messages the system
+ * prompt plugin forms: the system prompt (surface node 0 and any in-history
+ * replacement) and the dynamic runtime-context snapshot.
  * @module @deepseek-ai/dsh-agent-loop/runtime-context
  */
-import type { ContextSnapshotSection } from '@deepseek-ai/dsh-llm';
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session';
+import type { ContextFormed, ContextSnapshotSection } from '@deepseek-ai/dsh-llm';
+import type { Session, SurfaceIntent, SystemMessage, UserMessage } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'runtime-context': {
+            kind: 'runtime-context';
+        } & ContextFormed;
+    }
+}
+/** One uncommitted system-prompt surface operation for request admission or reconciliation. */
+export interface SystemPromptCommit {
+    /** Rendered prompt or empty content: an empty head records no prompt; empty tails are dormant. */
+    message: SystemMessage;
+    /** `append` for a new system node, otherwise a replacement of one surviving system node. */
+    intent: SurfaceIntent<'system/message'>;
+}
+/** The request-series facts one prompt decision is made under. */
+export interface SystemPromptDecisionInput {
+    /** Whether the prepared route for this attempt reads a later `system` message as the effective prompt. */
+    inHistory: boolean;
+    /**
+     * Whether prompt admission must consolidate: a pre-step listener declared a
+     * new series, the surface changed since the last request, or assembled tools
+     * changed on a route without tool-update support.
+     */
+    startsSeries: boolean;
+}
+/**
+ * Decides how a rendered system prompt reaches the surface without owning the
+ * commit. The first prompt, even empty, reserves surface node 0.
+ * A capable continuing series appends changed nonempty text after the
+ * cached history. An incapable route, broken series, or cleared prompt instead
+ * normalizes the first system node and empties later active nodes. Dormant empty
+ * tails do not supply effective text or require repeated replacements.
+ */
+export declare class SystemPromptProjection {
+    private readonly session;
+    constructor(session: Session);
+    /** The surviving `system/message` nodes in surface order. */
+    private systemNodes;
+    /**
+     * Reconcile effective text and retained nodes with the prepared route and series.
+     * @param rendered - the fully rendered system prompt; `''` when none is active.
+     * @param input - the route capability and series facts for this step.
+     * @returns ordered per-node updates; an empty list means no update is needed.
+     */
+    project(rendered: string, input: SystemPromptDecisionInput): SystemPromptCommit[];
+    private replace;
+}
 /** Tracks the last retained runtime-context snapshot without owning its commit. */
 export declare class RuntimeContextProjection {
     /** `undefined` means no snapshot ever existed; `null` means none is retained. */

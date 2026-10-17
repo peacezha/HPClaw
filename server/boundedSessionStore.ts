@@ -15,7 +15,7 @@ interface StoredSession {
 /**
  * A small in-process session store for the desktop server.
  *
- * HPClaw only needs a cookie-to-SSH-session mapping, so an external database
+ * TRACE only needs a cookie-to-SSH-session mapping, so an external database
  * would be unnecessary. Unlike express-session's development MemoryStore,
  * this store prunes expired entries and enforces a hard LRU-style capacity.
  */

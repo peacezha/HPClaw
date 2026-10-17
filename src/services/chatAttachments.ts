@@ -1,7 +1,7 @@
 /**
  * 对话附件：只记录路径引用，不在内存/IndexedDB 里保存文件内容。
  * - 本地模式：文件由桌面端 IPC 复制进工作区 attachments/ 子目录，引用为工作区相对路径
- * - 集群模式：文件经传输队列上传到 ~/hpclaw_uploads/，引用为 ~ 开头的远程路径
+ * - 集群模式：文件经传输队列上传到 ~/trace_uploads/，引用为 ~ 开头的远程路径
  */
 
 export interface ChatAttachment {
@@ -13,7 +13,7 @@ export interface ChatAttachment {
 }
 
 /** 集群模式下对话附件的固定上传目录（SFTP 相对路径，解析到用户家目录） */
-export const CLUSTER_ATTACHMENT_DIR = 'hpclaw_uploads';
+export const CLUSTER_ATTACHMENT_DIR = 'trace_uploads';
 
 /** 本地路径拼接：工作区可能是 Windows（E:\work）或 POSIX（/home/u）风格 */
 export function joinLocalPath(dir: string, name: string): string {

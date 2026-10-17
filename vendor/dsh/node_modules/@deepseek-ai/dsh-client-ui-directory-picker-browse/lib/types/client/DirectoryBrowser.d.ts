@@ -1,12 +1,21 @@
-import type { DirectoryListing } from '@deepseek-ai/dsh-client-runtime/client';
+import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client';
 import type { Translate } from '@deepseek-ai/dsh-client-locale/client';
 /** Owner-supplied browser props: browse calls, pick semantics, and copy. */
 export interface DirectoryBrowserProps {
     /** Dialog visibility (owner-local; closed unmounts nothing but resets on reopen). */
     open: boolean;
-    /** List one directory level (absent path = the Host home directory); the signal aborts a superseded scan on the wire. */
+    /**
+     * List one directory level (absent path = the Host home directory); the
+     * signal aborts a superseded scan on the wire. A rejection may carry
+     * `{ rpcError: { message: string } }`; the dialog prefers that Host
+     * business message over the ordinary Error text.
+     */
     listDirectory: (path?: string, signal?: AbortSignal) => Promise<DirectoryListing>;
-    /** Create one child directory under an existing parent. */
+    /**
+     * Create one child directory under an existing parent. A rejection may
+     * carry `{ rpcError: { message: string } }`; the dialog prefers that Host
+     * business message over the ordinary Error text.
+     */
     createDirectory: (path: string, name: string) => Promise<string>;
     /** The operator confirmed a directory (the selection, else the listed level). */
     onOpen: (path: string) => void;

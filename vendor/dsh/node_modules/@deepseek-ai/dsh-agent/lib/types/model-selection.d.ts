@@ -3,7 +3,15 @@
  * @module @deepseek-ai/dsh-agent/model-selection
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
+import { type ReasoningEffortId } from '@deepseek-ai/dsh-llm';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'model-selection': {
+            kind: 'model-selection';
+        } & ContextFormed;
+    }
+}
 /** Complete provider, model, and optional reasoning effort selected for one live Agent. */
 export interface ModelSelection {
     /** Registered provider route. */
@@ -28,9 +36,15 @@ export interface ModelSelectionRef {
  * surfaces. An absent selected effort clears any inherited effort, restoring
  * the selected model's provider/default behavior.
  *
+ * A provider/model change appends a durable user-role notice to the next
+ * admitted request. It compares the assembled selection with the latest
+ * request header; effort-only changes and empty no-request decisions add no
+ * notice. Failure before header persistence repeats the notice on the next
+ * request.
+ *
  * @param agentCtx - The selected Agent's scoped context.
  * @param selection - Mutable selection owned by the calling entry point.
- * @returns Disposer for both scoped waterfall listeners.
+ * @returns Disposer for all scoped waterfall listeners.
  */
 export declare function installModelSelection(agentCtx: Context, selection: ModelSelectionRef): () => void;
 //# sourceMappingURL=model-selection.d.ts.map

@@ -1,24 +1,24 @@
-# HPClaw 竞赛版构建说明
+# TRACE 竞赛版构建说明
 
 ## 产品边界
 
-HPClaw 竞赛版是一个可与完整版并排安装的独立 Windows 客户端。它保留：
+TRACE 竞赛版是一个可与完整版并排安装的独立 Windows 客户端。它保留：
 
 - 集群登录、多集群标签和终端；
 - 作业监控、文件传输、文件预览和本地打开编辑；
-- AI 对话、对话历史和 HPClaw 原生智能体；
+- AI 对话、对话历史和 TRACE 原生智能体；
 - 技能库、流程库、流程创建/修改/删除、流程运行、续跑、监控和管线资产。
 
-竞赛版只移除 DSH：不打包 `vendor/dsh`、`vendor/dsh-plugin` 和 DSH 专用的 `vendor/node-runtime`，不注册 DSH Bridge API，AI Agent 固定使用 HPClaw 原生引擎。
+竞赛版只移除 DSH：不打包 `vendor/dsh`、`vendor/dsh-plugin` 和 DSH 专用的 `vendor/node-runtime`，不注册 DSH Bridge API，AI Agent 固定使用 TRACE 原生引擎。
 
 ## 独立性
 
 | 项目 | 完整版 | 竞赛版 |
 |---|---|---|
-| appId | `com.hpclaw.desktop` | `com.hpclaw.competition` |
-| productName | `HPClaw` | `HPClaw Competition` |
-| 主程序 | `HPClaw.exe` | `HPClaw Competition.exe` |
-| 用户数据 | `HPClaw` | `HPClaw Competition` |
+| appId | `com.trace.desktop` | `com.trace.competition` |
+| productName | `TRACE` | `TRACE Competition` |
+| 主程序 | `TRACE.exe` | `TRACE Competition.exe` |
+| 用户数据 | `TRACE` | `TRACE Competition` |
 | 安装/卸载记录 | 完整版独立 GUID | 竞赛版独立 GUID |
 | 发布目录 | `release` | `release-competition` |
 

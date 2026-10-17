@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 /**
- * Register the Trajectory Tool lifecycle.
+ * Register the Trajectory Tool lifecycle with raw native and PTC error details.
  *
  * @param ctx - Plugin context receiving the Definition.
  */

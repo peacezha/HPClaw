@@ -1,0 +1,125 @@
+/** Dictionary namespace for every voice control. */
+export declare const NS = "voice-input";
+/** Chinese dictionary and key source. */
+export declare const zh: {
+    readonly dictate: "听写";
+    readonly 'setupPrompt.title': "使用语音输入前需要安装";
+    readonly 'setupPrompt.body': "语音输入插件已开启。首次使用需要在本机下载并准备识别模型，请前往插件详情页查看空间、内存和时间说明，再开始安装。";
+    readonly 'setupPrompt.later': "稍后";
+    readonly 'setupPrompt.open': "前往安装";
+    readonly 'setupPrompt.trigger': "打开语音输入引导";
+    readonly 'setupPrompt.details': "前往语音插件设置";
+    readonly 'setupPrompt.unavailableTitle': "语音识别尚未就绪";
+    readonly 'setupPrompt.unavailableBody': "请前往语音插件详情页查看识别服务状态、准备进度或错误信息";
+    readonly 'setup.local': "将在运行 DSH 的机器上下载本地模型，无需安装 Python 或编译工具。";
+    readonly 'setup.disk': "硬盘空间";
+    readonly 'setup.diskValue': "建议预留约 {gb} GB，包含模型、运行时和下载缓存";
+    readonly 'setup.memory': "运行内存";
+    readonly 'setup.memoryValue': "模型加载后约 {gb} GB，识别时可能更高";
+    readonly 'setup.time': "首次准备";
+    readonly 'setup.timeValue': "参考 {min}–{max} 分钟，取决于网络和机器性能";
+    readonly 'setup.estimateNote': "以上为估算；网络较慢时可能更久。已下载的资源会复用，默认在闲置后释放模型内存。";
+    readonly 'step.check': "检查本地资源";
+    readonly 'step.model': "准备语音识别模型";
+    readonly 'step.vad': "准备语音检测模型";
+    readonly 'step.verify': "校验模型文件";
+    readonly 'step.load': "加载 {name}";
+    readonly 'stepStatus.pending': "未开始";
+    readonly 'stepStatus.running': "进行中";
+    readonly 'stepStatus.complete': "已完成";
+    readonly 'stepStatus.failed': "失败";
+    readonly 'stepStatus.cancelled': "已取消";
+    readonly 'short.downloading': "下载中";
+    readonly 'short.failed': "准备失败";
+    readonly retryRecording: "重新录音";
+    readonly preparationSteps: "准备步骤";
+    readonly prepare: "下载并准备";
+    readonly retryPrepare: "重试准备";
+    readonly cancelPrepare: "取消准备";
+    readonly downloadProgress: "下载进度";
+    readonly downloadBytes: "下载：{completed} / {total} MB，{percent}%";
+    readonly downloadUnknown: "已下载 {completed} MB";
+    readonly elapsed: "已等待 {seconds} 秒";
+    readonly preparationFailed: "准备失败：{message}";
+    readonly 'download.network': "无法下载 {resource}：连接下载服务失败。";
+    readonly 'download.dns': "无法下载 {resource}：无法解析下载地址。";
+    readonly 'download.timeout': "下载 {resource} 超时。";
+    readonly 'download.certificate': "无法下载 {resource}：安全连接的证书校验失败。";
+    readonly 'download.http': "无法下载 {resource}：下载服务返回 HTTP {status}。";
+    readonly 'download.integrity': "{resource} 下载不完整或文件校验失败。";
+    readonly 'download.storage': "无法保存 {resource}：磁盘空间不足或没有写入权限。";
+    readonly 'download.unknown': "准备 {resource} 失败。";
+    readonly 'downloadAdvice.network': "请检查运行 DSH 的机器能否访问下载来源及其模型下载服务；如需代理，请在该机器上配置后重试。";
+    readonly 'downloadAdvice.dns': "请检查运行 DSH 的机器的 DNS 和代理设置，确认可以解析下载来源的域名后重试。";
+    readonly 'downloadAdvice.timeout': "请检查运行 DSH 的机器的网络或代理连接，稍后重试。已下载并通过校验的文件会保留。";
+    readonly 'downloadAdvice.certificate': "请检查运行 DSH 的机器的系统时间、受信任证书和代理设置后重试。";
+    readonly 'downloadAdvice.http': "请确认下载地址可用、代理可正常连接下载服务，或稍后重试。";
+    readonly 'downloadAdvice.integrity': "请重试下载。已完成并通过校验的其他文件会保留。";
+    readonly 'downloadAdvice.storage': "请检查运行 DSH 的机器的剩余磁盘空间，以及模型目录的写入权限后重试。";
+    readonly 'downloadAdvice.unknown': "请检查运行 DSH 的机器的网络、磁盘空间和模型目录权限后重试。";
+    readonly downloadSource: "下载来源：{source}";
+    readonly sourceChoice: "模型下载源";
+    readonly sourceAuto: "自动选择（推荐）";
+    readonly sourceHuggingFace: "Hugging Face";
+    readonly sourceMirror: "HF-Mirror（国内镜像）";
+    readonly sourceAutoHelp: "优先使用响应较快的源，下载失败时自动尝试其他源。";
+    readonly sourceManualHelp: "仅从所选源下载；已下载并通过校验的文件会复用。";
+    readonly downloadCode: "错误码：{code}";
+    readonly reconnecting: "正在连接语音服务…";
+    readonly 'preparation.unprepared': "首次使用需要下载本地识别模型。";
+    readonly 'preparation.checking': "正在检查本地资源…";
+    readonly 'preparation.loading': "正在加载 {name}…";
+    readonly 'preparation.waking': "正在唤醒本地语音…";
+    readonly 'preparation.ready': "本地语音已就绪。";
+    readonly 'preparation.standby': "本地资源已准备，录音时自动唤醒。";
+    readonly 'preparation.cancelled': "准备已取消，已完成的下载会保留。";
+    readonly 'preparation.cancelling': "正在取消准备…";
+    readonly cloudReady: "云端语音识别已就绪。";
+    readonly discard: "丢弃识别文字";
+    readonly transcribingShort: "识别中…";
+    readonly wakingShort: "唤醒中…";
+    readonly provider: "识别服务";
+    readonly language: "识别语言";
+    readonly inputDevice: "输入设备";
+    readonly systemMicrophone: "系统默认";
+    readonly systemMicrophoneNamed: "系统默认（{name}）";
+    readonly unnamedSelectedMicrophone: "麦克风";
+    readonly unnamedMicrophone: "麦克风 {number}";
+    readonly inputLevel: "麦克风输入电平";
+    readonly deviceUnavailable: "不可用";
+    readonly deviceMissing: "麦克风不可用，请选择其他输入设备";
+    readonly auto: "自动识别";
+    readonly zh: "中文";
+    readonly en: "英语";
+    readonly yue: "粤语";
+    readonly ja: "日语";
+    readonly ko: "韩语";
+    readonly start: "开始录音";
+    readonly stop: "停止并识别";
+    readonly cancel: "取消";
+    readonly insert: "插入文字";
+    readonly loading: "正在读取识别服务…";
+    readonly requesting: "请允许使用麦克风…";
+    readonly recording: "正在录音…";
+    readonly interrupted: "录音中断，请重试。";
+    readonly local: "音频在运行 DSH 的机器上识别。需要下载模型时，请确保该机器能访问所选下载源及其文件服务。如需代理，请在该机器上配置。";
+    readonly cloud: "音频将发送至所选云端服务。";
+    readonly empty: "未识别到语音";
+    readonly cancelled: "已取消语音输入。";
+    readonly conflict: "草稿已被修改。识别文字已保留，可在当前光标位置插入。";
+    readonly failed: "语音识别失败：{message}";
+    readonly unavailable: "当前浏览器不支持录音，请使用支持麦克风的浏览器。";
+    readonly permission: "麦克风权限未开启，请在浏览器和系统设置中允许访问。";
+    readonly tooLarge: "录音超过服务限制，请缩短录音后重试。";
+};
+/** Keys accepted by the voice input translator. */
+export type VoiceKey = keyof typeof zh;
+/** English dictionary with the same complete key set. */
+export declare const en: Record<VoiceKey, string>;
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+    interface LocaleNamespaceMap {
+        /** Experimental microphone and transcription controls. */
+        'voice-input': VoiceKey;
+    }
+}
+//# sourceMappingURL=locales.d.ts.map

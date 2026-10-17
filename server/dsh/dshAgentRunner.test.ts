@@ -3,268 +3,95 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const harness = vi.hoisted(() => ({
+const harness = {
   calls: [] as string[],
-  hooks: undefined as any,
-  replayQuestion: false,
-  questionResponse: undefined as any,
-  answerAccepted: true,
+  eventSubs: new Set<(n: { sessionId: string; event: any }) => void>(),
+  resumeError: undefined as Error | undefined,
+  probe: 'idle' as 'idle' | 'running' | 'unknown',
+  promptError: undefined as Error | undefined,
   lastPromptText: undefined as string | undefined,
-  promptCompletes: true,
-  running: false,
-  probeError: false,
-  historyEvents: [] as any[],
-}));
+};
+
+function emit(sessionId: string, event: any) {
+  for (const cb of [...harness.eventSubs]) cb({ sessionId, event });
+}
 
 vi.mock('./dshSidecar', () => ({
-  ensureSidecar: vi.fn(async () => ({ ok: true, baseUrl: 'http://127.0.0.1:3999' })),
+  ensureSidecar: vi.fn(async () => ({ ok: true, baseUrl: 'sdk+stdio://local' })),
+  getSidecarClient: vi.fn(() => fakeClient),
 }));
 
-vi.mock('./dshClient', () => ({
-  DshClient: class MockDshClient {
-    async createSession() {
-      return 'dsh-session-test';
-    }
-
-    async selectModel() {}
-    async sessionStatus() {
-      if (harness.probeError) throw new Error('connection refused');
-      return { running: harness.running };
-    }
-    async history() { return { events: harness.historyEvents.map(event => ({ event })), hasMore: false }; }
-
-    connectMux(hooks: any) {
-      harness.calls.push('connect');
-      harness.hooks = hooks;
-      queueMicrotask(() => {
-        hooks.onOpened?.();
-        if (harness.replayQuestion) {
-          harness.calls.push('question');
-          hooks.onFrame({
-            type: 'server-request',
-            rpcId: 'question-rpc-1',
-            method: 'question/requested',
-            payload: {
-              type: 'question/requested',
-              sessionId: 'dsh-session-test',
-              questions: [{ id: 'sequence', header: '补全序列', question: '请提供最后一条序列', options: [] }],
-            },
-          });
-        }
-      });
-      return { close: vi.fn() };
-    }
-
-    async prompt(opts: any) {
-      harness.calls.push('prompt');
-      harness.lastPromptText = opts?.text;
-      if (!harness.promptCompletes) { harness.running = true; return { accepted: true }; }
-      queueMicrotask(() => harness.hooks.onFrame({
-        type: 'server-request',
-        method: 'session/event',
-        payload: {
-          sessionId: 'dsh-session-test',
-          event: { type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '已收到' } } },
-        },
-      }));
-      queueMicrotask(() => harness.hooks.onFrame({
-        type: 'server-request',
-        method: 'session/event',
-        payload: {
-          sessionId: 'dsh-session-test',
-          event: { type: 'turn/end', data: { reason: { kind: 'completed' } } },
-        },
-      }));
-      return { accepted: true };
-    }
-
-    async cancel() { harness.calls.push('cancel'); }
-
-    async respondApproval() {
-      harness.calls.push('respond-approval');
-      return true;
-    }
-
-    async respondQuestion(opts: any) {
-      harness.calls.push('respond-question');
-      harness.questionResponse = opts;
-      harness.replayQuestion = false;
-      return harness.answerAccepted;
-    }
-  },
-}));
+const fakeClient = {
+  isAlive: true,
+  resume: vi.fn(async (_sessionId: string) => {
+    harness.calls.push('resume');
+    if (harness.resumeError) throw harness.resumeError;
+  }),
+  setWorkingDirectory: vi.fn(async (sessionId: string, dir: string) => {
+    harness.calls.push('set-cwd');
+    return dir;
+  }),
+  prompt: vi.fn(async (opts: { sessionId: string; text: string }) => {
+    harness.calls.push('prompt');
+    harness.lastPromptText = opts.text;
+    if (harness.promptError) throw harness.promptError;
+    return { messageId: 'msg-1' };
+  }),
+  probeSession: vi.fn(async (_sessionId: string, _timeoutMs?: number) => harness.probe),
+  sessionStatusOf: vi.fn((_sessionId: string) => undefined as 'idle' | 'running' | undefined),
+  onSessionEvent: vi.fn((cb: (n: { sessionId: string; event: any }) => void) => {
+    harness.eventSubs.add(cb);
+    return () => { harness.eventSubs.delete(cb); };
+  }),
+};
 
 import { runDshAgent } from './dshAgentRunner';
+import { getDshSessionBinding, getDshInteractionHandler } from './bridgeState';
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
   harness.calls.length = 0;
-  harness.hooks = undefined;
-  harness.replayQuestion = false;
-  harness.questionResponse = undefined;
-  harness.answerAccepted = true;
-  harness.promptCompletes = true;
-  harness.running = false;
-  harness.probeError = false;
-  harness.historyEvents = [];
+  harness.eventSubs.clear();
+  harness.resumeError = undefined;
+  harness.promptError = undefined;
+  harness.probe = 'idle';
+  harness.lastPromptText = undefined;
+  vi.clearAllMocks();
   vi.useRealTimers();
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function pendingRun(overrides: Record<string, any> = {}) {
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-recovery-'));
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-dsh-sdk-'));
   tempDirs.push(dataRoot);
   const sent: any[] = [];
   const abort = new AbortController();
   const promise = runDshAgent({
-    send: event => sent.push(event), requestAbort: abort.signal, requestId: 'recovery-test',
+    send: event => sent.push(event), requestAbort: abort.signal, requestId: 'sdk-test',
     profile: { provider: 'deepseek', model: 'test', apiKey: 'sk-test-only' },
-    userText: '继续', locale: 'zh-CN', sshSessionId: 'ssh-test', conversationKey: 'test-recovery',
+    userText: '继续', locale: 'zh-CN', sshSessionId: 'ssh-test', conversationKey: 'test-sdk',
     dataRoot, pluginSourceDir: '/plugin', skillDirs: [],
     onConfirm: async () => false, onQuestion: async () => null, ...overrides,
   });
-  return { promise, sent, abort };
+  return { promise, sent, abort, dataRoot };
 }
 
-describe('DSH recovery without duplicate execution', () => {
-  it('waits for a live multi-select question without idle timeout, answers the matching RPC, and never resubmits the prompt', async () => {
-    vi.useFakeTimers(); harness.promptCompletes = false;
-    let resolve!: (value: any) => void;
-    const onQuestion = vi.fn(() => new Promise(r => { resolve = r; }));
-    const run = pendingRun({ onQuestion });
-    await vi.advanceTimersByTimeAsync(80);
-    const frame = { method: 'question/requested', rpcId: 'live-rpc', payload: { sessionId: 'dsh-session-test',
-      questions: [{ id: 'samples', question: 'Which samples?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] } };
-    harness.hooks.onFrame(frame); harness.hooks.onFrame(frame);
-    await vi.advanceTimersByTimeAsync(240000);
-    expect(onQuestion).toHaveBeenCalledTimes(1); expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-    expect(run.sent.some(event => event.type === 'error')).toBe(false);
-    resolve({ answers: [{ id: 'samples', selected: ['A', 'B'], custom: 'Keep control' }] });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(harness.questionResponse).toMatchObject({ rpcId: 'live-rpc', answer: { answers: [{ id: 'samples', selected: ['A', 'B'], custom: 'Keep control' }] } });
-    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } } });
-    await run.promise;
-  });
-  it('reports an unacknowledged answer without encouraging duplicate execution', async () => {
-    vi.useFakeTimers();
-    harness.replayQuestion = true;
-    harness.answerAccepted = false;
-    const run = pendingRun({ locale: 'en-US', onQuestion: async () => ({ answers: [{ id: 'sequence', selected: [], custom: 'fixture' }] }) });
-    await vi.advanceTimersByTimeAsync(80);
-    await run.promise;
-    expect(harness.calls).not.toContain('prompt');
-    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('This turn was not resubmitted') }));
-  });
-  it('deduplicates replayed frames and replaces partial text with the recovered authoritative answer', async () => {
-    vi.useFakeTimers();
-    harness.promptCompletes = false;
-    const run = pendingRun();
-    await vi.advanceTimersByTimeAsync(80);
-    const delta = { seq: 11, type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: 'partial ' } } };
-    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: delta } });
-    harness.hooks.onFrame({ method: 'session/event', payload: { sessionId: 'dsh-session-test', event: delta } });
-    harness.running = false;
-    harness.historyEvents = [delta,
-      { seq: 12, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'complete answer with verified evidence' }] } } },
-      { seq: 13, type: 'turn/end', data: { reason: { kind: 'completed' } } },
-    ];
-    harness.hooks.onClosed();
-    await vi.advanceTimersByTimeAsync(0);
-    await run.promise;
-    expect(run.sent.filter(e => e.type === 'content')).toEqual([{ type: 'content', content: 'partial ' }]);
-    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'done', authoritative: true, content: 'complete answer with verified evidence' }));
-    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-  });
-  it('keeps a confirmed-running worker alive beyond two old 90-second idle windows', async () => {
-    vi.useFakeTimers();
-    harness.promptCompletes = false;
-    const run = pendingRun();
-    await vi.advanceTimersByTimeAsync(80);
-    await vi.advanceTimersByTimeAsync(185_000);
-    expect(run.sent.filter(e => e.type === 'error')).toEqual([]);
-    expect(run.sent.some(e => String(e.message).includes('已确认仍在执行'))).toBe(true);
-    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-    run.abort.abort();
-    await run.promise;
-  });
+/** 等 prompt 真正发出（start() 是异步的）。 */
+async function waitForPrompt() {
+  await vi.waitFor(() => expect(harness.calls).toContain('prompt'));
+}
 
-  it('recovers a missing end record and full answer from durable history', async () => {
-    vi.useFakeTimers();
-    harness.promptCompletes = false;
-    harness.historyEvents = [{ seq: 20, type: 'turn/end', data: { reason: { kind: 'completed' } } }];
-    const run = pendingRun();
-    await vi.advanceTimersByTimeAsync(80);
-    harness.running = false;
-    harness.historyEvents.push(
-      { seq: 21, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '已核验：5 个产物，来源 results/qc.tsv。' }] } } },
-      { seq: 22, type: 'turn/end', data: { reason: { kind: 'completed' } } },
-    );
-    await vi.advanceTimersByTimeAsync(90_000);
-    await run.promise;
-    expect(run.sent.filter(e => e.type === 'done')).toEqual([expect.objectContaining({ content: '已核验：5 个产物，来源 results/qc.tsv。' })]);
-    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-  });
+/** 取 runner 为会话注册的交互处理器（bridgeState 是真实实现）。 */
+function interaction(sessionId: string) {
+  const handler = getDshInteractionHandler(sessionId);
+  if (!handler) throw new Error('no interaction handler registered for ' + sessionId);
+  return handler;
+}
 
-  it('does not enqueue a retry behind a surviving worker', async () => {
-    vi.useFakeTimers();
-    harness.running = true;
-    const run = pendingRun();
-    await vi.advanceTimersByTimeAsync(80);
-    await run.promise;
-    expect(harness.calls).not.toContain('prompt');
-    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('未重复提交') }));
-  });
-
-  it('reports two failed probes as unverified, not success or a cluster job failure', async () => {
-    vi.useFakeTimers();
-    harness.promptCompletes = false;
-    const run = pendingRun({ locale: 'en-US' });
-    await vi.advanceTimersByTimeAsync(80);
-    harness.probeError = true;
-    await vi.advanceTimersByTimeAsync(185_000);
-    await run.promise;
-    expect(run.sent.filter(e => e.type === 'done')).toHaveLength(0);
-    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('may still be running') }));
-    expect(harness.calls.filter(call => call === 'prompt')).toHaveLength(1);
-  });
-
-  it('registers approvals before callbacks and pauses the idle timer while awaiting a decision', async () => {
-    vi.useFakeTimers();
-    harness.promptCompletes = false;
-    let decide!: (approved: boolean) => void;
-    const run = pendingRun({ onConfirm: () => new Promise<boolean>(resolve => { decide = resolve; }) });
-    await vi.advanceTimersByTimeAsync(80);
-    harness.hooks.onFrame({ method: 'approval/requested', rpcId: 'approval-test', payload: {
-      sessionId: 'dsh-session-test', approvalId: 'a1', reason: 'HPClaw 命令确认\n风险级: write\n命令: echo test',
-    } });
-    await vi.advanceTimersByTimeAsync(185_000);
-    expect(run.sent.filter(e => e.type === 'error')).toHaveLength(0);
-    expect(harness.calls.filter(call => call === 'connect')).toHaveLength(1);
-    decide(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(harness.calls).toContain('respond-approval');
-    run.abort.abort();
-    await run.promise;
-  });
-});
-
-describe('runDshAgent mux ordering', () => {
-  it('expiry cancels only the Agent turn, never fabricates rejection or sends an allow response', async () => {
-    vi.useFakeTimers(); harness.promptCompletes = false;
-    const run = pendingRun({ onConfirm: async () => ({ approved: false, reason: 'expired' }) });
-    await vi.advanceTimersByTimeAsync(80);
-    harness.hooks.onFrame({ method: 'approval/requested', rpcId: 'expired-rpc', payload: {
-      sessionId: 'dsh-session-test', approvalId: 'expired-id', reason: 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 123',
-    } });
-    await vi.advanceTimersByTimeAsync(0); await run.promise;
-    expect(harness.calls).toContain('cancel');
-    expect(harness.calls).not.toContain('respond-approval');
-    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('不是用户拒绝') }));
-  });
+describe('runDshAgent (sdk channel)', () => {
   it('falls back to legacy without an active SSH session instead of throwing', async () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-nosession-'));
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-dsh-nosession-'));
     tempDirs.push(dataRoot);
     const { ensureSidecar } = await import('./dshSidecar');
     (ensureSidecar as ReturnType<typeof vi.fn>).mockClear();
@@ -284,73 +111,237 @@ describe('runDshAgent mux ordering', () => {
       onQuestion: async () => null,
     });
 
-    // 无集群会话：静默回退 legacy,不抛错、不发 error 事件、不启动 sidecar
     expect(outcome).toBe('fallback');
     expect(sent.some(e => e?.type === 'error')).toBe(false);
     expect(ensureSidecar).not.toHaveBeenCalled();
   });
 
-  it('opens the mux before submitting the prompt and preserves a very fast answer', async () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-runner-'));
-    tempDirs.push(dataRoot);
-    const sent: any[] = [];
-    const outcome = await runDshAgent({
-      send: event => sent.push(event),
-      requestAbort: new AbortController().signal,
-      requestId: 'request-test',
-      profile: { provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: 'sk-test-only' },
-      userText: '测试',
-      summary: '当前目标: 分析 /data/project-a；已提交 Job <81234>',
-      locale: 'zh-CN',
-      sshSessionId: 'ssh-test',
-      conversationKey: 'conversation-test',
-      dataRoot,
-      pluginSourceDir: '/plugin',
-      skillDirs: ['/skills'],
-      onConfirm: async () => false,
-      onQuestion: async () => null,
-    });
-
-    expect(outcome).toBe('completed');
-    expect(harness.calls).toEqual(['connect', 'prompt']);
-    expect(sent).toContainEqual({ type: 'content', content: '已收到' });
-    expect(sent).toContainEqual({ type: 'done', content: '已收到', requestId: 'request-test' });
-    // 文件展示矫正指令随每轮 prompt 注入：Markdown 图片语法直写路径，禁止临时 HTTP 服务
+  it('subscribes before prompting and streams assistant message + done', async () => {
+    const run = pendingRun();
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    // 全新会话不经过 resume；resume 的复用路径由 mapping 测试覆盖。
+    expect(fakeClient.resume).not.toHaveBeenCalled();
+    expect(fakeClient.setWorkingDirectory).toHaveBeenCalled();
+    emit('dsh-sess-unknown', { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'noise' }] } } });
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    emit(sessionId, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '已收到' }] } } });
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await run.promise;
+    expect(run.sent).toContainEqual({ type: 'content', content: '已收到' });
+    expect(run.sent).toContainEqual({ type: 'done', content: '已收到', requestId: 'sdk-test' });
     expect(harness.lastPromptText).toContain('![描述](路径)');
     expect(harness.lastPromptText).toContain('临时 HTTP 服务');
     expect(harness.lastPromptText).not.toContain('智能体质量契约');
-    expect(harness.lastPromptText).toContain('对话摘要：');
-    expect(harness.lastPromptText).toContain('81234');
   });
 
-  it('answers a replayed dsh question before submitting the next prompt', async () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-dsh-question-'));
-    tempDirs.push(dataRoot);
-    harness.replayQuestion = true;
-    const outcome = await runDshAgent({
-      send: () => {},
-      requestAbort: new AbortController().signal,
-      requestId: 'request-question',
-      profile: { provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: 'sk-test-only' },
-      userText: '继续',
-      locale: 'zh-CN',
-      sshSessionId: 'ssh-test',
-      conversationKey: 'conversation-question',
-      dataRoot,
-      pluginSourceDir: '/plugin',
-      skillDirs: ['/skills'],
-      onConfirm: async () => false,
-      onQuestion: async ({ questions }) => ({
-        answers: [{ id: questions[0].id, selected: [], custom: 'ATGC' }],
-      }),
-    });
+  it('persists the conversation→session mapping and reuses it on the next run', async () => {
+    const first = pendingRun({ conversationKey: 'map-test' });
+    const dataRoot = first.dataRoot;
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    emit(sessionId, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'ok' }] } } });
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await first.promise;
+    const map = JSON.parse(fs.readFileSync(path.join(dataRoot, 'dsh-sessions.json'), 'utf8'));
+    expect(map['map-test']).toBe(sessionId);
 
-    expect(outcome).toBe('completed');
-    expect(harness.calls).toEqual(['connect', 'question', 'respond-question', 'prompt']);
-    expect(harness.questionResponse).toMatchObject({
-      rpcId: 'question-rpc-1',
-      sessionId: 'dsh-session-test',
-      answer: { answers: [{ id: 'sequence', custom: 'ATGC' }] },
+    const second = pendingRun({ conversationKey: 'map-test', dataRoot });
+    await vi.waitFor(() => expect(fakeClient.prompt).toHaveBeenCalledTimes(2));
+    expect(fakeClient.prompt.mock.calls[1][0].sessionId).toBe(sessionId);
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'aborted' } } });
+    await second.promise;
+  });
+
+  it('creates a fresh session when the mapped one cannot be resumed', async () => {
+    const run = pendingRun({ conversationKey: 'resume-fail' });
+    harness.resumeError = new Error('session not found');
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    expect(sessionId).toMatch(/^trace-/);
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'aborted' } } });
+    await run.promise;
+  });
+
+  it('never enqueues a duplicate prompt behind a running worker', async () => {
+    harness.probe = 'running';
+    const run = pendingRun();
+    await run.promise;
+    expect(harness.calls).not.toContain('prompt');
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('未重复提交') }));
+  });
+
+  it('answers a user question through the interaction handler and never resubmits', async () => {
+    const onQuestion = vi.fn(async ({ questions }: any) => ({
+      answers: [{ id: questions[0].id, selected: ['A', 'B'], custom: 'Keep control' }],
+    }));
+    const run = pendingRun({ onQuestion });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const answer = await interaction(sessionId).onQuestions({
+      requestId: 'q-1', sessionId,
+      questions: [{ id: 'samples', question: 'Which samples?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }],
     });
+    expect(answer).toEqual({ answers: [{ id: 'samples', selected: ['A', 'B'], custom: 'Keep control' }] });
+    expect(onQuestion).toHaveBeenCalledTimes(1);
+    expect(harness.calls.filter(c => c === 'prompt')).toHaveLength(1);
+    emit(sessionId, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '按 A+B 处理完成。' }] } } });
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await run.promise;
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'done', content: '按 A+B 处理完成。' }));
+  });
+
+  it('corrects a vague empty-option repair question without showing a fake choice dialog', async () => {
+    const onQuestion = vi.fn();
+    const run = pendingRun({ onQuestion });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const answer = await interaction(sessionId).onQuestions({
+      requestId: 'q-vague', sessionId,
+      questions: [{ id: 'fix', question: 'step-03 因 BAI 失败，如何修复并继续？', options: [] }],
+    });
+    expect(onQuestion).not.toHaveBeenCalled();
+    expect(answer?.answers[0]).toMatchObject({ selected: [], custom: expect.stringContaining('TRACE_VAGUE_CHOICE_BLOCKED') });
+    run.abort.abort();
+    await run.promise;
+  });
+
+  it('marks clarification answers read-only and instructs explain-before-decide', async () => {
+    const onQuestion = vi.fn(async () => ({ answers: [{ id: 'repair', selected: ['CSI'], custom: '有哪些修复方案？' }] }));
+    const run = pendingRun({ onQuestion });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const answer = await interaction(sessionId).onQuestions({
+      requestId: 'q-explain', sessionId,
+      questions: [{ id: 'repair', question: 'Which repair method?', options: [{ label: 'CSI' }, { label: 'Realign' }] }],
+    });
+    expect(answer?.answers[0]).toMatchObject({ selected: [], custom: expect.stringContaining('TRACE_CLARIFICATION_ONLY') });
+    expect(getDshSessionBinding(sessionId)?.readOnly).toBe(true);
+    run.abort.abort();
+    await run.promise;
+  });
+
+  it('returns null and finishes cancelled when the user dismisses the question', async () => {
+    const run = pendingRun({ onQuestion: async () => null });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const answer = await interaction(sessionId).onQuestions({
+      requestId: 'q-dismiss', sessionId,
+      questions: [{ id: 'sequence', question: '请提供最后一条序列', options: [] }],
+    });
+    expect(answer).toBeNull();
+    await run.promise;
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'done', content: '__CANCELLED__' }));
+  });
+
+  it('stops a stubborn repeated-question loop without inventing consent', async () => {
+    const onQuestion = vi.fn();
+    const run = pendingRun({ onQuestion });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    let last: any;
+    for (let n = 0; n < 3; n++) {
+      last = await interaction(sessionId).onQuestions({
+        requestId: 'vague-' + n, sessionId,
+        questions: [{ id: 'repair', question: '如何修复并继续？', options: [] }],
+      });
+    }
+    await run.promise;
+    expect(onQuestion).not.toHaveBeenCalled();
+    expect(last?.answers[0].selected).toEqual([]);
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('没有代你选择') }));
+  });
+
+  it('routes approvals through onConfirm and maps the decision to the wire outcome', async () => {
+    const onConfirm = vi.fn(async () => true);
+    const run = pendingRun({ onConfirm });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const outcome = await interaction(sessionId).onApproval({
+      requestId: 'ap-1', sessionId, toolName: 'run_command', callId: 'c1',
+      reason: 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 123',
+    });
+    expect(outcome).toBe('allowed-once');
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ command: 'bkill 123', risk: 'destructive' }));
+    run.abort.abort();
+    await run.promise;
+  });
+
+  it('rejects only on explicit rejection; expiry reports an unverified error and finishes', async () => {
+    const onConfirm = vi.fn(async () => ({ approved: false, reason: 'expired' as const }));
+    const run = pendingRun({ onConfirm });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    const outcome = await interaction(sessionId).onApproval({
+      requestId: 'ap-expired', sessionId, toolName: 'run_command',
+      reason: 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 123',
+    });
+    expect(outcome).toBe('unavailable');
+    await run.promise;
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('不是用户拒绝') }));
+  });
+
+  it('keeps waiting past a 90s idle window while the engine confirms it is still running', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = pendingRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await waitForPrompt();
+      harness.probe = 'running';
+      await vi.advanceTimersByTimeAsync(95_000);
+      expect(run.sent.filter(e => e.type === 'error')).toEqual([]);
+      expect(run.sent.some(e => String(e.message).includes('已确认仍在执行'))).toBe(true);
+      run.abort.abort();
+      await run.promise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports idle-without-end-record as unverified instead of success', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = pendingRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await waitForPrompt();
+      harness.probe = 'idle';
+      await vi.advanceTimersByTimeAsync(95_000);
+      await run.promise;
+      expect(run.sent.filter(e => e.type === 'done')).toHaveLength(0);
+      expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('尚未核验') }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a prompt submission failure as unverified and never retries automatically', async () => {
+    harness.promptError = new Error('socket hang up');
+    const run = pendingRun();
+    await run.promise;
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'error', outcome: 'unverified', error: expect.stringContaining('未自动重投') }));
+  });
+
+  it('registers submitted job bindings from run_command tool results', async () => {
+    const onJobsSubmitted = vi.fn();
+    const run = pendingRun({ onJobsSubmitted, conversationKey: 'job-bind-test' });
+    await vi.waitFor(() => expect(fakeClient.onSessionEvent).toHaveBeenCalled());
+    await waitForPrompt();
+    const sessionId = fakeClient.prompt.mock.calls[0][0].sessionId;
+    emit(sessionId, { type: 'tool/call', data: { callId: 'submit', name: 'run_command', arguments: '{"command":"bsub < job.lsf"}' } });
+    emit(sessionId, { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'submit', content: [{ type: 'text', text: 'Job <424242> is submitted to queue <normal>.' }] } } });
+    expect(onJobsSubmitted).toHaveBeenCalledWith(['424242']);
+    emit(sessionId, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '作业已提交并监控。' }] } } });
+    emit(sessionId, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await run.promise;
+    expect(run.sent).toContainEqual(expect.objectContaining({ type: 'done', content: '作业已提交并监控。' }));
   });
 });

@@ -5,7 +5,7 @@ import WebEmbedList, { extractWebUrls } from './WebEmbedList';
 
 afterEach(() => {
   cleanup();
-  delete (window as any).hpclawDesktop;
+  delete (window as any).traceDesktop;
 });
 
 describe('extractWebUrls', () => {
@@ -70,7 +70,7 @@ describe('WebEmbedList', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '在侧边打开' })[0]);
     expect(onOpenWebPanel).toHaveBeenCalledWith({ url: 'https://example.com/report', title: 'example.com' });
 
-    // 展开：非 Electron（jsdom 无 hpclawDesktop）回退 sandbox iframe + 提示
+    // 展开：非 Electron（jsdom 无 traceDesktop）回退 sandbox iframe + 提示
     fireEvent.click(screen.getAllByRole('button', { name: '展开网页预览' })[0]);
     const iframe = document.querySelector('iframe');
     expect(iframe).not.toBeNull();
@@ -84,14 +84,14 @@ describe('WebEmbedList', () => {
   });
 
   it('uses a webview in the Electron desktop environment', () => {
-    (window as any).hpclawDesktop = { app: { edition: 'desktop' } };
+    (window as any).traceDesktop = { app: { edition: 'desktop' } };
     render(<WebEmbedList text="https://example.com/x" />);
 
     fireEvent.click(screen.getByRole('button', { name: '展开网页预览' }));
     const webview = document.querySelector('webview');
     expect(webview).not.toBeNull();
     expect(webview!.getAttribute('src')).toBe('https://example.com/x');
-    expect(webview!.getAttribute('partition')).toBe('hpclaw-webpanel');
+    expect(webview!.getAttribute('partition')).toBe('trace-webpanel');
     expect(document.querySelector('iframe')).toBeNull();
   });
 });

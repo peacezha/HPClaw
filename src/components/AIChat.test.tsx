@@ -30,7 +30,7 @@ it('does not turn a relative report or HTTP URL into a false absolute download p
 });
 
 function installDesktop() {
-  (window as any).hpclawDesktop = {
+  (window as any).traceDesktop = {
     getPathForFile: (file: File) => (file as any).testPath || '',
     localFiles: {
       stat: vi.fn(async () => ({ kind: 'directory' })),
@@ -82,10 +82,53 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
-  delete (window as any).hpclawDesktop;
+  delete (window as any).traceDesktop;
 });
 
 describe('AIChat 对话附件', () => {
+  it.each(['composer', 'explain-button'])('treats %s clarification as an explanation on the original stream, never a selected repair', async (mode) => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'ask', id: 'q-repair', question: 'Choose a repair method', options: ['CSI', 'Realign'] });
+      } }));
+      if (url === '/api/ai/question') {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload.id).toBe('q-repair');
+        expect(payload.answer).toMatchObject({ selected: [], intent: 'clarification' });
+        expect(payload.answer.custom).toMatch(/方案/);
+        send({ type: 'ask_resolved', id: 'q-repair', reason: 'answered', answered: true, answer: payload.answer });
+        return Response.json({ success: true, reason: 'answered' });
+      }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    function Controlled() {
+      const [messages, setMessages] = useState<any[]>([]);
+      return <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only" activeConversationId="qa-only"
+        messages={messages} onMessagesChange={setMessages} onSkillsChange={() => {}} /></LocaleProvider>;
+    }
+    render(<Controlled />);
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '修复并继续原任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByTestId('ai-question-dialog');
+    fireEvent.click(screen.getByRole('button', { name: 'CSI' }));
+    if (mode === 'composer') {
+      fireEvent.click(screen.getByRole('button', { name: '稍后回答' }));
+      fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '有哪些修复方案？' } });
+      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    } else fireEvent.click(screen.getByRole('button', { name: '先解释方案' }));
+    await waitFor(() => expect(screen.queryByTestId('ai-question-dialog')).toBeNull());
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/question')).toHaveLength(1);
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/stream')).toHaveLength(1);
+    expect(fetch.mock.calls.some(call => String(call[0]) === '/api/ai/abort')).toBe(false);
+    await act(async () => { send({ type: 'done', content: '方案解释完成；尚未选择或执行修复。' }); stream.close(); });
+    expect(await screen.findByText('方案解释完成；尚未选择或执行修复。')).toBeVisible();
+  });
+
   it('renders the full conversation beyond 500 records and expands long details in the chat pane', async () => {
     const messages = Array.from({ length: 602 }, (_, index) => ({
       role: 'user' as const, content: 'history-row-' + index,
@@ -108,7 +151,7 @@ describe('AIChat 对话附件', () => {
 
   it('keeps one card per RUN on repeated breakpoint resumes without hiding the user instructions', () => {
     const marker = (runId: string, slash = '') => formatWorkflowExecutionContext({
-      workflowId: 'wf', runId, runDir: '/home/qa/hpclaw_flows/wf/03_workspace/runs/' + runId + slash,
+      workflowId: 'wf', runId, runDir: '/home/qa/trace_flows/wf/03_workspace/runs/' + runId + slash,
     });
     const messages = [
       { role: 'user' as const, content: marker('r1') + '\n开始流程。' },
@@ -121,7 +164,7 @@ describe('AIChat 对话附件', () => {
     expect(screen.getAllByTestId('workflow-run-card').map(card => card.textContent)).toEqual(['r1', 'r2']);
     expect(screen.getByText('开始流程。')).toBeVisible();
     expect(screen.getByText('从步骤 2 继续。')).toBeVisible();
-    expect(screen.queryByText(/HPCLAW_WORKFLOW_RUN/)).toBeNull();
+    expect(screen.queryByText(/TRACE_WORKFLOW_RUN/)).toBeNull();
   });
 
   it('keeps a live ask dialog visible through message updates, preserves drafts after deferral, and answers the original stream', async () => {
@@ -202,7 +245,7 @@ describe('AIChat 对话附件', () => {
     await act(async () => stream.close());
   });
 
-  it('locks the deferred composer while delivering an answer and shows its failure without reopening', async () => {
+  it('keeps the deferred composer enabled while delivering an answer and shows its failure without reopening', async () => {
     let stream!: ReadableStreamDefaultController<Uint8Array>, reject!: (error: Error) => void;
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -228,9 +271,11 @@ describe('AIChat 对话附件', () => {
     fireEvent.click(screen.getByRole('button', { name: '稍后回答' }));
     fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '/data/retained_R1.fastq.gz' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    await waitFor(() => expect(screen.getByPlaceholderText('输入任务描述...')).toBeDisabled());
-    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
-    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/question')).toHaveLength(1);
+    // 答案送达期间输入框保持可用（送达有 10s 超时兜底），仅问答卡/对话框显示 loading
+    await waitFor(() => expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/question')).toHaveLength(1));
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '补充说明' } });
+    expect(screen.getByPlaceholderText('输入任务描述...')).toBeEnabled();
+    expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
     await act(async () => reject(new Error('Simulated offline delivery')));
     expect(screen.queryByTestId('ai-question-dialog')).toBeNull();
     expect(await screen.findByRole('alert')).toHaveTextContent('尚未核验');
@@ -320,7 +365,7 @@ describe('AIChat 对话附件', () => {
     fireEvent.click(screen.getByRole('button', { name: '添加附件' }));
     attachFiles([makeFile('data.csv', 'E:\\downloads\\data.csv')]);
 
-    const desktop = (window as any).hpclawDesktop;
+    const desktop = (window as any).traceDesktop;
     await waitFor(() => expect(desktop.localFiles.copy).toHaveBeenCalled());
     expect(desktop.localFiles.mkdir).toHaveBeenCalledWith('E:\\work\\attachments');
     expect(desktop.localFiles.copy.mock.calls[0][1]).toBe('E:\\work\\attachments');
@@ -366,7 +411,7 @@ describe('AIChat 对话附件', () => {
   });
 
   it('浏览器模式（无桌面桥接）提示不可用', async () => {
-    delete (window as any).hpclawDesktop;
+    delete (window as any).traceDesktop;
     saveAgentWorkspace('E:\\work');
     renderChat('local-workbench');
 
@@ -375,7 +420,7 @@ describe('AIChat 对话附件', () => {
     expect(await screen.findByTestId('chat-attachment-error')).toHaveTextContent('附件功能需要桌面端支持');
   });
 
-  it('集群模式：经传输队列上传到 ~/hpclaw_uploads/ 并随消息发出远程路径', async () => {
+  it('集群模式：经传输队列上传到 ~/trace_uploads/ 并随消息发出远程路径', async () => {
     const onMessagesChange = vi.fn();
     renderChat('sess-1', onMessagesChange);
 
@@ -383,11 +428,11 @@ describe('AIChat 对话附件', () => {
     attachFiles([makeFile('reads.fastq', 'E:\\data\\reads.fastq')]);
 
     await waitFor(() => expect(enqueueTransfer).toHaveBeenCalled());
-    expect(mkdirRemote).toHaveBeenCalledWith('sess-1', 'hpclaw_uploads');
+    expect(mkdirRemote).toHaveBeenCalledWith('sess-1', 'trace_uploads');
     expect(enqueueTransfer).toHaveBeenCalledWith('sess-1', expect.objectContaining({
       direction: 'upload',
       localPath: 'E:\\data\\reads.fastq',
-      remotePath: 'hpclaw_uploads/reads.fastq',
+      remotePath: 'trace_uploads/reads.fastq',
     }));
 
     const chips = await screen.findByTestId('chat-attachments');
@@ -396,7 +441,211 @@ describe('AIChat 对话附件', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => {
       const sent = onMessagesChange.mock.calls.map(call => call[0]).flat().filter((m: any) => m?.role === 'user');
-      expect(sent.some((m: any) => m.content.includes('附件:\n- ~/hpclaw_uploads/reads.fastq'))).toBe(true);
+      expect(sent.some((m: any) => m.content.includes('附件:\n- ~/trace_uploads/reads.fastq'))).toBe(true);
     });
+  });
+});
+
+describe('AIChat 上下文压缩提示', () => {
+  function renderControlledChat() {
+    function Controlled() {
+      const [messages, setMessages] = useState<any[]>([]);
+      return <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only" activeConversationId="qa-only"
+        messages={messages} onMessagesChange={setMessages} onSkillsChange={() => {}} /></LocaleProvider>;
+    }
+    render(<Controlled />);
+  }
+
+  it('收到 compacted 事件时插入一条轻量系统提示', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'compacted', count: 7, summaryChars: 860, requestId: 'req-compact' });
+        send({ type: 'done', content: '好的，继续。', requestId: 'req-compact' });
+        stream.close();
+      } }));
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    }));
+    renderControlledChat();
+
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '继续分析' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    const notice = await screen.findByText(/早期 7 条消息已压缩为摘要/);
+    expect(notice).toBeVisible();
+    expect(await screen.findByText('好的，继续。')).toBeVisible();
+  });
+
+  it('compacted 事件按英文界面渲染英文提示，count 非法时不插入', async () => {
+    localStorage.setItem('trace_language', 'en-US');
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'compacted', count: 'not-a-number', summaryChars: 0, requestId: 'req-noop' });
+        send({ type: 'compacted', count: 12, summaryChars: 1500, requestId: 'req-compact-en' });
+        send({ type: 'done', content: 'Done.', requestId: 'req-compact-en' });
+        stream.close();
+      } }));
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    }));
+    renderControlledChat();
+
+    fireEvent.change(await screen.findByPlaceholderText('Describe a task…'), { target: { value: 'continue' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText(/12 earlier messages were compressed into a summary/)).toBeVisible();
+    expect(screen.queryByText(/not-a-number/)).toBeNull();
+  });
+});
+
+describe('AIChat 计划审批 / 插话 / 任务清单', () => {
+  const planEvent = {
+    goal: '质控并比对',
+    steps: [
+      { id: '1', title: '运行 FastQC', verification: '生成 fastqc.html', status: 'pending' },
+      { id: '2', title: '提交 bwa 作业', verification: '返回 Job ID', status: 'pending' },
+    ],
+    createdAt: 1, updatedAt: 1, status: 'active',
+  };
+
+  function Controlled() {
+    const [messages, setMessages] = useState<any[]>([]);
+    return <LocaleProvider><AIChat isOpen executeCommand={vi.fn()} socket={null} sessionId="qa-only" activeConversationId="qa-only"
+      messages={messages} onMessagesChange={setMessages} onSkillsChange={() => {}} /></LocaleProvider>;
+  }
+
+  it('renders the plan review card on plan_review and approves it; task list panel follows the plan', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'status', phase: 'preparing', message: '准备中', requestId: 'req-plan' });
+        send({ type: 'plan', plan: planEvent });
+        send({ type: 'plan_review', id: 'pr-1', goal: planEvent.goal, steps: planEvent.steps, expiresAt: Date.now() + 600_000, requestId: 'req-plan' });
+      } }));
+      if (url === '/api/ai/plan-review') {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload).toEqual({ id: 'pr-1', action: 'approve' });
+        send({ type: 'plan_review_resolved', id: 'pr-1', reason: 'approved', action: 'approve', requestId: 'req-plan' });
+        return Response.json({ success: true, reason: 'approved' });
+      }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    render(<Controlled />);
+
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '跑质控和比对' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    // 审批卡出现，步骤逐条可见；任务清单条同步出现
+    const card = await screen.findByTestId('plan-review-card');
+    expect(card).toHaveTextContent('目标：质控并比对');
+    expect(screen.getByLabelText('步骤 2 标题')).toHaveProperty('value', '提交 bwa 作业');
+    const panel = screen.getByTestId('agent-plan-panel');
+    expect(panel.textContent).toContain('步骤 0/2');
+
+    fireEvent.click(screen.getByRole('button', { name: '批准计划' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/plan-review')).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId('plan-review-card')).toBeNull());
+    // 没有新开任务，也没有中止原任务
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/stream')).toHaveLength(1);
+    expect(fetch.mock.calls.some(call => String(call[0]) === '/api/ai/abort')).toBe(false);
+    // 批准后续跑：计划推进后任务清单更新，done 收尾后面板随完成计划隐藏
+    await act(async () => {
+      send({ type: 'plan_update', plan: { ...planEvent, steps: [{ ...planEvent.steps[0], status: 'done', summary: 'ok' }, planEvent.steps[1]] }, stepId: '1' });
+    });
+    expect(screen.getByTestId('agent-plan-panel').textContent).toContain('步骤 1/2');
+    await act(async () => {
+      send({ type: 'plan_update', plan: { ...planEvent, steps: [{ ...planEvent.steps[0], status: 'done', summary: 'ok' }, { ...planEvent.steps[1], status: 'done', summary: 'ok' }] }, stepId: '2' });
+      send({ type: 'done', content: '全部完成。', requestId: 'req-plan' });
+      stream.close();
+    });
+    expect(await screen.findByText('全部完成。')).toBeVisible();
+    await waitFor(() => expect(screen.queryByTestId('agent-plan-panel')).toBeNull());
+  });
+
+  it('cancels a reviewed plan and shows the cancelled marker before the turn ends', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'status', phase: 'preparing', message: '准备中', requestId: 'req-cancel' });
+        send({ type: 'plan', plan: planEvent });
+        send({ type: 'plan_review', id: 'pr-2', goal: planEvent.goal, steps: planEvent.steps, expiresAt: Date.now() + 600_000, requestId: 'req-cancel' });
+      } }));
+      if (url === '/api/ai/plan-review') {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload).toEqual({ id: 'pr-2', action: 'cancel' });
+        send({ type: 'plan', plan: { ...planEvent, status: 'cancelled' } });
+        send({ type: 'plan_review_resolved', id: 'pr-2', reason: 'cancelled', action: 'cancel', requestId: 'req-cancel' });
+        send({ type: 'done', content: '计划已被用户取消，本轮已结束，未执行计划中的任何操作。', requestId: 'req-cancel' });
+        stream.close();
+        return Response.json({ success: true, reason: 'cancelled' });
+      }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    render(<Controlled />);
+
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '跑质控和比对' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByTestId('plan-review-card');
+    fireEvent.click(screen.getByRole('button', { name: '取消计划' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/plan-review')).toHaveLength(1));
+    expect(await screen.findByText(/计划已被用户取消/)).toBeVisible();
+    // 取消的计划随 done 清理，任务清单不再悬挂
+    await waitFor(() => expect(screen.queryByTestId('agent-plan-panel')).toBeNull());
+  });
+
+  it('steers the running agent instead of tearing down the stream, and clears the hint on steer_applied', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const send = (event: any) => stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/ai/stream')) return new Response(new ReadableStream({ start(controller) {
+        stream = controller;
+        send({ type: 'status', phase: 'preparing', message: '准备中', requestId: 'req-steer' });
+        send({ type: 'tool_call', name: 'run_command', args: { command: 'fastqc a.fq' } });
+      } }));
+      if (url === '/api/ai/steer') {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload).toEqual({ requestId: 'req-steer', text: '先别提交，改成只看日志' });
+        return Response.json({ success: true, delivered: 'queued', position: 1 });
+      }
+      return Response.json({ success: true, skills: [], workflows: [], runs: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    render(<Controlled />);
+
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '分析 a.fq' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    // 等首个工具事件处理完（requestId 已就位、运行进行中）；命令明细在折叠的执行记录里，不断言它
+    await waitFor(() => expect(screen.getAllByText(/AI 正在执行计算资源命令/).length).toBeGreaterThan(0));
+
+    // 运行中直接再发一条 → 走 steer，不中止、不新开流
+    fireEvent.change(screen.getByPlaceholderText('输入任务描述...'), { target: { value: '先别提交，改成只看日志' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/steer')).toHaveLength(1));
+    expect(await screen.findByText('已插话，AI 将在当前步骤后响应。')).toBeVisible();
+    expect(fetch.mock.calls.filter(call => String(call[0]) === '/api/ai/stream')).toHaveLength(1);
+    expect(fetch.mock.calls.some(call => String(call[0]) === '/api/ai/abort')).toBe(false);
+    // 插话作为用户消息留在对话里
+    expect(screen.getByText('先别提交，改成只看日志')).toBeVisible();
+
+    await act(async () => send({ type: 'steer_applied', texts: ['先别提交，改成只看日志'], requestId: 'req-steer' }));
+    expect(await screen.findByText(/插话已注入/)).toBeVisible();
+    await act(async () => { send({ type: 'done', content: '已改为只读检查。', requestId: 'req-steer' }); stream.close(); });
+    expect(await screen.findByText('已改为只读检查。')).toBeVisible();
+    await waitFor(() => expect(screen.queryByText(/插话已注入/)).toBeNull());
   });
 });

@@ -1,8 +1,8 @@
 import type { ReactElement } from 'react';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
-/** Injected face: the wire call the flow drives (bound in apply's closure). */
+/** Injected face: the native chooser call the flow drives (bound in apply's closure). */
 export interface NativeFlowInjected {
-    /** Ask the local Host to open its native single-directory chooser. */
+    /** Open the local desktop or Host single-directory chooser. */
     pick: () => Promise<string | null>;
 }
 /**

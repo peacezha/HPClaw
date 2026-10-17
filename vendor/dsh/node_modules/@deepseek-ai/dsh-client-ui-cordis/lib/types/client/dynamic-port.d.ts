@@ -1,5 +1,5 @@
 /** Host operations used directly by the frame-wide Cordis panel. */
-import type { SessionId } from '@deepseek-ai/dsh-client-connection/client';
+import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client';
 import type { CordisDynamicPluginId, DynamicCordisInventoryRow } from './events.ts';
 /** Result of a panel lifecycle gesture. */
 export type CordisActionResult = {

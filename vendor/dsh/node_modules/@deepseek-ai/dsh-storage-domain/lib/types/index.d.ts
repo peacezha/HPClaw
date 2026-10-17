@@ -68,7 +68,10 @@ export declare class DomainFacility {
      * (`facet-unsupported`); open the unit projected from the spec (backend
      * `version-mismatch`/`malformed-medium` pass through); load and validate
      * every stored record against the spec's zod schemas (`invalid-record`
-     * with the offending table and key); construct the domain.
+     * with the offending table and key — unless the spec declares
+     * `invalidRecords: 'backup-and-skip'` and the unit can move documents aside, in
+     * which case the failing record is backed up, logged, and skipped);
+     * construct the domain.
      *
      * Lifecycle: the CALLER owns the returned handle and closes it via
      * `Domain.close()` (typically as its own `ctx.effect` disposer) — the
@@ -79,8 +82,7 @@ export declare class DomainFacility {
      */
     open<S extends DomainSpec>(spec: S): Promise<Domain<S>>;
     /**
-     * Look up an open domain by name, untyped. Diagnostic surface (the package
-     * invariant cross-checks change events against live domain state); typed
+     * Look up an open domain by name, untyped. Diagnostic surface; typed
      * consumers hold the handle returned by {@link open}.
      * @param name - Domain name.
      * @returns the open domain runtime, or `undefined` when not open.

@@ -1,11 +1,11 @@
 #!/bin/bash
-# 手工组装 HPClaw win-unpacked（替代卡死的 electron-builder 流程）
+# 手工组装 TRACE win-unpacked（替代卡死的 electron-builder 流程）
 # 依赖：electron-dist 已预解压；dist/dist-electron/pipelines 已构建
 set -e
-SRC=/e/hpclaw--/源码
+SRC=/e/trace--/源码
 EDIST=/c/Users/Administrator/electron-dist
-OUT=/c/Users/Administrator/HPClaw-v14-x64
-STAGE=/c/Users/Administrator/hpclaw-v14-staging
+OUT=/c/Users/Administrator/TRACE-v14-x64
+STAGE=/c/Users/Administrator/trace-v14-staging
 
 echo "== 清理并建 staging"
 rm -rf "$OUT" "$STAGE"
@@ -23,8 +23,8 @@ echo "== 拷贝生产 node_modules（保持目录结构）"
 while IFS= read -r p; do
   # npm 输出 Windows 反斜杠路径，先统一为正斜杠再剥前缀
   p="${p//\\//}"
-  rel="${p#E:/hpclaw--/源码/}"
-  rel="${rel#/e/hpclaw--/源码/}"
+  rel="${p#E:/trace--/源码/}"
+  rel="${rel#/e/trace--/源码/}"
   case "$rel" in node_modules/*) ;; *) continue;; esac
   mkdir -p "$STAGE/$(dirname "$rel")"
   [ -d "$STAGE/$rel" ] || cp -r "$p" "$STAGE/$rel" 2>/dev/null || true
@@ -37,11 +37,11 @@ npx asar pack "$STAGE" "$OUT/resources/app.asar" \
 
 echo "== 拷贝 electron 运行时"
 cp -r "$EDIST"/* "$OUT/"
-mv "$OUT/electron.exe" "$OUT/HPClaw.exe"
+mv "$OUT/electron.exe" "$OUT/TRACE.exe"
 
 echo "== 打 zip"
 cd /c/Users/Administrator
-rm -f HPClaw-v14-x64.zip
-zip -q -r HPClaw-v14-x64.zip HPClaw-v14-x64
-ls -lh HPClaw-v14-x64.zip
+rm -f TRACE-v14-x64.zip
+zip -q -r TRACE-v14-x64.zip TRACE-v14-x64
+ls -lh TRACE-v14-x64.zip
 echo "== DONE"

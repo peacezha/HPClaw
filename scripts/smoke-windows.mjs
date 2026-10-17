@@ -7,11 +7,11 @@ import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import * as asar from '@electron/asar';
-const expectedVersion = process.env.HPCLAW_SMOKE_VERSION || '0.4.43';
-const resources = path.resolve(process.env.HPCLAW_SMOKE_RESOURCES || 'release-v0.4.43-final/win-unpacked/resources');
+const expectedVersion = process.env.TRACE_SMOKE_VERSION || '0.4.43';
+const resources = path.resolve(process.env.TRACE_SMOKE_RESOURCES || 'release-v0.4.43-final/win-unpacked/resources');
 const archive = path.join(resources, 'app.asar');
 const packagedNode = path.join(resources, 'app.asar.unpacked/vendor/node-runtime/node.exe');
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-package-smoke-'));
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-package-smoke-'));
 const appRoot = path.join(temporary, 'app');
 const dataRoot = path.join(temporary, 'data');
 for (const entry of asar.listPackage(archive)) {
@@ -26,7 +26,66 @@ for (const entry of asar.listPackage(archive)) {
 }
 const packagedPackage = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
 assert.equal(packagedPackage.version, expectedVersion);
+if (Number(expectedVersion.split('.')[2]) >= 53) {
+  assert.equal(packagedPackage.productName, 'TRACE');
+  assert.equal(packagedPackage.name, 'trace');
+  const updater = fs.readFileSync(path.join(appRoot, 'electron/update-manager.cjs'), 'utf8');
+  assert(updater.includes("repo: 'TRACE'"));
+  assert(fs.readFileSync(path.join(appRoot, 'dist/index.html'), 'utf8').includes('<title>TRACE</title>'));
+  const { resolveDesktopIdentity } = await import(pathToFileURL(path.join(appRoot, 'electron/app-identity.cjs')).href);
+  const old = path.join(temporary, 'legacy-data', 'HPClaw');
+  const identity = resolveDesktopIdentity({ appData: path.dirname(old), platform: 'win32', exists: p => p === old });
+  assert.equal(identity.userData, path.join(path.dirname(old), 'TRACE'));
+  assert.equal(identity.runtimeName, 'TRACE');
+  console.log('Packaged TRACE naming, renamed update repository and legacy data compatibility verified.');
+}
 const backend = fs.readFileSync(path.join(appRoot, 'dist-electron/server.cjs'), 'utf8');
+if (Number(expectedVersion.split('.')[2]) >= 56) {
+  const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
+  for (const marker of ['traceDesktop', 'trace_flows', 'trace_uploads', 'trace_agent_settings']) assert(frontend.includes(marker), marker);
+  for (const marker of ['TRACE_DATA_ROOT', 'X-TRACE-Bridge', 'trace_conversations', 'trace-dsh-plugin', 'TRACE_REPORT_LANGUAGE']) assert(backend.includes(marker), marker);
+  for (const marker of ['hpclawDesktop', 'hpclaw:locale:', 'application/x-hpclaw-files', 'HPCLAW_REVIEW_REQUIRED']) assert(!frontend.includes(marker), marker);
+  assert(!asar.listPackage(archive).some(filename => /(?:^|[\\/])(?:electron|pipelines|skills|lsf_skills)[\\/]/.test(filename)
+    && /hpclaw.*\.py|electron[\\/].*\.test\.[cm]?[jt]sx?$|skills[\\/]\.skill-index\.json/i.test(filename)));
+  const { migrateDesktopProfile } = await import(pathToFileURL(path.join(appRoot, 'electron/app-identity.cjs')).href);
+  const profileRoot = path.join(temporary, 'profile-upgrade');
+  fs.mkdirSync(path.join(profileRoot, 'HPClaw'), { recursive: true });
+  fs.writeFileSync(path.join(profileRoot, 'HPClaw', 'profiles.json'), 'isolated-encrypted-bytes');
+  const migrated = migrateDesktopProfile({ appData: profileRoot, platform: 'win32' });
+  assert.equal(fs.readFileSync(path.join(migrated.userData, 'profiles.json'), 'utf8'), 'isolated-encrypted-bytes');
+  assert(fs.existsSync(path.join(profileRoot, 'HPClaw', 'profiles.json')));
+  assert(fs.readFileSync(path.join(appRoot, 'electron/preload.cjs'), 'utf8').includes("'traceDesktop'"));
+  const plugin = fs.readFileSync(path.join(resources, 'app.asar.unpacked/vendor/dsh-plugin/package.json'), 'utf8');
+  assert.equal(JSON.parse(plugin).name, 'trace-dsh-plugin');
+  console.log('Packaged complete TRACE namespaces, new folder/report/plugin names and lossless profile upgrade verified; no production profile touched.');
+}
+if (Number(expectedVersion.split('.')[2]) >= 55) {
+  for (const marker of ['TRACE_CLARIFICATION_ONLY', 'TRACE_REPEAT_QUESTION_BLOCKED', 'TRACE_VAGUE_CHOICE_BLOCKED',
+    'TRACE_BACKGROUND_JOB', 'clarification_read_only', 'timeoutDiagnostics', '15-minute active-execution limit']) assert(backend.includes(marker), marker);
+  const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
+  assert(frontend.includes('Explain options first'));
+  assert(frontend.includes('未授权执行'));
+  const plugin = fs.readFileSync(path.join(resources, 'app.asar.unpacked/vendor/dsh-plugin/index.js'), 'utf8');
+  assert(plugin.includes('Deprecated compatibility parameter'));
+  assert(!plugin.includes('wait: 5-10'));
+  assert(plugin.includes('所有后台作业'));
+  console.log('Packaged clarification/no-consent handling, repeated-question guard, immediate background submission and active-execution timeout diagnostics verified.');
+}
+if (Number(expectedVersion.split('.')[2]) >= 54) {
+  const main = fs.readFileSync(path.join(appRoot, 'electron/main.cjs'), 'utf8');
+  const editing = fs.readFileSync(path.join(appRoot, 'electron/editing.cjs'), 'utf8');
+  assert(main.includes('editingController.refreshMenu()'));
+  assert(main.includes('autoHideMenuBar: true'));
+  for (const role of ['copy', 'paste', 'cut', 'selectAll']) assert(editing.includes("role: '" + role + "'"));
+  assert(editing.includes('before-input-event'));
+  assert(fs.readFileSync(path.join(appRoot, 'electron/preload.cjs'), 'utf8').includes('trace:editing-focus'));
+  const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
+  assert(frontend.includes('How do I prepare my data? (Formats, templates and AI assistance)'));
+  assert(frontend.includes('Copy template'));
+  assert(frontend.includes('data-shortcut-scope'));
+  assert(backend.includes('.catalogue-cleanup-v0.4.54.json'));
+  console.log('Packaged native Edit-menu restoration, pane-scoped keyboard routing and explicit English data-preparation guide verified.');
+}
 if (Number(expectedVersion.split('.')[2]) >= 51) {
   const frontend = fs.readdirSync(path.join(appRoot, 'dist/assets')).filter(file => file.endsWith('.js')).map(file => fs.readFileSync(path.join(appRoot, 'dist/assets', file), 'utf8')).join('\n');
   assert(frontend.includes('records · complete history'));
@@ -60,8 +119,8 @@ if (Number(expectedVersion.split('.')[2]) >= 48) {
 }
 if (Number(expectedVersion.split('.')[2]) >= 47) {
   assert(backend.includes('confirm_resolved'));
-  if (Number(expectedVersion.split('.')[2]) < 51) assert(backend.includes('HPClaw display truncated'));
-  else assert(!backend.includes('HPClaw display truncated'));
+  if (Number(expectedVersion.split('.')[2]) < 51) assert(backend.includes('TRACE display truncated'));
+  else assert(!backend.includes('TRACE display truncated'));
   assert(backend.includes('This was not a user rejection.'));
   const plugin = fs.readFileSync(path.join(resources, 'app.asar.unpacked/vendor/dsh-plugin/index.js'), 'utf8');
   assert(plugin.includes("approval.setPolicy(exec.agent, 'ask')"));
@@ -78,7 +137,7 @@ if (Number(expectedVersion.split('.')[2]) >= 44) {
   assert(backend.includes('DSH history recovery limit reached; output not verified'));
   assert(backend.includes('no automatic rerun was attempted'));
   const readableBackend = backend.replace(/\\u([0-9a-f]{4})/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
-  assert(readableBackend.includes('查不到作业不等于 DONE'));
+  assert(readableBackend.includes('查不到不等于 DONE 也不等于失败'));
   assert(backend.includes('This turn was not resubmitted'));
   assert(backend.includes('authoritative'));
   // electron-builder strips its development-only build configuration from app.asar.
@@ -91,12 +150,12 @@ if (Number(expectedVersion.split('.')[2]) >= 44) {
   const { createLocaleStore } = await import(pathToFileURL(path.join(appRoot, 'electron/locale-store.cjs')).href);
   const installDir = path.join(temporary, 'isolated-install');
   fs.mkdirSync(installDir);
-  fs.writeFileSync(path.join(installDir, 'hpclaw-install-locale.json'), JSON.stringify({ locale: 'en-US' }));
+  fs.writeFileSync(path.join(installDir, Number(expectedVersion.split('.')[2]) >= 53 ? 'trace-install-locale.json' : 'trace-install-locale.json'), JSON.stringify({ locale: 'en-US' }));
   const locale = createLocaleStore({ installDir, userData: dataRoot });
   assert.equal(locale.get(), 'en-US');
   locale.set('zh-CN');
   assert.equal(createLocaleStore({ installDir, userData: dataRoot }).get(), 'zh-CN');
-  assert(fs.readFileSync(path.join(appRoot, 'electron/preload.cjs'), 'utf8').includes('hpclaw:locale:set'));
+  assert(fs.readFileSync(path.join(appRoot, 'electron/preload.cjs'), 'utf8').includes('trace:locale:set'));
   console.log('Packaged Windows language seed, persistent override, IPC and DSH recovery code verified.');
 }
 if (Number(expectedVersion.split('.')[2]) >= 45) {
@@ -126,9 +185,9 @@ const port = await new Promise(resolve => {
 });
 const child = spawn(packagedNode, [path.join(appRoot, 'dist-electron/server.cjs')], {
   cwd: appRoot, windowsHide: true, stdio: ['ignore','pipe','pipe'], env: { ...process.env, NODE_ENV: 'production',
-    PORT: String(port), HPCLAW_APP_ROOT: appRoot, HPCLAW_STATIC_ROOT: appRoot, HPCLAW_DATA_ROOT: dataRoot,
-    HPCLAW_HOST: '127.0.0.1', HPCLAW_WEB_MODE: '', HPCLAW_AI_ENGINE: 'legacy', HPCLAW_PARENT_PID: String(process.pid),
-    HPCLAW_DESKTOP_TOKEN: 'isolated-package-smoke-only', HPCLAW_PUBLIC_WORKER: '', HPCLAW_WEB_ACCESS_ENABLED: '' },
+    PORT: String(port), TRACE_APP_ROOT: appRoot, TRACE_STATIC_ROOT: appRoot, TRACE_DATA_ROOT: dataRoot,
+    TRACE_HOST: '127.0.0.1', TRACE_WEB_MODE: '', TRACE_AI_ENGINE: 'legacy', TRACE_PARENT_PID: String(process.pid),
+    TRACE_DESKTOP_TOKEN: 'isolated-package-smoke-only', TRACE_PUBLIC_WORKER: '', TRACE_WEB_ACCESS_ENABLED: '' },
 });
 let log = '';
 child.stdout.on('data', data => { log += data; });
@@ -152,14 +211,23 @@ try {
   if (Number(expectedVersion.split('.')[2]) >= 49) {
     const catalogue = async (url, method = 'GET', body) => {
       const response = await fetch('http://127.0.0.1:' + port + '/api/workflows' + url, { method,
-        headers: { 'Content-Type': 'application/json', 'X-HPClaw-Desktop-Token': 'isolated-package-smoke-only' },
+        headers: { 'Content-Type': 'application/json', 'X-TRACE-Desktop-Token': 'isolated-package-smoke-only' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       const result = await response.json();
       assert(response.ok, JSON.stringify(result));
       return result;
     };
     const initial = (await catalogue('')).workflows;
-      for (const id of ['builtin-dapseq-tf-en', 'encode-chipseq-tf-en', 'encode-chipseq-histone-en', 'encode-atacseq-en', ...(Number(expectedVersion.split('.')[2]) < 50 ? ['encode-chipseq-tf-dag'] : [])]) {
+      const cleanedCatalogue = Number(expectedVersion.split('.')[2]) >= 54;
+      if (cleanedCatalogue) {
+        for (const id of ['bioskills-hic-pipeline', 'bioskills-clip-pipeline', 'bioskills-causal-genomics-pipeline', 'bioskills-crispr-editing-pipeline', 'builtin-dapseq-tf-en', 'encode-chipseq-histone-en', 'encode-atacseq-en']) assert(!initial.some(w => w.id === id));
+        for (const id of ['bioskills-atacseq-pipeline', 'bioskills-chipseq-pipeline']) assert.equal(initial.find(w => w.id === id)?.lifecycle?.state, 'active');
+        assert(!initial.some(w => w.lifecycle?.state === 'pending_disposal'));
+        assert(initial.some(w => w.id === 'encode-hic'));
+        assert(initial.some(w => w.id === 'encode-eclip'));
+        console.log('Packaged v0.4.54 requested cleanup verified; retained workflows active, no pending definitions and independent ENCODE pipelines preserved.');
+      }
+      for (const id of cleanedCatalogue ? [] : ['builtin-dapseq-tf-en', ...(Number(expectedVersion.split('.')[2]) < 52 ? ['encode-chipseq-tf-en'] : []), 'encode-chipseq-histone-en', 'encode-atacseq-en', ...(Number(expectedVersion.split('.')[2]) < 50 ? ['encode-chipseq-tf-dag'] : [])]) {
         assert.equal(initial.find(workflow => workflow.id === id)?.lifecycle?.state, 'pending_disposal');
       }
       if (Number(expectedVersion.split('.')[2]) >= 50) {
@@ -168,6 +236,13 @@ try {
         assert.equal(dag.provenance.importerVersion, 'chipseq-dag-v2');
         assert(dag.steps.some(step => step.dependsOn?.length > 1));
         assert(fs.existsSync(path.join(appRoot, 'pipelines/encode/chipseq_dag.py')));
+      }
+      if (Number(expectedVersion.split('.')[2]) >= 52) {
+        assert(!initial.some(workflow => ['encode-chipseq-tf', 'encode-chipseq-tf-en'].includes(workflow.id)));
+        const dap = initial.find(workflow => workflow.id === 'builtin-dapseq-tf');
+        assert.equal(dap.steps[6].id, 'idr');
+        assert(dap.steps[7].command.includes('idr/final/*.peaks.final.bed'));
+        assert(fs.existsSync(path.join(appRoot, 'pipelines/encode/dapseq_idr.py')));
       }
     const id = 'encode-atacseq';
     const original = initial.find(workflow => workflow.id === id);
@@ -180,28 +255,62 @@ try {
     assert.deepEqual(restored.steps, original.steps);
     const created = (await catalogue('', 'POST', { name: 'isolated-catalogue-fixture', keywords: ['isolatedcatalogue'],
       steps: [{ title: 'No execution', command: 'echo isolated-catalogue-fixture' }] })).workflow;
-    const deletedIds = [created.id, 'encode-atacseq-en'];
+    const deletedBuiltin = Number(expectedVersion.split('.')[2]) >= 54 ? 'builtin-blast' : 'encode-atacseq-en';
+    const deletedIds = [created.id, deletedBuiltin];
     for (const deletedId of deletedIds) await catalogue('/' + deletedId, 'DELETE');
     assert(!(await catalogue('')).workflows.some(workflow => deletedIds.includes(workflow.id)));
     const stored = JSON.parse(fs.readFileSync(path.join(dataRoot, 'workflows/workflows.json'), 'utf8'));
     assert.equal(stored.find(workflow => workflow.id === id)?.lifecycle?.state, 'active');
     assert(!stored.some(workflow => deletedIds.includes(workflow.id)));
     const backupDir = path.join(dataRoot, 'workflows/deleted-definitions');
-    const backups = fs.readdirSync(backupDir).map(file => JSON.parse(fs.readFileSync(path.join(backupDir, file), 'utf8')));
+    const backups = fs.readdirSync(backupDir).filter(file => fs.statSync(path.join(backupDir, file)).isFile()).map(file => JSON.parse(fs.readFileSync(path.join(backupDir, file), 'utf8')));
     assert.deepEqual(backups.map(workflow => workflow.id).sort(), deletedIds.sort());
-    assert(JSON.parse(fs.readFileSync(path.join(dataRoot, 'workflows/deleted-builtin-seeds.json'), 'utf8')).includes('encode-atacseq-en'));
+    assert(JSON.parse(fs.readFileSync(path.join(dataRoot, 'workflows/deleted-builtin-seeds.json'), 'utf8')).includes(deletedBuiltin));
     console.log('Packaged real catalogue API passed: conservative migration, archive/restore, recommendation exclusion, builtin/user deletion and persistent backups; no SSH session or job created.');
   }
   if (Number(expectedVersion.split('.')[2]) >= 48) {
     const question = async body => fetch('http://127.0.0.1:' + port + '/api/ai/question', { method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-HPClaw-Desktop-Token': 'isolated-package-smoke-only' }, body: JSON.stringify(body) });
+      headers: { 'Content-Type': 'application/json', 'X-TRACE-Desktop-Token': 'isolated-package-smoke-only' }, body: JSON.stringify(body) });
     assert.equal((await question({ answer: 'fixture' })).status, 400);
     assert.equal((await question({ id: 'fixture', cancelled: 'false' })).status, 400);
     const missing = await question({ id: 'isolated-missing-question', answer: { selected: [], custom: 'fixture' } });
     assert.equal(missing.status, 409); assert.equal((await missing.json()).reason, 'unavailable');
     console.log('Packaged real question endpoint rejects invalid and stale IDs without accepting an answer or starting a task.');
   }
-  if (process.env.HPCLAW_SMOKE_SKIP_NETWORK === '1') {
+  if (Number(expectedVersion.split('.')[2]) >= 55) {
+    let explanationRequests = 0;
+    modelServer = http.createServer(async (request, response) => {
+      try {
+        let body = ''; for await (const chunk of request) body += chunk;
+        const value = JSON.parse(body);
+        assert(JSON.stringify(value.messages).includes('TRACE_CLARIFICATION_ONLY'));
+        assert(!(value.tools || []).some(tool => /ask_user|write|edit|set_plan/.test(tool.function?.name || '')));
+        explanationRequests++;
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const frame = (delta, finish_reason = null) => 'data: ' + JSON.stringify({ id: 'isolated-agent-fixture',
+          object: 'chat.completion.chunk', created: 1, model: value.model, choices: [{ index: 0, delta, finish_reason }] }) + '\n\n';
+        response.end(frame({ role: 'assistant', content: 'ISOLATED_OPTIONS_EXPLAINED: inspect the existing BAM before choosing a recovery; no command was executed.' })
+          + frame({}, 'stop') + 'data: [DONE]\n\n');
+      } catch (err) { response.writeHead(500); response.end(String(err)); }
+    });
+    await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+    const response = await fetch('http://127.0.0.1:' + port + '/api/ai/stream', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TRACE-Desktop-Token': 'isolated-package-smoke-only' },
+      body: JSON.stringify({ mode: 'agent', locale: 'zh-CN', workspace: temporary,
+        agentConfig: { engine: 'native', planningPolicy: 'auto', confirmationPolicy: 'always' },
+        messages: [{ role: 'assistant', content: '❓ 如何修复并继续？' }, { role: 'user', content: '有哪些修复方案？' }],
+        profile: { provider: 'deepseek', model: 'deepseek-chat', apiKey: 'isolated-fixture-only',
+          baseUrl: 'http://127.0.0.1:' + modelServer.address().port + '/v1' } }), signal: AbortSignal.timeout(60_000) });
+    assert.equal(response.status, 200);
+    const stream = await response.text();
+    const events = stream.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
+    assert(events.some(event => event.type === 'done' && event.content.includes('ISOLATED_OPTIONS_EXPLAINED')), JSON.stringify(events).slice(-2000));
+    assert(!events.some(event => ['ask', 'confirm', 'error', 'tool_call'].includes(event.type)), JSON.stringify(events).slice(-2000));
+    assert.equal(explanationRequests, 1);
+    modelServer.closeAllConnections(); await new Promise(resolve => modelServer.close(resolve)); modelServer = undefined;
+    console.log('Packaged real AI stream passed the screenshot explanation follow-up: one local mock model request, no repeated question, command, approval or external AI call.');
+  }
+  if (process.env.TRACE_SMOKE_SKIP_NETWORK === '1') {
     console.log('Live literature-metadata network probe skipped explicitly (not counted as passed).');
   } else {
   const sentences = ['Reads were cleaned using fastp (version 0.20.0) with minimum length 20.',
@@ -238,7 +347,7 @@ try {
   });
   await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
   const learned = await fetch('http://127.0.0.1:' + port + '/api/workflows/learn', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HPClaw-Desktop-Token': 'isolated-package-smoke-only' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TRACE-Desktop-Token': 'isolated-package-smoke-only' },
     body: JSON.stringify({ paperText, profile: { provider: 'deepseek', model: 'deepseek-flash',
       apiKey: 'isolated-fixture-only', baseUrl: 'http://127.0.0.1:' + modelServer.address().port + '/v1' } }),
     signal: AbortSignal.timeout(60000),

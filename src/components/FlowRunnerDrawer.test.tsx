@@ -3,7 +3,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import FlowRunnerDrawer from './FlowRunnerDrawer';
 import type { Workflow } from '@/shared/workflow';
-import { createWorkflowRun, fetchWorkflowRuns, resumeWorkflowRun } from '../features/workflows/api';
+import { createWorkflowRun, fetchWorkflowRuns, resumeWorkflowRun, runPreflightForConfig } from '../features/workflows/api';
+import { LanguageToggle, LocaleProvider } from '../i18n';
 
 vi.mock('../features/workflows/api', async () => {
   const actual = await vi.importActual<typeof import('../features/workflows/api')>('../features/workflows/api');
@@ -14,12 +15,14 @@ vi.mock('../features/workflows/api', async () => {
       runId: 'run-test-001',
       workflowId: 'wf-test',
       workflowName: '测试流程',
-      runDir: '/home/u/hpclaw_flows/test/03_workspace/runs/run-test-001',
+      runDir: '/home/u/trace_flows/test/03_workspace/runs/run-test-001',
       status: 'running',
       currentStep: 0,
       totalSteps: 1,
       steps: [{ n: 1, title: 's1', status: 'pending' }],
     })),
+    // 启动前整体检查：默认全部就绪（无问题项），直接进入建运行
+    runPreflightForConfig: vi.fn(async () => ({ ok: true, issues: [], preflight: null })),
     resumeWorkflowRun: vi.fn(async (runDir: string) => ({
       runId: 'run-failed', revision: 4, workflowId: 'wf-test', workflowName: '测试流程',
       runDir, status: 'running', currentStep: 1, totalSteps: 2,
@@ -30,6 +33,7 @@ vi.mock('../features/workflows/api', async () => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.clearAllMocks();
 });
 
@@ -59,6 +63,46 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 describe('FlowRunnerDrawer', () => {
+  it('switches the complete data-preparation block in both directions', async () => {
+    const workflow = makeWorkflow({ manifest: undefined, params: [
+      { name: 'SAMPLE_SHEET', label: '样本表', type: 'path' },
+      { name: 'INPUT_JSON', label: '输入 JSON', type: 'path' },
+    ] });
+    const { container } = render(<LocaleProvider><LanguageToggle /><FlowRunnerDrawer workflow={workflow} onClose={vi.fn()} onRun={vi.fn()} /></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    const summary = await screen.findByText('How do I prepare my data? (Formats, templates and AI assistance)');
+    const block = summary.closest('details')!;
+    await waitFor(() => expect(block.textContent).not.toMatch(/[\u3400-\u9fff]/));
+    expect(block.querySelector('pre')?.textContent).toContain('replicate\tread1\tread2');
+    expect(block.textContent).toContain('Copy template');
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    await screen.findByText('数据怎么准备？（格式说明 + 模板 + AI 协助）');
+    expect(container.textContent).toContain('复制模板');
+  });
+  it('switches workflow parameters, step counts and help in both directions while preserving paths and numeric values', async () => {
+    window.localStorage.clear();
+    const workflow = makeWorkflow({
+      name: 'DAP-seq 转录因子结合位点分析与质控流程（中文版）',
+      params: [
+        { name: 'THREADS', label: '线程数', type: 'number', defaultValue: '8' },
+        { name: 'REF_FA', label: '参考基因组 FASTA', type: 'path', defaultValue: '/ref/中文样本.fa' },
+      ],
+      steps: [{ title: '生物学重复 IDR 一致性评估', command: 'echo 原始命令' }],
+    });
+    render(<LocaleProvider><LanguageToggle /><FlowRunnerDrawer workflow={workflow} onClose={vi.fn()} onRun={vi.fn()} /></LocaleProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to English' }));
+    await screen.findByText('DAP-seq Transcription-Factor Binding Analysis and QC');
+    expect(screen.getByDisplayValue('/ref/中文样本.fa')).toBeTruthy();
+    expect(screen.getByDisplayValue('8')).toBeTruthy();
+    expect(screen.getByText('2 parameters')).toBeTruthy();
+    expect(screen.getByText('1 step · Follow the workflow by default')).toBeTruthy();
+    expect(screen.getByLabelText(/Threads/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '切换到中文' }));
+    await screen.findByText(workflow.name);
+    expect(screen.getByDisplayValue('/ref/中文样本.fa')).toBeTruthy();
+    expect(screen.getByLabelText(/线程数/)).toBeTruthy();
+    window.localStorage.clear();
+  });
   it('blocks a new run for pending-disposal workflows without interrupting history', async () => {
     render(<FlowRunnerDrawer workflow={makeWorkflow({ lifecycle: { state: 'pending_disposal', origin: 'user', updatedAt: 1 } })} sessionId="session-test" onClose={vi.fn()} onRun={vi.fn()} />);
     expect(screen.getByText(/此流程在待弃置中/)).toBeTruthy();
@@ -67,7 +111,7 @@ describe('FlowRunnerDrawer', () => {
     await waitFor(() => expect(fetchWorkflowRuns).toHaveBeenCalled());
   });
   it('only sends the failed-QC override flag after explicit risk confirmation', async () => {
-    const runDir = '/home/u/hpclaw_flows/test/03_workspace/runs/qc-failed';
+    const runDir = '/home/u/trace_flows/test/03_workspace/runs/qc-failed';
     vi.mocked(fetchWorkflowRuns).mockResolvedValueOnce([{
       runId: 'qc-failed', revision: 4, workflowId: 'wf-test', runDir,
       status: 'waiting_user', currentStep: 1, totalSteps: 2,
@@ -77,7 +121,7 @@ describe('FlowRunnerDrawer', () => {
     render(<FlowRunnerDrawer workflow={makeWorkflow()} sessionId="s1" onClose={() => {}} onRun={() => {}} />);
     fireEvent.click(await screen.findByText('仍要继续（不推荐）'));
     expect(resumeWorkflowRun).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText('确认风险并继续'));
+    fireEvent.click(await screen.findByText('确认风险并继续'));
     await waitFor(() => expect(resumeWorkflowRun).toHaveBeenCalledWith(runDir, 4, 's1', true));
   });
   it('默认突出专属工作目录，并把按需检查与高级设置折叠', () => {
@@ -189,6 +233,39 @@ describe('FlowRunnerDrawer', () => {
     expect(screen.getByText(/参数未填写.*输入目录/)).toBeInTheDocument();
   });
 
+  it('启动前整体检查发现问题时弹集中解答卡，解答重检通过后才创建运行', async () => {
+    const onRun = vi.fn();
+    vi.mocked(runPreflightForConfig)
+      .mockResolvedValueOnce({
+        ok: false,
+        preflight: null,
+        issues: [{ kind: 'reference', name: 'GTF', label: 'GTF', message: '待用户指定路径（GTF 未提供）', severity: 'blocker' }],
+      })
+      .mockResolvedValueOnce({ ok: true, issues: [], preflight: null });
+    render(<FlowRunnerDrawer workflow={makeWorkflow()} sessionId="s1" onClose={() => {}} onRun={onRun} />);
+
+    // 填好数据与必填参数后点运行 → 先整体检查，有 blocker → 弹集中解答卡，不建运行
+    const pathInput = screen.getByPlaceholderText('或手动输入计算资源路径后回车');
+    fireEvent.change(pathInput, { target: { value: '/data/fastq' } });
+    fireEvent.keyDown(pathInput, { key: 'Enter' });
+    fireEvent.change(screen.getByPlaceholderText('INPUT_DIR'), { target: { value: '/data/fastq' } });
+    fireEvent.click(screen.getByText('运行流程'));
+    expect(await screen.findByText('启动前整体检查')).toBeInTheDocument();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(screen.getByText('仍然开始运行').closest('button')).toBeDisabled();
+
+    // 内联解答参考数据路径（写回 refOverrides）→ 重检通过 → 自动创建运行
+    fireEvent.change(screen.getByLabelText('参考数据:GTF'), { target: { value: '/refs/gtf' } });
+    fireEvent.click(screen.getByText('全部解决后重新检查'));
+    await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledTimes(1));
+    expect(createWorkflowRun).toHaveBeenCalledWith('wf-test', expect.objectContaining({
+      referenceOverrides: { GTF: '/refs/gtf' },
+    }), 's1');
+    await waitFor(() => expect(onRun).toHaveBeenCalledTimes(1));
+    expect(onRun.mock.calls[0][0]).toContain('已完成启动前整体检查');
+    expect(onRun.mock.calls[0][1]).toEqual({ dedicatedConversation: true });
+  });
+
   it('path 型参数提供"选择文件"与"选择目录"两个入口，分别按 kind 选取并写回参数值', async () => {
     const onPickFolder = vi.fn(async (_kind?: string) => '/data/picked');
     render(<FlowRunnerDrawer workflow={makeWorkflow()} sessionId="s1" onClose={() => {}} onRun={() => {}} onPickFolder={onPickFolder} />);
@@ -229,7 +306,7 @@ describe('FlowRunnerDrawer', () => {
   });
 
   it('运行记录可以打开集群目录并从 revision 断点继续', async () => {
-    const runDir = '/home/u/hpclaw_flows/test/03_workspace/runs/run-failed';
+    const runDir = '/home/u/trace_flows/test/03_workspace/runs/run-failed';
     vi.mocked(fetchWorkflowRuns).mockResolvedValueOnce([{
       runId: 'run-failed', revision: 3, workflowId: 'wf-test', workflowName: '测试流程',
       runDir, status: 'failed', currentStep: 1, totalSteps: 2,

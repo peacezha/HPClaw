@@ -8,4 +8,12 @@ export type AttachmentId = Branded<'AttachmentId'>;
  * @returns the branded identifier.
  */
 export declare function AttachmentId(value: string): AttachmentId;
+/** Opaque deterministic identity for one request-image transformation. */
+export type ImageVariantId = Branded<'ImageVariantId'>;
+/**
+ * Brand a validated request-image transformation identifier.
+ * @param value - attachment-provider-produced opaque identifier.
+ * @returns the branded identifier.
+ */
+export declare function ImageVariantId(value: string): ImageVariantId;
 //# sourceMappingURL=brand.d.ts.map

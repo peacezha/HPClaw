@@ -75,12 +75,12 @@ function openContextMenu(root: HTMLElement) {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
-  (window as any).hpclawDesktop = { clipboard };
+  (window as any).traceDesktop = { clipboard };
 });
 
 afterEach(() => {
   cleanup();
-  delete (window as any).hpclawDesktop;
+  delete (window as any).traceDesktop;
 });
 
 describe('TerminalAI 右键菜单', () => {
@@ -155,7 +155,7 @@ describe('TerminalAI 划词 AI 辅助', () => {
     // 菜单保持展开，勾选态更新，开关持久化
     expect(screen.getByTestId('terminal-context-menu')).toBeTruthy();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(window.localStorage.getItem('hpclaw_terminal_assist')).toBe('1');
+    expect(window.localStorage.getItem('trace_terminal_assist')).toBe('1');
 
     fireEvent.keyDown(document, { key: 'Escape' }); // 收起菜单再划选
     simulateSelection('输出位于 /public/home/u/project 目录下');
@@ -178,7 +178,7 @@ describe('TerminalAI 划词 AI 辅助', () => {
 
     menu = openContextMenu(root);
     fireEvent.click(within(menu).getByText('AI 辅助'));
-    expect(window.localStorage.getItem('hpclaw_terminal_assist')).toBe('0');
+    expect(window.localStorage.getItem('trace_terminal_assist')).toBe('0');
     expect(screen.queryByTestId('terminal-assist-panel')).toBeNull();
 
     fireEvent.keyDown(document, { key: 'Escape' });

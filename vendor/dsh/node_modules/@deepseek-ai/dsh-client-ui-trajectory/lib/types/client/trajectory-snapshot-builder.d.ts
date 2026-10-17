@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
-import type { ConversationViewBuilder, ConversationViewDefinition } from '@deepseek-ai/dsh-client-runtime/client';
+import type { ConversationViewBuilder, ConversationViewDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { TrajectoryConversationViewNode, TrajectorySnapshot } from './trajectory-contract.ts';
 /** Stable empty target used until a Session has assembled Trajectory records. */
 export declare const EMPTY_TRAJECTORY_SNAPSHOT: TrajectorySnapshot;

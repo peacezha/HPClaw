@@ -1,11 +1,13 @@
 /** Live/persisted logical-corpus resolution for session-query. */
 import type { Context } from '@deepseek-ai/cordis';
-import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session';
+import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import type { SessionRecord } from './types.ts';
 /** Detached source selected for one exact read. */
 export interface LogicalSession {
     /** Cloned source header. */
     header: SessionHeader;
+    /** Exact fork-inherited event count paired with {@link header}. */
+    inheritedEventCount: SessionLogOffset;
     /** Cloned raw event log. */
     events: SessionEvent[];
 }
@@ -29,10 +31,10 @@ export type LogicalProjectionResult<Value> = {
 /** Resolves a live-preferred corpus against the persistence service mounted now. */
 export declare class SessionCorpus {
     private readonly _ctx;
-    private readonly _persistedInspectConcurrency;
+    private readonly _persistedReadConcurrency;
     private _persistence;
     private readonly _optionalPersistenceFiber;
-    constructor(_ctx: Context, _persistedInspectConcurrency: number);
+    constructor(_ctx: Context, _persistedReadConcurrency: number);
     /**
      * List the complete logical corpus with live precedence and cloned headers.
      * @param signal - optional cancellation for persistence listing.

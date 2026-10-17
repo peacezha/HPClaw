@@ -28,7 +28,15 @@ export declare const hexToArrayBuffer: typeof Binary.fromHex;
 export declare const arrayBufferToHex: typeof Binary.toHex;
 /** Deep-clone common JavaScript values while preserving prototypes. */
 export declare function clone<T>(source: T): T;
-/** Deeply compare arrays, dates, regexps, buffers, and plain object fields. */
+/**
+ * Compare values recursively, treating two volatile references as equal regardless of value.
+ * Strict comparison distinguishes null/undefined, treats opaque objects by identity,
+ * compares URLs by normalized href, treats array holes as undefined, and considers distinct cyclic structures unequal.
+ * @param a - first value.
+ * @param b - second value.
+ * @param strict - whether to require strict data equality outside volatile references.
+ * @returns whether the values compare equal.
+ */
 export declare function deepEqual(a: any, b: any, strict?: boolean): boolean;
 export {};
 //# sourceMappingURL=types.d.ts.map

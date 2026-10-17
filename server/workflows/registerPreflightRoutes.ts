@@ -40,7 +40,7 @@ function shq(value: string): string {
 }
 
 /**
- * 校验并展开运行目录：仅允许 home 下 hpclaw_flows / hpclaw_runs 工作区内的路径。
+ * 校验并展开运行目录：仅允许 home 下 trace_flows / trace_runs 工作区内的路径。
  * 合法返回原 dir（供 shell 使用，可能带 ~），非法返回 null。
  */
 export function resolveRunLogDir(home: string, dir: string): string | null {
@@ -48,8 +48,8 @@ export function resolveRunLogDir(home: string, dir: string): string | null {
   if (!trimmed || trimmed.includes('..')) return null;
   const normalizedHome = home.replace(/\/+$/, '');
   const expanded = trimmed.startsWith('~/') ? `${normalizedHome}/${trimmed.slice(2)}` : trimmed;
-  if (expanded.startsWith(`${normalizedHome}/hpclaw_flows/`)) return trimmed;
-  if (expanded.startsWith(`${normalizedHome}/hpclaw_runs/`)) return trimmed;
+  if (expanded.startsWith(`${normalizedHome}/trace_flows/`)) return trimmed;
+  if (expanded.startsWith(`${normalizedHome}/trace_runs/`)) return trimmed;
   return null;
 }
 
@@ -97,7 +97,7 @@ export function registerPreflightRoutes(
       if (!workflow.assets?.length) return sendError(res, 400, '该流程没有内置管线文件');
 
       const slug = workflowSlug(workflow.name);
-      const base = `${s.home}/hpclaw_flows/${slug}/01_software`;
+      const base = `${s.home}/trace_flows/${slug}/01_software`;
       const results: Array<{ remotePath: string; ok: boolean; error?: string }> = [];
       for (const asset of workflow.assets) {
         try {
@@ -119,7 +119,7 @@ export function registerPreflightRoutes(
     }
   });
 
-  // 流程运行日志：tail 运行目录 logs/ 下的输出（路径限定在 hpclaw 工作区内）
+  // 流程运行日志：tail 运行目录 logs/ 下的输出（路径限定在 trace 工作区内）
   app.get('/api/workflows/runs/log', async (req, res) => {
     try {
       const s = resolveSession(req);
@@ -128,7 +128,7 @@ export function registerPreflightRoutes(
       if (!dir) return sendError(res, 400, '缺少 dir 参数');
       const safeDir = resolveRunLogDir(s.home, dir);
       if (!safeDir) {
-        return sendError(res, 403, '只允许查看 hpclaw 流程工作区内的日志');
+        return sendError(res, 403, '只允许查看 trace 流程工作区内的日志');
       }
       let n = Number.parseInt(String(req.query.n || '200'), 10);
       if (!Number.isInteger(n) || n < 50) n = 200;

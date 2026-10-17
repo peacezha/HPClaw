@@ -1,8 +1,13 @@
-// dsh web sidecar 生命周期托管：provisioning（插件安装 + cordis.patch.yml 合并）、
-// spawn `dsh web`、崩溃指数退避重启、显式停止。同一时刻只允许一个启动流程，
+// dsh sdk sidecar 生命周期托管：provisioning（sdk profile 模板物化 + 插件安装 +
+// cordis.patch.yml 合并）、spawn `dsh --profile sdk`（stdio 换行 JSON-RPC）、
+// initialize 握手即就绪、崩溃指数退避重启、显式停止。同一时刻只允许一个启动流程，
 // 并发 ensureSidecar 调用共享同一个 in-flight Promise。
+//
+// 0.2.1-alpha.5 起通信面从 HTTP/WS（dsh web）迁到官方 SDK stdio 通道：
+// 不再有监听端口，EnsureSidecarResult.baseUrl 保留字段形状（调用方只做真值判断），
+// 实际值为固定哨兵 SDK_CHANNEL_SENTINEL；真正的会话句柄经 getSidecarClient() 暴露。
 
-import { exec, spawn, type ChildProcess } from 'node:child_process';
+import { exec, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,6 +17,7 @@ import { APP_ROOT, DATA_ROOT, dataPath, ensureDir } from '../paths';
 import { terminateProcessTree } from '../processTree';
 import { repairInvalidDeepSeekBaseUrlSetting } from './dshConfigSafety';
 import { writeFileAtomic0600 } from './fileUtils';
+import { DshSdkClient } from './dshSdkClient';
 
 export type SidecarStatus = 'stopped' | 'provisioning' | 'starting' | 'ready' | 'restarting' | 'failed';
 
@@ -23,7 +29,7 @@ export interface SidecarStatusInfo {
 }
 
 export interface EnsureSidecarOptions {
-  /** hpclaw-dsh-plugin 源码目录（dev 下是真实目录；打包后是 .asar 内路径，会先拷出） */
+  /** trace-dsh-plugin 源码目录（dev 下是真实目录；打包后是 .asar 内路径，会先拷出） */
   pluginSourceDir: string;
   /** 要暴露给 dsh 技能系统的技能目录列表（.asar 路径同样先拷出） */
   skillDirs: string[];
@@ -33,7 +39,11 @@ export interface EnsureSidecarOptions {
   wheatomicsScript?: string;
   githubMirrorScript?: string;
   /** 缺省 http://127.0.0.1:<PORT||3003> */
-  hpclawBaseUrl?: string;
+  traceBaseUrl?: string;
+  /** initialize 的 provider 路由（缺省 deepseek-official）。变更触发 sidecar 重启。 */
+  provider?: string;
+  /** initialize 的模型（缺省 deepseek-flash）。变更触发 sidecar 重启。 */
+  model?: string;
 }
 
 // 显式 undefined 的判别联合：项目 tsconfig 未开 strict，属性在两个分支都直接可访问，
@@ -42,16 +52,18 @@ export type EnsureSidecarResult =
   | { ok: true; baseUrl: string; reason?: undefined }
   | { ok: false; baseUrl?: undefined; reason: string };
 
+/** sdk 通道没有 HTTP 端口；保留 baseUrl 字段仅为兼容既有调用方的真值判断。 */
+export const SDK_CHANNEL_SENTINEL = 'sdk+stdio://local';
+
 const MAX_RESTARTS = 3;
 // 打包环境首启较慢（临时目录解压 + 依赖树大 + profile 初始化），实测首次 boot >30s；
 // 给足 120s（此时 SSE 请求仍受 15 分钟看门狗保护，用户体验是"启动 dsh 引擎…"等待）。
 const STARTUP_TIMEOUT_MS = 120_000;
 
 let status: SidecarStatus = 'stopped';
-let currentBaseUrl: string | undefined;
 let failReason: string | undefined;
 let restarts = 0;
-let child: ChildProcess | undefined;
+let sdkClient: DshSdkClient | undefined;
 let intentionalStop = false;
 let inFlight: Promise<EnsureSidecarResult> | undefined;
 let lastOptions: EnsureSidecarOptions | undefined;
@@ -82,7 +94,7 @@ function resolveBundledDshBin(): string | undefined {
   return undefined;
 }
 
-/** 随包分发的 node 运行时（vendor/node-runtime/node.exe）。 */
+/** 随包分发的 node 运行时（vendor/node-runtime/node.exe，0.2.1 起要求 Node≥24.2）。 */
 function resolveBundledNode(): string | undefined {
   const rel = path.join('vendor', 'node-runtime', process.platform === 'win32' ? 'node.exe' : 'node');
   const asarPath = path.join(APP_ROOT, rel);
@@ -102,27 +114,27 @@ function resolveBundledNode(): string | undefined {
  * 跑内嵌 dsh 的 node 可执行：优先随包的 node.exe——Electron 的 ELECTRON_RUN_AS_NODE
  * 跑不了 dsh loader 依赖的 node-addon-require-builtin 原生模块（打包实测：
  * 同一份 vendor 树系统 node 能 boot、Electron run-as-node 不能）。兜底才用
- * HPCLAW_NODE_EXECUTABLE（Electron）/ process.execPath。
+ * TRACE_NODE_EXECUTABLE（Electron）/ process.execPath。
  */
 function dshNodeExecutable(): string {
-  return resolveBundledNode() || process.env.HPCLAW_NODE_EXECUTABLE || process.execPath;
+  return resolveBundledNode() || process.env.TRACE_NODE_EXECUTABLE || process.execPath;
 }
 
 /** 仅当真的把 Electron 本体当 node 用时才需要 ELECTRON_RUN_AS_NODE=1。 */
 function dshNodeEnv(): Record<string, string> {
   if (resolveBundledNode()) return {};
-  return process.env.HPCLAW_NODE_EXECUTABLE ? { ELECTRON_RUN_AS_NODE: '1' } : {};
+  return process.env.TRACE_NODE_EXECUTABLE ? { ELECTRON_RUN_AS_NODE: '1' } : {};
 }
 
 /**
- * dsh 命令解析（内嵌优先，其他机器无需预装 dsh）：
- * 1. DSH_BIN 显式覆盖（完整命令行）；2. 内嵌 bin.js（node 直跑）；3. 全局安装兜底 npx。
+ * dsh 启动命令：1. DSH_BIN 显式覆盖（完整命令行，shell 执行）；
+ * 2. 内嵌 bin.js（node 直跑 argv，无 shell）；3. 全局安装兜底 npx。
  */
-function dshBinCommand(): string {
-  if (process.env.DSH_BIN) return process.env.DSH_BIN;
+function dshSpawnSpec(): { command: string; args: string[]; shell: boolean } {
+  if (process.env.DSH_BIN) return { command: `${process.env.DSH_BIN} --profile sdk`, args: [], shell: true };
   const bundled = resolveBundledDshBin();
-  if (bundled) return `${quoteArg(dshNodeExecutable())} ${quoteArg(bundled)}`;
-  return 'npx @deepseek-ai/dsh';
+  if (bundled) return { command: dshNodeExecutable(), args: [bundled, '--profile', 'sdk'], shell: false };
+  return { command: 'npx @deepseek-ai/dsh --profile sdk', args: [], shell: true };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -130,7 +142,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 export function getSidecarStatus(): SidecarStatusInfo {
-  return { status, baseUrl: currentBaseUrl, reason: failReason, restarts };
+  return { status, baseUrl: status === 'ready' ? SDK_CHANNEL_SENTINEL : undefined, reason: failReason, restarts };
+}
+
+/** 就绪后的 stdio 协议客户端；sidecar 未就绪/已停止时为 undefined。 */
+export function getSidecarClient(): DshSdkClient | undefined {
+  return status === 'ready' ? sdkClient : undefined;
 }
 
 function optionsFingerprint(opts: EnsureSidecarOptions): string {
@@ -139,7 +156,10 @@ function optionsFingerprint(opts: EnsureSidecarOptions): string {
     skillDirs: [...opts.skillDirs].map(item => path.resolve(item)).sort(),
     wheatomicsScript: opts.wheatomicsScript || '',
     githubMirrorScript: opts.githubMirrorScript || '',
-    hpclawBaseUrl: opts.hpclawBaseUrl || '',
+    traceBaseUrl: opts.traceBaseUrl || '',
+    // provider/model 是 initialize 级配置，协议不支持运行中改路由：变更必须重启。
+    provider: opts.provider || 'deepseek-official',
+    model: opts.model || 'deepseek-flash',
     extraEnv: Object.entries(opts.extraEnv || {}).sort(([a], [b]) => a.localeCompare(b)),
   };
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
@@ -162,7 +182,7 @@ async function ensureConfiguredSidecar(opts: EnsureSidecarOptions): Promise<Ensu
   }
   if (status === 'ready' && activeOptionsFingerprint && activeOptionsFingerprint !== fingerprint) {
     console.log('[dsh-sidecar] provider configuration changed; restarting sidecar');
-    const previous = child;
+    const previous = sdkClient?.process;
     stopSidecar();
     await waitForStoppedProcess(previous);
   }
@@ -180,7 +200,7 @@ export function ensureSidecar(opts: EnsureSidecarOptions): Promise<EnsureSidecar
 
 async function ensureLoop(opts: EnsureSidecarOptions): Promise<EnsureSidecarResult> {
   for (;;) {
-    if (status === 'ready' && currentBaseUrl) return { ok: true, baseUrl: currentBaseUrl };
+    if (status === 'ready' && sdkClient) return { ok: true, baseUrl: SDK_CHANNEL_SENTINEL };
     if (status === 'failed') return { ok: false, reason: failReason || 'dsh sidecar failed' };
     if (inFlight) {
       const result = await inFlight;
@@ -205,12 +225,14 @@ export function stopSidecar(): void {
   intentionalStop = true;
   restarts = 0;
   failReason = undefined;
-  currentBaseUrl = undefined;
   activeOptionsFingerprint = undefined;
   status = 'stopped';
-  const proc = child;
-  child = undefined;
-  if (proc) {
+  const client = sdkClient;
+  sdkClient = undefined;
+  if (client) {
+    // 先给 shutdown RPC 一个优雅退出的机会（应答后 dsh 自行 exit 0），再杀树兜底。
+    void client.shutdown(3_000).catch(() => { /* 尽力而为 */ });
+    const proc = client.process;
     const completeTreeStopped = terminateProcessTree(proc);
     if (!completeTreeStopped) {
       const killer = setTimeout(() => {
@@ -237,17 +259,16 @@ async function boot(opts: EnsureSidecarOptions): Promise<EnsureSidecarResult> {
   }
 
   status = 'starting';
-  const started = await spawnAndWaitReady(opts);
-  const startedBaseUrl = started.baseUrl;
-  if (!started.ok || !startedBaseUrl) {
+  const started = await spawnAndHandshake(opts);
+  if (!started.ok || !started.client) {
     status = 'stopped';
     failReason = started.reason || 'startup_failed';
     return { ok: false, reason: failReason };
   }
   status = 'ready';
-  currentBaseUrl = startedBaseUrl;
+  sdkClient = started.client;
   failReason = undefined;
-  return { ok: true, baseUrl: startedBaseUrl };
+  return { ok: true, baseUrl: SDK_CHANNEL_SENTINEL };
 }
 
 /* ---------------- provisioning ---------------- */
@@ -347,21 +368,40 @@ function resolveScript(opts: EnsureSidecarOptions, explicit: string | undefined,
 function ensurePluginLink(profileDir: string, targetDir: string): { ok: true; error?: undefined } | { ok: false; error: string } {
   try {
     const pkgFile = path.join(profileDir, 'package.json');
-    let pkg: Record<string, unknown> = { name: 'dsh-profile-web', private: true };
+    // 最小骨架必须自带 sdk profile 的 bundles 声明——模板物化失败时（断网等）
+    // profile 仍能按 dsh-base + dsh-sdk-app 组合启动，而不是空树空转。
+    let pkg: Record<string, unknown> = {
+      name: 'dsh-profile-sdk',
+      private: true,
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-sdk-app'] } },
+    };
     try {
       const parsed = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) pkg = parsed;
     } catch { /* 文件不存在：用最小骨架（profile 其余文件由 dsh boot 自愈补齐） */ }
+    const workspaceFile = path.join(profileDir, 'pnpm-workspace.yaml');
+    if (!fs.existsSync(workspaceFile)) {
+      writeFileAtomic0600(workspaceFile, "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");
+    }
     const deps = ((pkg as { dependencies?: Record<string, string> }).dependencies ||= {});
     const linkSpec = `link:${targetDir}`;
-    if (deps['hpclaw-dsh-plugin'] !== linkSpec) {
-      deps['hpclaw-dsh-plugin'] = linkSpec;
+    if (deps['trace-dsh-plugin'] !== linkSpec || deps['hpclaw-dsh-plugin']) {
+      delete deps['hpclaw-dsh-plugin'];
+      deps['trace-dsh-plugin'] = linkSpec;
       writeFileAtomic0600(pkgFile, JSON.stringify(pkg, null, 2));
     }
-    const linkPath = path.join(profileDir, 'node_modules', 'hpclaw-dsh-plugin');
+    const linkPath = path.join(profileDir, 'node_modules', 'trace-dsh-plugin');
     if (!isPluginInstalledAt(linkPath, targetDir)) {
       ensureDir(path.dirname(linkPath));
-      fs.rmSync(linkPath, { recursive: true, force: true });
+      // junction 绝不能用 rmSync(recursive):Windows 下会穿透 junction 删除目标目录
+      // 内容（本机实测 vendor/dsh-plugin 被清空过）。junction/符号链接用 unlink 或
+      // rmdir 只摘链接本身。
+      try {
+        const st = fs.lstatSync(linkPath);
+        if (st.isSymbolicLink()) fs.unlinkSync(linkPath);
+        else if (st.isDirectory()) fs.rmdirSync(linkPath);
+        else fs.unlinkSync(linkPath);
+      } catch { /* 不存在则忽略 */ }
       fs.symlinkSync(targetDir, linkPath, 'junction');
     }
     return { ok: true };
@@ -370,10 +410,25 @@ function ensurePluginLink(profileDir: string, targetDir: string): { ok: true; er
   }
 }
 
+/**
+ * sdk profile 模板只能由 dsh 自己物化（预先建目录会让模板跳过、profile 空转退出）。
+ * 目录缺失时先跑一次 `--profile sdk --help` 触发物化；物化失败不致命——
+ * 后续 ensurePluginLink/mergeCordisPatch 会自建最小可用 profile。
+ */
+async function materializeSdkProfile(profileDir: string): Promise<void> {
+  if (fs.existsSync(path.join(profileDir, 'cordis.patch.yml'))) return;
+  if (fs.existsSync(profileDir)) return; // 目录已存在时不碰（避免挡住模板物化语义）
+  const spec = dshSpawnSpec();
+  const command = spec.shell ? `${spec.command} --help` : `${quoteArg(spec.command)} ${spec.args.map(quoteArg).join(' ')} --help`;
+  const result = await runShell(command, 90_000);
+  if (!result.ok) {
+    console.warn('[dsh-sidecar] sdk profile 模板物化命令失败（将按最小 profile 继续）: %s', result.error);
+  }
+}
+
 async function provision(opts: EnsureSidecarOptions): Promise<{ ok: true; reason?: undefined } | { ok: false; reason: string }> {
-  const dshBin = dshBinCommand();
   const dshHome = path.join(os.homedir(), '.dsh');
-  const profileDir = path.join(os.homedir(), '.dsh', 'profiles', 'web');
+  const profileDir = path.join(dshHome, 'profiles', 'sdk');
 
   // DSH user settings override launch environment variables. Repair the one
   // known unsafe legacy state (an API key pasted into baseURL) before booting,
@@ -381,33 +436,38 @@ async function provision(opts: EnsureSidecarOptions): Promise<{ ok: true; reason
   try {
     const repair = repairInvalidDeepSeekBaseUrlSetting(path.join(dshHome, 'settings.yaml'));
     if (repair.changed) {
-      console.warn('[dsh-sidecar] 已移除无效的 DeepSeek baseURL；将使用 HPClaw 中配置的接口地址');
+      console.warn('[dsh-sidecar] 已移除无效的 DeepSeek baseURL；将使用 TRACE 中配置的接口地址');
     }
   } catch (err) {
     console.warn('[dsh-sidecar] DSH 设置安全检查失败（继续启动）: %s', err instanceof Error ? err.message : String(err));
   }
+
+  await materializeSdkProfile(profileDir);
 
   // a. 插件目录（.asar → 拷出）
   if (!fs.existsSync(opts.pluginSourceDir)) {
     return { ok: false, reason: `plugin_install_failed: source dir not found: ${opts.pluginSourceDir}` };
   }
   const pluginTarget = materializeAsset(opts.pluginSourceDir, dataPath('dsh-assets', 'dsh-plugin'));
-  const installedLink = path.join(profileDir, 'node_modules', 'hpclaw-dsh-plugin');
-  if (!isPluginInstalledAt(installedLink, pluginTarget)) {
+  {
     const linked = ensurePluginLink(profileDir, pluginTarget);
     if (!linked.ok) {
       console.warn('[dsh-sidecar] 直接建立插件 link 失败（%s），回退 dsh plugin add', linked.error);
-      const added = await runShell(`${dshBin} plugin --profile web add ${quoteArg(pluginTarget)}`);
+      const spec = dshSpawnSpec();
+      const pluginAdd = spec.shell
+        ? spec.command.replace(/--profile sdk\s*$/, 'plugin --profile sdk')
+        : `${quoteArg(spec.command)} ${quoteArg(spec.args[0])} plugin --profile sdk`;
+      const added = await runShell(`${pluginAdd} add ${quoteArg(pluginTarget)}`);
       if (!added.ok) return { ok: false, reason: `plugin_install_failed: ${added.error}` };
     }
   }
 
-  // b. cordis.patch.yml 合并两条 insert 条目
+  // b. cordis.patch.yml 合并 insert/override 条目
   const materializedSkillDirs = opts.skillDirs.map(dir =>
     materializeAsset(dir, dataPath('dsh-assets', 'skills', path.basename(dir))));
   const pluginConfig: Record<string, unknown> = {
     pythonBin: 'python',
-    hpclawBaseUrl: opts.hpclawBaseUrl || `http://127.0.0.1:${Number(process.env.PORT || 3003)}`,
+    traceBaseUrl: opts.traceBaseUrl || `http://127.0.0.1:${Number(process.env.PORT || 3003)}`,
     bridgeStateFile: dataPath('dsh-bridge.json'),
     commandPolicy: 'deny',
     guardedTools: ['bash', 'pwsh'],
@@ -418,7 +478,12 @@ async function provision(opts: EnsureSidecarOptions): Promise<{ ok: true; reason
   if (githubMirrorScript) pluginConfig.githubMirrorScript = githubMirrorScript;
 
   mergeCordisPatch(path.join(profileDir, 'cordis.patch.yml'), {
-    insert: [{ id: 'hpclaw-tools', name: 'hpclaw-dsh-plugin', config: pluginConfig }],
+    insert: [
+      { id: 'trace-tools', name: 'trace-dsh-plugin', config: pluginConfig },
+      // sdk profile 不含 web preset 的 ask_user_question 工具；显式补上，
+      // 使模型反问走 dsh-user-questions 瀑布 → 插件 HTTP 应答器 → TRACE 前端。
+      { id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' },
+    ],
     override: [{ id: 'skill-filesystem', config: { customSkillDirs: materializedSkillDirs } }],
   });
   return { ok: true };
@@ -428,7 +493,7 @@ async function provision(opts: EnsureSidecarOptions): Promise<{ ok: true; reason
 
 type PatchInsertEntry = Record<string, unknown> & { id?: string };
 /**
- * insert：新插件条目，进 `- insert:` 列表（如 hpclaw-tools）。
+ * insert：新插件条目，进 `- insert:` 列表（如 trace-tools）。
  * override：对 bundle 既有行整体替换 config 的顶层 patch op（如 skill-filesystem）——
  * dsh-base/cordis.patch.yml 注释明确 "A patch replaces the targeted row's whole config"；
  * 把 override 放进 insert 会因 id 已存在于 bundle 树而报 duplicate loader entry id（本机实测踩中）。
@@ -455,6 +520,26 @@ function upsertInsertEntry(insert: PatchInsertEntry[], entry: PatchInsertEntry):
 }
 
 /**
+ * 提取原文件的头部注释块（首个非注释/非空行之前的所有行，外加一个孤立的 `[]` 行）。
+ * sdk profile 模板是注释头 + `[]`，js-yaml 往返会丢注释，重写时把头部原样保留。
+ */
+function extractHeaderComments(original: string): string {
+  const lines = original.split('\n');
+  const header: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#') || trimmed === '') {
+      header.push(line);
+      continue;
+    }
+    if (trimmed === '[]') continue; // 空数组占位：由重写后的数组内容取代
+    break;
+  }
+  while (header.length > 0 && header[header.length - 1].trim() === '') header.pop();
+  return header.length > 0 ? header.join('\n') + '\n' : '';
+}
+
+/**
  * 解析失败（典型：含 !!js 自定义标签）时不覆盖用户文件，降级为文本追加。
  * patch 文件顶层是 YAML 数组，追加 `- insert:` / `- id:` 顶层元素即可延续该数组；
  * 已有同 id 条目（文本可检出）则跳过，避免重复。
@@ -475,11 +560,12 @@ function appendEntriesAsText(patchFile: string, original: string, ops: PatchOps)
 function mergeCordisPatch(patchFile: string, ops: PatchOps): void {
   ensureDir(path.dirname(patchFile));
   const original = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : '';
+  const header = extractHeaderComments(original);
 
   const buildMinimal = (): string => {
     const minimalDoc: Array<Record<string, unknown>> = [{ insert: ops.insert }];
     for (const entry of ops.override) minimalDoc.push({ id: entry.id, config: entry.config });
-    return yamlDump(minimalDoc, { lineWidth: -1, noRefs: true });
+    return header + yamlDump(minimalDoc, { lineWidth: -1, noRefs: true });
   };
 
   if (!original.trim()) {
@@ -500,14 +586,31 @@ function mergeCordisPatch(patchFile: string, ops: PatchOps): void {
     return;
   }
 
+  // 注释头-only（doc 为 null/undefined）按空数组处理，等价于模板的 `[]` 语义。
+  if (doc === null || doc === undefined) doc = [];
+
   if (!Array.isArray(doc)) {
-    console.warn('[dsh-sidecar] cordis.patch.yml 顶层不是数组（%s），备份后重建为最小文件', doc === null ? 'null' : typeof doc);
+    console.warn('[dsh-sidecar] cordis.patch.yml 顶层不是数组（%s），备份后重建为最小文件', typeof doc);
     backupPatchFile(patchFile);
     writeFileAtomic0600(patchFile, buildMinimal());
     return;
   }
 
   const root = doc as Array<Record<string, unknown>>;
+  // Replace our one legacy plugin row in place; do not load two copies of tools.
+  const hasCurrentPlugin = root.some(item => Array.isArray(item?.insert)
+    && (item.insert as PatchInsertEntry[]).some(entry => entry?.id === 'trace-tools'));
+  for (const item of root) {
+    if (!item || !Array.isArray(item.insert)) continue;
+    const entries = item.insert as PatchInsertEntry[];
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      if (entry?.id === 'hpclaw-tools' && entry.name === 'hpclaw-dsh-plugin') {
+        if (hasCurrentPlugin) entries.splice(index, 1);
+        else { entry.id = 'trace-tools'; entry.name = 'trace-dsh-plugin'; }
+      }
+    }
+  }
   const overrideIds = new Set(ops.override.map(entry => entry.id).filter(Boolean));
   const managedIds = new Set([...ops.insert, ...ops.override].map(entry => entry.id).filter(Boolean));
 
@@ -545,33 +648,26 @@ function mergeCordisPatch(patchFile: string, ops: PatchOps): void {
   for (const entry of ops.override) root.push({ id: entry.id, config: entry.config });
 
   backupPatchFile(patchFile);
-  writeFileAtomic0600(patchFile, yamlDump(root, { lineWidth: -1, noRefs: true }));
+  writeFileAtomic0600(patchFile, header + yamlDump(root, { lineWidth: -1, noRefs: true }));
 }
 
-/* ---------------- spawn / 崩溃重启 ---------------- */
+/* ---------------- spawn / initialize 握手 / 崩溃重启 ---------------- */
 
-function spawnAndWaitReady(opts: EnsureSidecarOptions): Promise<EnsureSidecarResult> {
+function spawnAndHandshake(opts: EnsureSidecarOptions): Promise<{ ok: true; client: DshSdkClient; reason?: undefined } | { ok: false; client?: undefined; reason: string }> {
   return new Promise(resolve => {
     const env: NodeJS.ProcessEnv = { ...process.env, ...dshNodeEnv() };
     for (const [key, value] of Object.entries(opts.extraEnv || {})) {
       if (value) env[key] = value;
     }
-    // dshBin 是完整命令行（可能含空格参数），Windows 下必须 shell:true。
-    // 注意：web 子命令不接受 --profile（实测报 unknown option '--profile'）；
-    // web profile 是默认 profile，`dsh web` 即用它启动。
-    const command = `${dshBinCommand()} web --host 127.0.0.1 --port 0`;
-    console.log('[dsh] spawning sidecar: %s', command);
-    const proc = spawn(command, {
-      cwd: DATA_ROOT,
-      env,
-      shell: true,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child = proc;
+    const spec = dshSpawnSpec();
+    console.log('[dsh] spawning sidecar: %s', spec.shell ? spec.command : `${spec.command} ${spec.args.join(' ')}`);
+    const client = DshSdkClient.spawn(
+      { command: spec.command, args: spec.args, shell: spec.shell, env, cwd: DATA_ROOT },
+      { onLog: line => console.log('[dsh] %s', line) },
+    );
 
     let settled = false;
-    const done = (result: EnsureSidecarResult): void => {
+    const done = (result: { ok: true; client: DshSdkClient } | { ok: false; reason: string }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -579,62 +675,44 @@ function spawnAndWaitReady(opts: EnsureSidecarOptions): Promise<EnsureSidecarRes
     };
 
     const timer = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      try { client.process.kill('SIGTERM'); } catch { /* ignore */ }
       const killer = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        try { client.process.kill('SIGKILL'); } catch { /* ignore */ }
       }, 3_000);
       killer.unref?.();
-      done({ ok: false, reason: `startup_timeout: dsh web 未在 ${STARTUP_TIMEOUT_MS / 1000}s 内输出监听地址` });
+      done({ ok: false, reason: `startup_timeout: dsh sdk 未在 ${STARTUP_TIMEOUT_MS / 1000}s 内完成 initialize 握手` });
     }, STARTUP_TIMEOUT_MS);
     timer.unref?.();
 
-    proc.on('error', err => done({ ok: false, reason: `spawn_failed: ${err.message}` }));
-    proc.on('exit', (code, signal) => {
-      done({ ok: false, reason: `dsh web 启动阶段提前退出 code=${code ?? 'null'} signal=${signal ?? 'none'}` });
-      onProcessExit(code, signal);
+    client.onExit((code, signal) => {
+      done({ ok: false, reason: `dsh sdk 启动阶段提前退出 code=${code ?? 'null'} signal=${signal ?? 'none'}` });
+      onProcessExit(code, signal, client);
     });
 
-    let buffer = '';
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      let index: number;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index).trimEnd();
-        buffer = buffer.slice(index + 1);
-        if (line) console.log('[dsh] %s', line);
-        const match = /dsh web: http:\/\/127\.0\.0\.1:(\d+)/.exec(line);
-        if (match) void probeThenReady(`http://127.0.0.1:${match[1]}`, done);
-      }
-    });
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const line = chunk.toString('utf8').trimEnd();
-      if (line) console.warn('[dsh:err] %s', line);
-    });
+    // 就绪 = initialize 握手成功（sdk-jsonrpc-server 在 loader 全部就绪后才应答）。
+    client.initialize({
+      cwd: DATA_ROOT,
+      provider: opts.provider || 'deepseek-official',
+      model: opts.model || 'deepseek-flash',
+    }, STARTUP_TIMEOUT_MS).then(
+      info => {
+        console.log('[dsh] sdk runtime ready: %s@%s', info.serverInfo.name, info.serverInfo.version);
+        done({ ok: true, client });
+      },
+      err => {
+        try { client.process.kill('SIGKILL'); } catch { /* ignore */ }
+        done({ ok: false, reason: `initialize_failed: ${err instanceof Error ? err.message : String(err)}` });
+      },
+    );
   });
 }
 
-/** 端口出现后探活一次（GET /）；探活本身尽力而为，失败不否决就绪。 */
-async function probeThenReady(
-  baseUrl: string,
-  done: (result: EnsureSidecarResult) => void,
-): Promise<void> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5_000);
-    timer.unref?.();
-    await fetch(`${baseUrl}/`, { signal: controller.signal });
-    clearTimeout(timer);
-  } catch (err) {
-    console.warn('[dsh-sidecar] 就绪探活未通过（仍按就绪处理）: %s', err instanceof Error ? err.message : String(err));
-  }
-  done({ ok: true, baseUrl });
-}
-
-function onProcessExit(code: number | null, signal: NodeJS.Signals | null): void {
-  child = undefined;
+function onProcessExit(code: number | null, signal: NodeJS.Signals | null, exited?: DshSdkClient): void {
+  // 迟到的旧进程退出事件不能清掉重启后已就位的客户端。
+  if (exited && sdkClient && sdkClient !== exited) return;
+  sdkClient = undefined;
   if (intentionalStop) return;
-  if (status !== 'ready' && status !== 'restarting') return; // 启动阶段的退出由 spawnAndWaitReady 自己收尾
-  currentBaseUrl = undefined;
+  if (status !== 'ready' && status !== 'restarting') return; // 启动阶段的退出由 spawnAndHandshake 自己收尾
   if (restarts >= MAX_RESTARTS) {
     status = 'failed';
     failReason = `dsh sidecar 反复退出（已达 ${MAX_RESTARTS} 次重启上限，最后 code=${code ?? 'null'} signal=${signal ?? 'none'}）`;

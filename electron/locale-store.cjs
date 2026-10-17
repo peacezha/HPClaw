@@ -5,7 +5,8 @@ const isLocale = value => value === 'zh-CN' || value === 'en-US';
 
 function createLocaleStore({ userData, installDir }) {
   const preferenceFile = path.join(userData, 'language.json');
-  const installFile = path.join(installDir, 'hpclaw-install-locale.json');
+  const installFile = path.join(installDir, 'trace-install-locale.json');
+  const legacyInstallFile = path.join(installDir, 'hpclaw-install-locale.json');
   function read(file) {
     try {
       const value = JSON.parse(fs.readFileSync(file, 'utf8')).locale;
@@ -14,7 +15,7 @@ function createLocaleStore({ userData, installDir }) {
   }
   return {
     // Explicit in-app choices survive upgrades. A fresh installation uses the wizard choice.
-    get: () => read(preferenceFile) || read(installFile) || 'zh-CN',
+    get: () => read(preferenceFile) || read(installFile) || read(legacyInstallFile) || 'zh-CN',
     set(locale) {
       if (!isLocale(locale)) throw new Error('Unsupported interface language');
       fs.mkdirSync(userData, { recursive: true });

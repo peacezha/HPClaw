@@ -99,5 +99,5 @@ export function makeTemporaryTransferName(
     : Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
   const parent = targetPath.slice(0, separatorIndex + 1);
   const name = targetPath.slice(separatorIndex + 1) || 'transfer';
-  return `${parent}.${name}.hpclaw-${taskId}.part`;
+  return `${parent}.${name}.trace-${taskId}.part`;
 }

@@ -42,7 +42,7 @@ function enqueueFixture(engine: TransferEngine): TransferTask {
     direction: 'upload',
     localPath: 'D:\\a.bin',
     remotePath: '/data/a.bin',
-    temporaryPath: '/data/.a.bin.hpclaw-t1.part',
+    temporaryPath: '/data/.a.bin.trace-t1.part',
     totalBytes: 4096,
     transferredBytes: 0,
     conflictPolicy: 'overwrite',
@@ -91,7 +91,7 @@ describe('TransferEngine', () => {
       const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
       const task = engine.enqueue({
         profileId: 'p1', direction: 'upload', localPath: 'D:\\a.bin', remotePath: '/data/a.bin',
-        temporaryPath: '/data/.a.bin.hpclaw-t1.part', totalBytes: 4096, transferredBytes: 1024,
+        temporaryPath: '/data/.a.bin.trace-t1.part', totalBytes: 4096, transferredBytes: 1024,
         conflictPolicy: 'resume', verificationMode: 'size', retryCount: 0,
       });
       await engine.resume(task.id, 'session-1');
@@ -137,7 +137,7 @@ describe('TransferEngine', () => {
       const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
       const task = engine.enqueue({
         profileId: 'p1', direction: 'download', localPath: 'D:\\a.bin', remotePath: '/data/a.bin',
-        temporaryPath: 'D:\\.a.bin.hpclaw-t1.part', totalBytes: 4096, transferredBytes: 0,
+        temporaryPath: 'D:\\.a.bin.trace-t1.part', totalBytes: 4096, transferredBytes: 0,
         conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
       });
       await engine.resume(task.id, 'session-1');
@@ -420,7 +420,7 @@ describe('remote-copy flow (集群↔集群)', () => {
       sourceSessionId: 'sess-A',
       localPath: '/dest/f.bin',
       remotePath: '/src/f.bin',
-      temporaryPath: '/dest/.f.bin.hpclaw-t1.part',
+      temporaryPath: '/dest/.f.bin.trace-t1.part',
       totalBytes: 4096,
       transferredBytes: 0,
       conflictPolicy: 'overwrite',
@@ -433,8 +433,8 @@ describe('remote-copy flow (集群↔集群)', () => {
     const done = engine.list().find(t => t.id === task.id);
     expect(done?.state).toBe('completed');
     expect(io).toContain('read:/src/f.bin@sess-A');
-    expect(io).toContain('write:/dest/.f.bin.hpclaw-t1.part@sess-B');
-    expect(io).toContain('rename:/dest/.f.bin.hpclaw-t1.part->/dest/f.bin@sess-B');
+    expect(io).toContain('write:/dest/.f.bin.trace-t1.part@sess-B');
+    expect(io).toContain('rename:/dest/.f.bin.trace-t1.part->/dest/f.bin@sess-B');
   });
 
   it('runs permission preflight before opening either remote stream', async () => {
@@ -468,7 +468,7 @@ describe('remote-copy direct rsync (集群直连)', () => {
   it('probes link, runs rsync on source cluster, verifies and renames on dest', async () => {
     const adapter = defaultAdapter();
     adapter.execRemote = async (cmd: string) => {
-      if (cmd.includes('echo hpclaw-ok')) return 'hpclaw-ok';
+      if (cmd.includes('echo trace-ok')) return 'trace-ok';
       if (cmd.includes('nohup')) return '12345';
       if (cmd.includes('kill -0')) return ''; // 进程已结束
       return '';
@@ -486,7 +486,7 @@ describe('remote-copy direct rsync (集群直连)', () => {
       sourceSessionId: 'sess-A',
       localPath: '/dest/f.bin',
       remotePath: '/src/f.bin',
-      temporaryPath: '/dest/.f.bin.hpclaw-t1.part',
+      temporaryPath: '/dest/.f.bin.trace-t1.part',
       totalBytes: 4096,
       transferredBytes: 0,
       conflictPolicy: 'overwrite',
@@ -497,7 +497,7 @@ describe('remote-copy direct rsync (集群直连)', () => {
     await engine.waitForIdle();
 
     expect(engine.list().find(t => t.id === task.id)?.state).toBe('completed');
-    expect(renamed).toBe('/dest/.f.bin.hpclaw-t1.part->/dest/f.bin@sess-B');
+    expect(renamed).toBe('/dest/.f.bin.trace-t1.part->/dest/f.bin@sess-B');
   });
 
   it('falls back to pipe-through-local when direct link unavailable', async () => {
@@ -516,7 +516,7 @@ describe('remote-copy direct rsync (集群直连)', () => {
       sourceSessionId: 'sess-A',
       localPath: '/dest/f.bin',
       remotePath: '/src/f.bin',
-      temporaryPath: '/dest/.f.bin.hpclaw-t1.part',
+      temporaryPath: '/dest/.f.bin.trace-t1.part',
       totalBytes: 4096,
       transferredBytes: 0,
       conflictPolicy: 'overwrite',
@@ -529,5 +529,159 @@ describe('remote-copy direct rsync (集群直连)', () => {
     expect(engine.list().find(t => t.id === task.id)?.state).toBe('completed');
     expect(io).toContain('read@sess-A');
     expect(io).toContain('write@sess-B');
+  });
+});
+
+describe('fast channel (fastPut/fastGet)', () => {
+  it('uses fastPut for a fresh upload and skips the stream path', async () => {
+    const calls: string[] = [];
+    const adapter = defaultAdapter();
+    adapter.fastPut = vi.fn(async (localPath, remotePath, sessionId, onProgress) => {
+      calls.push(`fastPut:${localPath}->${remotePath}@${sessionId}`);
+      onProgress(4096);
+    });
+    adapter.openLocalRead = vi.fn(() => { throw new Error('stream path must not be used'); });
+    adapter.verify = async () => { calls.push('verify'); };
+    adapter.remoteRename = async () => { calls.push('rename'); };
+
+    const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
+    const task = enqueueFixture(engine);
+    await engine.resume(task.id, 'session-1');
+    await engine.waitForIdle();
+
+    expect(calls).toEqual([
+      'fastPut:D:\\a.bin->/data/.a.bin.trace-t1.part@session-1',
+      'verify',
+      'rename',
+    ]);
+    expect(engine.list()[0].state).toBe('completed');
+  });
+
+  it('uses fastGet for a fresh download and skips the stream path', async () => {
+    const calls: string[] = [];
+    const adapter = defaultAdapter();
+    adapter.fastGet = vi.fn(async (remotePath, localPath, sessionId, onProgress) => {
+      calls.push(`fastGet:${remotePath}->${localPath}@${sessionId}`);
+      onProgress(4096);
+    });
+    adapter.openRemoteRead = vi.fn(() => { throw new Error('stream path must not be used'); });
+    adapter.verify = async () => { calls.push('verify'); };
+    adapter.localRename = async () => { calls.push('rename'); };
+
+    const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
+    const task = engine.enqueue({
+      profileId: 'p1', direction: 'download', localPath: 'D:\\a.bin', remotePath: '/data/a.bin',
+      temporaryPath: 'D:\\.a.bin.trace-t1.part', totalBytes: 4096, transferredBytes: 0,
+      conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
+    });
+    await engine.resume(task.id, 'session-1');
+    await engine.waitForIdle();
+
+    expect(calls).toEqual([
+      'fastGet:/data/a.bin->D:\\.a.bin.trace-t1.part@session-1',
+      'verify',
+      'rename',
+    ]);
+    expect(engine.list()[0].state).toBe('completed');
+  });
+
+  it('falls back to the stream path when resuming a partial upload', async () => {
+    const adapter = defaultAdapter();
+    adapter.fastPut = vi.fn(async () => { throw new Error('fastPut must not be called'); });
+    adapter.remoteSize = async () => 1024;
+    adapter.openLocalRead = vi.fn((_path, offset) => {
+      expect(offset).toBe(1024);
+      return Readable.from(Buffer.alloc(3072));
+    });
+    adapter.openRemoteWrite = vi.fn((_path, offset) => {
+      expect(offset).toBe(1024);
+      return new Writable({ write(_chunk, _encoding, cb) { cb(); } });
+    });
+
+    const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
+    const task = engine.enqueue({
+      profileId: 'p1', direction: 'upload', localPath: 'D:\\a.bin', remotePath: '/data/a.bin',
+      temporaryPath: '/data/.a.bin.trace-t1.part', totalBytes: 4096, transferredBytes: 1024,
+      conflictPolicy: 'resume', verificationMode: 'size', retryCount: 0,
+    });
+    await engine.resume(task.id, 'session-1');
+    await engine.waitForIdle();
+
+    expect(adapter.fastPut).not.toHaveBeenCalled();
+    expect(engine.list()[0].state).toBe('completed');
+  });
+});
+
+describe('transfer speed (bytesPerSecond)', () => {
+  it('computes EMA speed on throttled progress emissions and clears it on completion', async () => {
+    const events: any[] = [];
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const adapter = defaultAdapter();
+      adapter.fastPut = async (_local, _remote, _session, onProgress) => {
+        onProgress(1000); // 首个样本只建立基准，不产生速度
+        now += 250;
+        onProgress(3000); // 瞬时 (2000/250)*1000 = 8000 B/s（首个速度样本不混合）
+        now += 1000;
+        onProgress(4000); // 瞬时 (1000/1000)*1000 = 1000 → EMA 0.7*1000 + 0.3*8000 = 3100
+      };
+      const engine = new TransferEngine(adapter as any, {
+        concurrency: 1,
+        emit: (event: string, data: any) => {
+          if (event === 'transfer:updated') events.push({ ...data });
+        },
+      });
+      const task = enqueueFixture(engine);
+      await engine.resume(task.id, 'session-1');
+      await engine.waitForIdle();
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const speeds = events.filter(e => e.bytesPerSecond > 0).map(e => e.bytesPerSecond);
+    expect(speeds).toEqual([8000, 3100]);
+    const last = events[events.length - 1];
+    expect(last.state).toBe('completed');
+    expect(last.bytesPerSecond).toBe(0);
+  });
+
+  it('resets bytesPerSecond when a running transfer is paused', async () => {
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let release: () => void = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const adapter = defaultAdapter();
+      adapter.fastPut = async (_local, _remote, _session, onProgress) => {
+        onProgress(1000);
+        now += 250;
+        onProgress(3000); // → 8000 B/s
+        await gate; // 挂起，等 pause 后再放行
+      };
+      const engine = new TransferEngine(adapter as any, { concurrency: 1, emit: () => {} });
+      const task = enqueueFixture(engine);
+      await engine.resume(task.id, 'session-1');
+      await vi.waitFor(() => expect(engine.list()[0].bytesPerSecond).toBe(8000), { timeout: 2000 });
+
+      await engine.pause(task.id);
+      expect(engine.list()[0].state).toBe('paused');
+      expect(engine.list()[0].bytesPerSecond).toBe(0);
+    } finally {
+      release();
+      nowSpy.mockRestore();
+    }
+  });
+});
+
+describe('setConcurrency', () => {
+  it('clamps the value between 1 and 8', () => {
+    const engine = new TransferEngine(defaultAdapter(), { concurrency: 4, emit: () => {} });
+    engine.setConcurrency(16);
+    expect((engine as any).concurrency).toBe(8);
+    engine.setConcurrency(0);
+    expect((engine as any).concurrency).toBe(1);
+    engine.setConcurrency(6);
+    expect((engine as any).concurrency).toBe(6);
   });
 });

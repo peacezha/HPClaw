@@ -7,8 +7,8 @@ import { recordCommand, getRecentCommands } from './commandHistory';
 import { saveLoginProfile, listLoginProfiles } from './loginProfiles';
 
 const originalFetch = window.fetch;
-beforeEach(() => { (window as any).hpclawPublicWeb = true; localStorage.clear(); setPublicCluster('a'); vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 }))); });
-afterEach(() => { delete (window as any).hpclawPublicWeb; setPublicCluster(undefined); vi.unstubAllGlobals(); window.fetch = originalFetch; localStorage.clear(); });
+beforeEach(() => { (window as any).tracePublicWeb = true; localStorage.clear(); setPublicCluster('a'); vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 }))); });
+afterEach(() => { delete (window as any).tracePublicWeb; setPublicCluster(undefined); vi.unstubAllGlobals(); window.fetch = originalFetch; localStorage.clear(); });
 it('keeps different cluster API keys in memory, not browser persistent storage', async () => {
   localStorage.setItem('ai_api_key', 'old-plaintext'); await hydrateAIProfile();
   saveAIProfile({ apiKey: 'a-private' }, 'a'); saveAIProfile({ apiKey: 'b-private' }, 'b');
@@ -16,7 +16,7 @@ it('keeps different cluster API keys in memory, not browser persistent storage',
   expect(loadAIProfile('new').apiKey).toBe(''); expect(localStorage.length).toBe(0);
 });
 it('never persists or restores SSH passwords and TOTP seeds in the public browser', async () => {
-  localStorage.setItem('hpclaw_totp_secret', 'OLDSEED'); await hydrateTotpStorage();
+  localStorage.setItem('trace_totp_secret', 'OLDSEED'); await hydrateTotpStorage();
   storeSecret('NEWSEED'); savePassword('secret-password');
   await saveLoginProfile({ host: 'cluster.test', port: '22', username: 'alice', password: 'secret-password', totpSecret: 'NEWSEED', rememberPassword: true, rememberTotp: true });
   expect(getSavedPassword()).toBe(''); expect(getStoredSecret()).toBe(''); expect(await listLoginProfiles()).toEqual([]);

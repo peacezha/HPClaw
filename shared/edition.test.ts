@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isCompetitionRestrictedApiPath, normalizeHpclawEdition } from './edition';
+import { isCompetitionRestrictedApiPath, normalizeTraceEdition } from './edition';
 
-describe('HPClaw edition policy', () => {
+describe('TRACE edition policy', () => {
   it('defaults unknown editions to the full product', () => {
-    expect(normalizeHpclawEdition(undefined)).toBe('full');
-    expect(normalizeHpclawEdition('full')).toBe('full');
-    expect(normalizeHpclawEdition('competition')).toBe('competition');
-    expect(normalizeHpclawEdition(' Competition ')).toBe('competition');
+    expect(normalizeTraceEdition(undefined)).toBe('full');
+    expect(normalizeTraceEdition('full')).toBe('full');
+    expect(normalizeTraceEdition('competition')).toBe('competition');
+    expect(normalizeTraceEdition(' Competition ')).toBe('competition');
   });
 
   it('blocks only dsh bridge APIs in the competition edition', () => {

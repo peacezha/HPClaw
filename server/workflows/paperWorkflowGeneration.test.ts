@@ -20,8 +20,8 @@ describe('bounded paper workflow generation', () => {
     expect(result.workflow.steps.every((step: any) => hasExecutableBody(step.command))).toBe(true);
     expect(result.extraction.unresolvedQuestions).toEqual([]);
   });
-  it.skipIf(!process.env.HPCLAW_LEARN_DRAFT)('retains missing analyses from the real two-step draft without rewriting user data or calling a paid model', async () => {
-    const entries = JSON.parse(fs.readFileSync(process.env.HPCLAW_LEARN_DRAFT!, 'utf8'));
+  it.skipIf(!process.env.TRACE_LEARN_DRAFT)('retains missing analyses from the real two-step draft without rewriting user data or calling a paid model', async () => {
+    const entries = JSON.parse(fs.readFileSync(process.env.TRACE_LEARN_DRAFT!, 'utf8'));
     const entry = entries.find((item: any) => item.id === 'bc719c8e-f6cf-4cf9-aae7-ee8b8e261fe3');
     expect(entry).toBeTruthy();
     const text = entry.paperContext;

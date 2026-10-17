@@ -13,10 +13,15 @@ function fixture(locale?: string) {
   const installDir = path.join(root, 'install');
   const userData = path.join(root, 'user');
   fs.mkdirSync(installDir);
-  if (locale) fs.writeFileSync(path.join(installDir, 'hpclaw-install-locale.json'), JSON.stringify({ locale }));
+  if (locale) fs.writeFileSync(path.join(installDir, 'trace-install-locale.json'), JSON.stringify({ locale }));
   return { installDir, userData, store: createLocaleStore({ installDir, userData }) };
 }
 describe('Windows installer and application language preference', () => {
+  it('retains the language seed from an earlier installation', () => {
+    const { installDir, userData } = fixture();
+    fs.writeFileSync(path.join(installDir, 'hpclaw-install-locale.json'), JSON.stringify({ locale: 'en-US' }));
+    expect(createLocaleStore({ installDir, userData }).get()).toBe('en-US');
+  });
   it('seeds English and Chinese from the installer choice', () => {
     expect(fixture('en-US').store.get()).toBe('en-US');
     expect(fixture('zh-CN').store.get()).toBe('zh-CN');

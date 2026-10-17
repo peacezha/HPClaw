@@ -5,7 +5,7 @@
  */
 /**
  * Base class for all harness errors. Carries a `code` (stable, programmatic —
- * e.g. `NO_ADAPTER`, `INVALID_ARGS`, `INVARIANT`) distinct from the
+ * e.g. `NO_ADAPTER`, `INVALID_ARGS`) distinct from the
  * human-readable `message`, and supports `cause` chaining via the standard
  * `ErrorOptions`. `name` defaults to the subclass constructor name.
  */
@@ -18,6 +18,8 @@ export declare class HarnessError extends Error {
 export declare const CONTEXT_WINDOW_EXCEEDED_CODE = "CONTEXT_WINDOW_EXCEEDED";
 /** Canonical provider-neutral code for an exhausted account quota or balance. */
 export declare const QUOTA_EXCEEDED_CODE = "QUOTA";
+/** Account-token quota that can be replenished through the first-party billing page. */
+export declare const ACCOUNT_QUOTA_EXCEEDED_CODE = "ACCOUNT_QUOTA";
 /**
  * Canonical provider-neutral code for a response that completed normally but
  * carried no content blocks at all. Providers occasionally emit a degenerate
@@ -70,4 +72,12 @@ export declare function errorChain(value: unknown): string;
  * @returns true only for real instances; duck-typed or cross-realm errors do not narrow.
  */
 export declare function isHarnessError(value: unknown): value is HarnessError;
+/**
+ * Canonical code for a request an image-capable route cannot send until more
+ * of its images are offloaded. The failure's `offloadImages` names how many
+ * more of the oldest retained occurrences must be offloaded;
+ * `dsh-compaction-image-offload` records an `image/offload` selection before
+ * the agent or summarizer retries with freshly derived input.
+ */
+export declare const IMAGE_OFFLOAD_REQUIRED_CODE = "IMAGE_OFFLOAD_REQUIRED";
 //# sourceMappingURL=error.d.ts.map

@@ -18,10 +18,10 @@ describe('corrected native TF ChIP-seq DAG', () => {
     expect(dag.steps[3].command).toContain('samtools index -c');
   });
   it('declares actual DAP and ChIP dependencies in both language definitions', () => {
-    const rows = builtinWorkflows();
+    const rows = builtinWorkflows(true);
     for (const id of ['builtin-dapseq-tf', 'builtin-dapseq-tf-en']) {
       const graph = resolveWorkflowStepGraph(rows.find(w => w.id === id)!);
-      expect(graph.at(-1)?.dependsOn).toEqual(['extended-qc', 'motif-annotation']);
+      expect(graph.at(-1)?.dependsOn).toEqual(['extended-qc', 'idr', 'motif-annotation']);
     }
     for (const id of ['encode-chipseq-tf', 'encode-chipseq-histone', 'encode-chipseq-tf-en', 'encode-chipseq-histone-en']) {
       const graph = resolveWorkflowStepGraph(rows.find(w => w.id === id)!);

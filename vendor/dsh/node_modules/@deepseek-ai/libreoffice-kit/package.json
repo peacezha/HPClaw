@@ -1,0 +1,54 @@
+{
+  "name": "@deepseek-ai/libreoffice-kit",
+  "description": "Convert, recalculate, and render Office documents with prebuilt LibreOffice",
+  "version": "0.1.5",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deepseek-ai/dsh-libreoffice-kit",
+    "directory": "packages/entry"
+  },
+  "homepage": "https://github.com/deepseek-ai/dsh-libreoffice-kit",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json",
+    "./cli": "./lib/cli.js"
+  },
+  "files": [
+    "README.zh.md",
+    "lib/index.js",
+    "lib/cli.js",
+    "lib/worker.js",
+    "lib/font-snapshot-worker.js",
+    "NOTICE",
+    "lib/types/**/*.d.ts"
+  ],
+  "dependencies": {
+    "fflate": "0.8.2",
+    "fontkit": "2.0.4",
+    "koffi": "3.1.1",
+    "saxes": "6.0.0"
+  },
+  "optionalDependencies": {
+    "@deepseek-ai/libreoffice-kit-darwin-arm64": "0.1.5",
+    "@deepseek-ai/libreoffice-kit-win32-x64": "0.1.5",
+    "@deepseek-ai/libreoffice-kit-darwin-x64": "0.1.5",
+    "@deepseek-ai/libreoffice-kit-wasm": "0.1.5",
+    "@deepseek-ai/libreoffice-kit-win32-arm64": "0.1.5"
+  },
+  "bin": {
+    "dsoffice": "./lib/cli.js"
+  }
+}

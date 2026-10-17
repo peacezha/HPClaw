@@ -165,15 +165,15 @@ export async function sendNotification(
         const nodemailer = await import('nodemailer');
         const port = config.smtpPort || 465;
         const transporter = nodemailer.default.createTransport({
-          host: process.env.HPCLAW_PUBLIC_WORKER === '1'
+          host: process.env.TRACE_PUBLIC_WORKER === '1'
             ? await resolveClusterAddress(config.smtpHost.trim(), false) : config.smtpHost.trim(),
           port,
           secure: port === 465,
-          ...(process.env.HPCLAW_PUBLIC_WORKER === '1' ? { requireTLS: true, tls: { servername: config.smtpHost.trim() } } : {}),
+          ...(process.env.TRACE_PUBLIC_WORKER === '1' ? { requireTLS: true, tls: { servername: config.smtpHost.trim() } } : {}),
           auth: { user: config.smtpUser.trim(), pass: config.smtpPass.trim() },
         });
         await transporter.sendMail({
-          from: `HPClaw <${config.smtpUser.trim()}>`,
+          from: `TRACE <${config.smtpUser.trim()}>`,
           to: config.mailTo.trim(),
           subject: title,
           text: content,

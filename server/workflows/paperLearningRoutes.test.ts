@@ -86,10 +86,10 @@ describe('literature learning recovery route', () => {
     expect(mocks.save).not.toHaveBeenCalled();
     expect(mocks.learn).toHaveBeenCalledTimes(1);
   });
-  it.skipIf(!process.env.HPCLAW_DAP_PDF)('regresses the supplied real dap.pdf through PDF.js, context selection and route recovery', async () => {
+  it.skipIf(!process.env.TRACE_DAP_PDF)('regresses the supplied real dap.pdf through PDF.js, context selection and route recovery', async () => {
     const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const { paperPageText, selectPaperPages } = await import('../../src/features/workflows/paperPdf');
-    const task = getDocument({ data: new Uint8Array(fs.readFileSync(process.env.HPCLAW_DAP_PDF!)), useSystemFonts: true });
+    const task = getDocument({ data: new Uint8Array(fs.readFileSync(process.env.TRACE_DAP_PDF!)), useSystemFonts: true });
     try {
       const doc = await task.promise;
       const parts = [];

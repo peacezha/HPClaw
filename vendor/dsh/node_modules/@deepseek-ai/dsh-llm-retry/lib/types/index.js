@@ -6,10 +6,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
+import { z as zod } from 'zod';
 import { RetryId } from "./brand.js";
 export { RetryId } from "./brand.js";
 export const name = 'llm-retry';
-export const inject = ['agents'];
+export const inject = ['agents', 'sessionProjections'];
 /** Runtime schema for {@link Config}. */
 export const Config = z.object({});
 function validateConfig(config) {
@@ -47,6 +48,9 @@ function retryPolicyKey(policy) {
             policy.jitterRatio,
         ]);
 }
+function retryStateKey(provider, policyKey) {
+    return JSON.stringify([provider, policyKey]);
+}
 function cancellableDelay(delayMs, signal) {
     if (signal.aborted)
         return Promise.resolve(false);
@@ -62,14 +66,30 @@ function cancellableDelay(delayMs, signal) {
         signal.addEventListener('abort', onAbort, { once: true });
     });
 }
-/**
- * Install provider-routed normal or unbounded request recovery.
- * @param ctx - plugin context that owns the listener and active waits.
- * @param config - empty executor config; provider registrations own policy.
- * @param internals - non-serializable deterministic hooks for tests.
- */
+// The cast bridges the branded retry id, which Zod cannot express directly.
+const llmRetryStateSchema = zod.record(zod.string(), zod.object({
+    retry: zod.number().int().nonnegative(),
+    retryId: zod.string(),
+}));
 export function apply(ctx, config = {}, internals = {}) {
     validateConfig(config);
+    ctx.sessionProjections.register({
+        key: 'llmRetry',
+        stateVersion: 1,
+        stateSchema: llmRetryStateSchema,
+        init: () => ({}),
+        apply: (state, event) => {
+            if (event.type === 'step/start' || event.type === 'turn/end')
+                return {};
+            if (event.type !== 'llm/retry')
+                return state;
+            const key = retryStateKey(event.data.provider, event.data.policyKey);
+            const entry = state[key];
+            if (entry?.retry === event.data.retry && entry.retryId === event.data.retryId)
+                return state;
+            return { ...state, [key]: { retry: event.data.retry, retryId: event.data.retryId } };
+        },
+    });
     const random = internals.random ?? Math.random;
     const lifetime = new AbortController();
     const active = new Set();
@@ -135,16 +155,13 @@ export function apply(ctx, config = {}, internals = {}) {
             return next();
         }
         const policyKey = retryPolicyKey(policy);
-        const priorPolicyRetry = agent.session.events.findLast((event) => event.type === 'llm/retry'
-            && event.data.turn === turn
-            && event.data.step === step
-            && event.data.provider === provider
-            && event.data.policyKey === policyKey);
-        const previousRetry = priorPolicyRetry?.data.retry ?? 0;
+        const retryState = ctx.sessionProjections.stateOf(agent.session, 'llmRetry');
+        const previous = retryState[retryStateKey(provider, policyKey)];
+        const previousRetry = previous?.retry ?? 0;
         if (policy.mode === 'normal' && previousRetry >= policy.maxRetries)
             return next();
         const retry = previousRetry + 1;
-        const retryId = priorPolicyRetry?.data.retryId ?? RetryId(randomUUID());
+        const retryId = previous?.retryId ?? RetryId(randomUUID());
         let delayMs;
         if (failure.providerRetryAfterMs !== undefined
             && Number.isFinite(failure.providerRetryAfterMs)

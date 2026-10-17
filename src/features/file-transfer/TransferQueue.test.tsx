@@ -15,7 +15,7 @@ function createTask(id: string, overrides: Partial<TransferTask> = {}): Transfer
     direction: 'upload',
     localPath: 'C:\\local\\file.txt',
     remotePath: '/remote/file.txt',
-    temporaryPath: '/remote/.file.txt.hpclaw-task.part',
+    temporaryPath: '/remote/.file.txt.trace-task.part',
     totalBytes: 1000,
     transferredBytes: 500,
     bytesPerSecond: 100,

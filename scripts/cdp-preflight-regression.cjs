@@ -1,4 +1,4 @@
-// End-to-end, read-only workflow environment check in the running HPClaw desktop app.
+// End-to-end, read-only workflow environment check in the running TRACE desktop app.
 const http = require('http');
 const port = process.argv[2] || '9227';
 const workflowName = process.argv.slice(3).filter(value => !value.startsWith('--')).join(' ') || 'RNA-seq 质控与定量流程（FastQC/Trimmomatic/kallisto）';
@@ -21,7 +21,7 @@ function getJson(path) {
 (async () => {
   const targets = await getJson('/json');
   const target = targets.find(item => item.type === 'page' && !item.url.startsWith('devtools'));
-  if (!target) throw new Error('没有找到 HPClaw 页面');
+  if (!target) throw new Error('没有找到 TRACE 页面');
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();

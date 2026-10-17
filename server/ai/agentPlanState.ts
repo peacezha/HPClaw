@@ -16,6 +16,8 @@ export interface AgentExecutionPlan {
   steps: AgentPlanStep[];
   createdAt: number;
   updatedAt: number;
+  /** 计划级状态：用户取消审批后为 cancelled（步骤保持原样，供界面展示已取消标记）。 */
+  status?: 'active' | 'cancelled';
 }
 
 export class AgentPlanState {
@@ -47,6 +49,7 @@ export class AgentPlanState {
       steps,
       createdAt: Number.isFinite(raw.createdAt) ? Number(raw.createdAt) : now,
       updatedAt: Number.isFinite(raw.updatedAt) ? Number(raw.updatedAt) : now,
+      status: raw.status === 'cancelled' ? 'cancelled' : 'active',
     };
     return this.snapshot();
   }
@@ -67,6 +70,7 @@ export class AgentPlanState {
       steps: cleanSteps,
       createdAt: now,
       updatedAt: now,
+      status: 'active',
     };
     return this.snapshot()!;
   }
@@ -125,7 +129,28 @@ export class AgentPlanState {
   }
 
   isComplete(): boolean {
+    if (this.value?.status === 'cancelled') return true;
     return !!this.value && this.value.steps.every(step => step.status === 'done' || step.status === 'skipped');
+  }
+
+  /** 用户取消计划审批：计划整体标记 cancelled（不逐步骤改动，保留取消前的现场供展示）。 */
+  cancel(now = Date.now()): AgentExecutionPlan | null {
+    if (!this.value) return null;
+    this.value.status = 'cancelled';
+    this.value.updatedAt = now;
+    return this.snapshot();
+  }
+
+  /**
+   * 计划审批"编辑后批准"：整体替换步骤列表（仅允许在还没有 running 步骤时调用，
+   * 审批发生在执行前，天然满足）。返回新快照。
+   */
+  replaceSteps(steps: Array<{ title: string; verification: string }>, now = Date.now()): AgentExecutionPlan {
+    if (!this.value) throw new Error('尚未创建计划。');
+    if (this.activeStep()) throw new Error('已有步骤在执行中，不能整体替换计划步骤。');
+    const goal = this.value.goal;
+    this.value = null;
+    return this.set(goal, steps, now);
   }
 
   recordActiveEvidence(items: string[], now = Date.now()): AgentExecutionPlan | null {

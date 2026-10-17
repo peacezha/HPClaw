@@ -6,7 +6,7 @@ import { normalizeWorkspace, resolveWorkspaceFilePath } from './workspace';
 
 describe('normalizeWorkspace', () => {
   it('接受存在的目录', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-ws-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-ws-'));
     expect(normalizeWorkspace(dir)).toBe(path.resolve(dir));
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -16,7 +16,7 @@ describe('normalizeWorkspace', () => {
   });
 
   it('拒绝文件（非目录）', () => {
-    const file = path.join(os.tmpdir(), `hpclaw-ws-${Date.now()}.txt`);
+    const file = path.join(os.tmpdir(), `trace-ws-${Date.now()}.txt`);
     fs.writeFileSync(file, 'x');
     expect(normalizeWorkspace(file)).toBeUndefined();
     fs.rmSync(file, { force: true });
@@ -31,7 +31,7 @@ describe('normalizeWorkspace', () => {
   });
 
   it('trim 后 resolve', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-ws-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-ws-'));
     expect(normalizeWorkspace(`  ${dir}  `)).toBe(path.resolve(dir));
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -39,7 +39,7 @@ describe('normalizeWorkspace', () => {
 
 describe('resolveWorkspaceFilePath', () => {
   it('只允许工作区内的绝对路径，并支持尚未创建的目标', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-ws-safe-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-ws-safe-'));
     const inside = path.join(dir, 'nested', 'result.txt');
     expect(resolveWorkspaceFilePath(dir, inside)).toBe(path.resolve(inside));
     expect(() => resolveWorkspaceFilePath(dir, path.join(os.tmpdir(), 'outside.txt')))
@@ -50,7 +50,7 @@ describe('resolveWorkspaceFilePath', () => {
   });
 
   it('mustExist 时拒绝不存在的本地源文件', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-ws-source-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-ws-source-'));
     expect(() => resolveWorkspaceFilePath(dir, path.join(dir, 'missing.txt'), { mustExist: true }))
       .toThrow('local file not found');
     fs.rmSync(dir, { recursive: true, force: true });

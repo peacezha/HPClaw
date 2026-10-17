@@ -1,4 +1,4 @@
-/** Persistent PTY session over the subprocess seam's terminal primitive. */
+/** Persistent PTY session with bounded output, readiness, and terminal-protocol replies. */
 import type { SubprocessTerminalHandle } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalBackendSession, TerminalReadRequest, TerminalReadResult, TerminalSendOperation, TerminalSendRequest, TerminalSessionStatus, TerminalSignal, TerminalSignalResult } from '@deepseek-ai/dsh-terminal';
 import type { ResolvedConfig } from './config.ts';
@@ -9,6 +9,9 @@ export declare class LocalPtySession implements TerminalBackendSession {
     motd: string;
     readonly pid: number;
     private readonly decoder;
+    /** Protocol state only; the sanitizer and bounded buffers own returned text. */
+    private readonly emulator;
+    private readonly emulatorData;
     private readonly sanitizer;
     private readonly scrollback;
     private readonly outputEnded;
@@ -31,6 +34,13 @@ export declare class LocalPtySession implements TerminalBackendSession {
     private closing;
     private closePromise;
     private transportFailure;
+    private emulatorWrites;
+    private emulatorWriteDone;
+    private emulatorBuffer;
+    private emulatorWriting;
+    private responseWrites;
+    private pendingResponseWrites;
+    private emulatorClosed;
     constructor(terminal: SubprocessTerminalHandle, config: ResolvedConfig);
     /**
      * Capture startup output through the same readiness contract as later sends.
@@ -54,6 +64,17 @@ export declare class LocalPtySession implements TerminalBackendSession {
     private appendOutput;
     private schedulePoll;
     private pollReadiness;
+    /** Wait until generated replies reach the provider before another send can publish. */
+    private drainTerminalProtocol;
+    /** Sample foreground state only after protocol replies are quiet for the entire inspection. */
+    private inspectForegroundAfterProtocol;
+    private protocolStateChanged;
+    private protocolWorkPending;
+    private queueEmulatorData;
+    private pumpEmulator;
+    private finishResponseWrite;
+    private releaseSettledActive;
+    private closeEmulator;
     private settleActive;
     private stopPolling;
     private stopReadinessPolling;

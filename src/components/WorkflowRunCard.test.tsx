@@ -25,7 +25,7 @@ afterEach(() => {
 const CONTEXT: WorkflowExecutionContext = {
   workflowId: 'wf-test',
   runId: 'run-1',
-  runDir: '/home/u/hpclaw_flows/test/03_workspace/runs/run-1',
+  runDir: '/home/u/trace_flows/test/03_workspace/runs/run-1',
   policy: 'isolated-run-v1',
 };
 

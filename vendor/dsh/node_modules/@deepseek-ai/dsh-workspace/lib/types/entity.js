@@ -49,7 +49,7 @@ export class WorkspaceEntity {
         return this.record.updatedAt;
     }
     get sessionIds() {
-        return this.record.sessionIds.filter(id => this.host.sessionPath(id) === this.record.path);
+        return this.record.sessionIds.filter(id => this.host.candidateMatches(id, this.record.path));
     }
     async setTitle(title) {
         await this.mutate(record => ({ ...record, title }));
@@ -124,7 +124,7 @@ export class WorkspaceEntity {
     /**
      * The single write path: run `fn` on the domain write chain via
      * `table.update`, stamping `updatedAt` and pruning candidates that no
-     * longer pass the id-plus-canonical-cwd membership check, then swap the
+     * longer pass the candidate membership check, then swap the
      * snapshot.
      *
      * `fn` sees the value current at its chain slot, so membership decisions
@@ -138,7 +138,7 @@ export class WorkspaceEntity {
         try {
             next = await this.host.table().update(this.id, (current) => {
                 const changed = fn(current);
-                const sessionIds = changed.sessionIds.filter(id => this.host.sessionPath(id) === changed.path);
+                const sessionIds = changed.sessionIds.filter(id => this.host.candidateMatches(id, changed.path));
                 if (changed === current && sessionIds.length === current.sessionIds.length) {
                     throw unchangedSentinel;
                 }

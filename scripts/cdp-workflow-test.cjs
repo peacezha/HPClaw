@@ -1,4 +1,4 @@
-// HPClaw v2 流程（Workflow）实机验证：CRUD + 匹配 + UI
+// TRACE v2 流程（Workflow）实机验证：CRUD + 匹配 + UI
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9222';
@@ -121,7 +121,7 @@ function getJson(path) {
     };
   })()`);
   ok('流程面板显示内置流程', panelState.hasBuiltin);
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-workflows.png');
+  await shot('E:/0612trace/trace_v2/smoke-workflows.png');
 
   // ── 5. UI：聊天输入关键词 → 流程 chips ──
   await evalJs(`(() => {
@@ -140,7 +140,7 @@ function getJson(path) {
   await sleep(1200);
   const chips = await evalJs(`document.body.innerText.includes('匹配流程')`);
   ok('输入关键词后出现流程 chips', chips);
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-workflow-chips.png');
+  await shot('E:/0612trace/trace_v2/smoke-workflow-chips.png');
 
   console.log('---');
   const failed = results.filter(r => !r.pass);

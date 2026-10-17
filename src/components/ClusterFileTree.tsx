@@ -22,6 +22,7 @@ import { planClipboardMoves } from '../features/file-transfer/FilePane';
 import { resolveTransferProfileId } from '../features/file-transfer/sessionIdentity';
 import FilePreview from '../features/file-transfer/FilePreview';
 import { useContextMenuPosition } from './useContextMenuPosition';
+import { writeClipboardText } from '../services/clipboard';
 import '../features/file-transfer/fileTransfer.css';
 
 interface TreeNode extends FileEntry {
@@ -251,9 +252,7 @@ export default function ClusterFileTree({
   }, [toggleDirectory]);
 
   const copyPathOf = useCallback((entry: FileEntry) => {
-    const write = window.hpclawDesktop?.clipboard?.writeText?.bind(window.hpclawDesktop.clipboard)
-      ?? navigator.clipboard?.writeText?.bind(navigator.clipboard);
-    write?.(entry.path).catch(() => {});
+    void writeClipboardText(entry.path).catch(() => {});
   }, []);
 
   const copyEntries = useCallback((entry: FileEntry) => {
@@ -339,7 +338,7 @@ export default function ClusterFileTree({
   }, [deleteConfirm, sessionId, dropSubtree, refreshDirectories]);
 
   const downloadEntry = useCallback(async (entry: FileEntry) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!sessionId || !desktop?.dialog) return;
     setError('');
     try {
@@ -631,8 +630,8 @@ export default function ClusterFileTree({
             onClick={() => { setContextMenu(null); void downloadEntry(menuEntry); }}
             className="context-menu-item"
             role="menuitem"
-            disabled={!window.hpclawDesktop?.dialog}
-            title={window.hpclawDesktop?.dialog ? '下载到本地' : '桌面应用模式下可用'}
+            disabled={!window.traceDesktop?.dialog}
+            title={window.traceDesktop?.dialog ? '下载到本地' : '桌面应用模式下可用'}
           >
             <Download className="w-4 h-4" />
             <span>下载到本地</span>

@@ -4,13 +4,13 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(({ mode }) => {
-  const pageTitle = mode === 'competition' ? 'HPClaw 竞赛版' : 'HPClaw';
+  const pageTitle = mode === 'competition' ? 'TRACE 竞赛版' : 'TRACE';
   return {
     plugins: [
       {
-        name: 'hpclaw-edition-title',
+        name: 'trace-edition-title',
         transformIndexHtml(html) {
-          return html.replace('<title>HPClaw</title>', `<title>${pageTitle}</title>`);
+          return html.replace('<title>TRACE</title>', `<title>${pageTitle}</title>`);
         },
       },
       react(),

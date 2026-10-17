@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>HPClaw 启动中</title>
+<title>TRACE 启动中</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -83,12 +83,12 @@
     var english = new URLSearchParams(location.search).get('locale') === 'en-US';
     if (english) {
       document.documentElement.lang = 'en-US';
-      document.title = 'Starting HPClaw';
+      document.title = 'Starting TRACE';
       document.querySelector('.sub').textContent = 'Intelligent HPC workspace · Starting';
       document.getElementById('status').textContent = 'Starting…';
     }
     var statusText = {
-      '完成': 'Ready', '正在启动 HPClaw…': 'Starting HPClaw…',
+      '完成': 'Ready', '正在启动 TRACE…': 'Starting TRACE…',
       '正在启动后台服务…': 'Starting the backend…',
       '正在初始化组件…': 'Initializing components…',
       '后台已就绪，正在加载界面…': 'Backend ready; loading the interface…'

@@ -5,5 +5,5 @@ import type { CordisCardFace } from './slots.ts';
 /** Full card props composed by the keyed Tool slot. */
 export type CordisDefineRowProps = ToolCallViewProps & InjectFace<CordisCardFace> & PropsLocale<'cordis'>;
 /** Render one immutable Package definition. */
-export declare function CordisDefineRow({ callId, block, inspect, useInventory, useLoaded, t, }: CordisDefineRowProps): import("react").JSX.Element;
+export declare function CordisDefineRow(props: CordisDefineRowProps): import("react").JSX.Element;
 //# sourceMappingURL=CordisDefineRow.d.ts.map

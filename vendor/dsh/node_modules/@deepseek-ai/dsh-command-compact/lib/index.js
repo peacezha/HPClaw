@@ -1,3 +1,4 @@
+import { CommandDefinitionId } from "@deepseek-ai/dsh-commands/brand";
 import { ManualCompactionError } from "@deepseek-ai/dsh-compaction";
 //#region lib/types/index.js
 /**
@@ -26,11 +27,11 @@ function expectedFailure(error) {
 		};
 		case "changed": return {
 			kind: "error",
-			text: "The history selected for compaction changed before it could be replaced. The conversation is unchanged; the attempt is recorded in the session log."
+			text: "The history selected for compaction changed before it could be replaced. The attempt is recorded in the session log."
 		};
 		case "summary": return {
 			kind: "error",
-			text: "Compaction could not produce a useful summary. The conversation is unchanged; the attempt is recorded in the session log."
+			text: "Compaction could not produce a useful summary. The attempt is recorded in the session log."
 		};
 		case "commit": return {
 			kind: "error",
@@ -90,6 +91,7 @@ function apply(ctx) {
 			await Promise.allSettled(active);
 		};
 		yield ctx.commands.register({
+			definitionId: CommandDefinitionId("@deepseek-ai/dsh-command-compact"),
 			name: "compact",
 			description: "Compact older conversation history",
 			handler

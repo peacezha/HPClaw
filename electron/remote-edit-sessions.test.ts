@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function createHarness(existingRoot?: string) {
-  const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-edit-test-'));
+  const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'trace-edit-test-'));
   if (!existingRoot) roots.push(root);
   const watchers = new Map<string, () => void>();
   let finishLaunch!: () => void;

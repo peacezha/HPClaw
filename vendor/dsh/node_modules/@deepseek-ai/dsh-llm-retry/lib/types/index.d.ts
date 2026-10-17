@@ -6,6 +6,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { RetryId } from './brand.ts';
 export type { LlmRetryEventData, LlmRetryStartedEventData } from './types.ts';
 export { RetryId } from './brand.ts';
 export declare const name = "llm-retry";
@@ -25,5 +26,16 @@ export interface RetryInternals {
  * @param config - empty executor config; provider registrations own policy.
  * @param internals - non-serializable deterministic hooks for tests.
  */
+interface RetryStateEntry {
+    retry: number;
+    retryId: RetryId;
+}
+type LlmRetryState = Record<string, RetryStateEntry>;
+declare module '@deepseek-ai/dsh-session-projection/types' {
+    interface SessionProjectionStateMap {
+        /** Retry state for the current step by provider and policy. */
+        llmRetry: LlmRetryState;
+    }
+}
 export declare function apply(ctx: Context, config?: Config, internals?: RetryInternals): void;
 //# sourceMappingURL=index.d.ts.map

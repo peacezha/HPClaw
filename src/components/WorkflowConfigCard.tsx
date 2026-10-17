@@ -1,14 +1,16 @@
-// 对话内流程配置卡：AI 输出 [HPCLAW_WORKFLOW_CONFIGURE] 标记（或流程匹配 chips 主动插入）时，
+// 对话内流程配置卡：AI 输出 [TRACE_WORKFLOW_CONFIGURE] 标记（或流程匹配 chips 主动插入）时，
 // 在对话里渲染成表单卡片，用户点选参数与输入目录后直接创建正式运行并交给 AI 执行。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Plus, Trash2,
 } from 'lucide-react';
 import type { Workflow } from '@/shared/workflow';
+import type { PreflightResult, PreflightRunReport } from '@/shared/flowManifest';
 import { isPendingDisposal } from '@/shared/workflowCatalog';
 import type { PickPathKind } from '@/shared/fileTransfer';
-import { createWorkflowRun, listWorkflows } from '../features/workflows/api';
-import { composeRunMessage } from '../features/workflows/compose';
+import { createWorkflowRun, listWorkflows, runPreflightForConfig, type WorkflowRunConfigInput } from '../features/workflows/api';
+import { composeRunMessage, type PreRunCheckSummary } from '../features/workflows/compose';
+import WorkflowPreflightCard from './WorkflowPreflightCard';
 import {
   defaultParamValues,
   defaultStepValues,
@@ -37,9 +39,14 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
   const [manualInput, setManualInput] = useState('');
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [stepValues, setStepValues] = useState<Record<number, Record<string, string>>>({});
+  // 用户为参考数据改指的实际路径（按参考数据名），启动前整体检查解答时写回
+  const [refOverrides, setRefOverrides] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState('');
   const [starting, setStarting] = useState(false);
   const [started, setStarted] = useState(false);
+  // 启动前整体检查：非 null 时在卡片内展示集中问题清单
+  const [preRunReport, setPreRunReport] = useState<PreflightRunReport | null>(null);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -84,6 +91,79 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
     if (picked) setParamValues(v => ({ ...v, [paramName]: picked }));
   }, [onPickRemoteFolder]);
 
+  const buildConfig = useCallback((): WorkflowRunConfigInput => ({
+    inputs,
+    params: paramValues,
+    stepParams: stepValues,
+    referenceOverrides: refOverrides,
+    skippedSteps: [],
+    stepCommandOverrides: {},
+  }), [inputs, paramValues, stepValues, refOverrides]);
+
+  // 正式创建运行并提交执行协议；preflightResult/preRunCheck 来自启动前整体检查，不再硬编码 null
+  const start = useCallback(async (preflightResult: PreflightResult | null, preRunCheck: PreRunCheckSummary) => {
+    if (!workflow || !sessionId) return;
+    setFormError('');
+    setStarting(true);
+    try {
+      const run = await createWorkflowRun(workflow.id, buildConfig(), sessionId);
+      onSendMessage(composeRunMessage(workflow, {
+        preflight: preflightResult,
+        preRunCheck,
+        inputs,
+        paramValues,
+        stepValues,
+        referenceOverrides: refOverrides,
+        run: { runId: run.runId || run.runDir.split('/').pop() || 'run', runDir: run.runDir },
+      }), { dedicatedConversation: true });
+      setStarted(true);
+      setPreRunReport(null);
+    } catch (e: any) {
+      setFormError(e?.message || '创建流程运行失败');
+    } finally {
+      setStarting(false);
+    }
+  }, [workflow, sessionId, buildConfig, inputs, paramValues, stepValues, refOverrides, onSendMessage]);
+
+  // 启动前整体检查：无问题直接建运行；有问题在卡片内展示集中清单，解答后重检，通过才继续
+  const checkBeforeRun = useCallback(async () => {
+    if (!workflow || !sessionId) return;
+    setFormError('');
+    setChecking(true);
+    try {
+      const report = await runPreflightForConfig(workflow.id, buildConfig(), sessionId);
+      if (report.issues.length === 0) {
+        await start(report.preflight, { passed: true });
+      } else {
+        setPreRunReport(report);
+      }
+    } catch (e: any) {
+      setFormError(`启动前整体检查失败：${e?.message || String(e)}`);
+    } finally {
+      setChecking(false);
+    }
+  }, [workflow, sessionId, buildConfig, start]);
+
+  // 用户明确接受剩余警告，仍然开始运行（有 blocker 时卡片内禁用该按钮）
+  const handleRunAnyway = useCallback(async () => {
+    if (!preRunReport) return;
+    const acceptedWarnings = preRunReport.issues
+      .filter(issue => issue.severity === 'warn')
+      .map(issue => `${issue.label || issue.name}：${issue.message}`);
+    await start(preRunReport.preflight, { passed: false, acceptedWarnings });
+  }, [preRunReport, start]);
+
+  // 缺失软件/参考数据交给 AI 补齐（留在当前对话，与流程面板的 provision 消息一致）
+  const handleProvision = useCallback((kind: 'software' | 'references', name: string, detail?: string) => {
+    if (!workflow) return;
+    const kindLabel = kind === 'software' ? '软件' : '参考数据';
+    onSendMessage([
+      `流程「${workflow.name}」（ID: ${workflow.id}）的${kindLabel}「${name}」未就绪${detail ? `（${detail}）` : ''}。`,
+      '请直接修复，不用先报方案等我确认：优先 module load 或安装到流程家目录 02_reference/（或你判断的合适位置），下载和安装只能在登录节点进行（计算节点无网络）。',
+      '修复后用一条精确命令验证该项，然后重新核查并继续流程；只有确实需要我抉择时才 ask_user。',
+    ].join('\n'));
+  }, [workflow, onSendMessage]);
+
   const handleConfirm = useCallback(async () => {
     if (workflow && isPendingDisposal(workflow)) { setFormError('此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。'); return; }
     if (!workflow || !sessionId || started) return;
@@ -104,31 +184,9 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
       setFormError(validationErrors.slice(0, 3).join('；'));
       return;
     }
-    setFormError('');
-    setStarting(true);
-    try {
-      const run = await createWorkflowRun(workflow.id, {
-        inputs,
-        params: paramValues,
-        stepParams: stepValues,
-        referenceOverrides: {},
-        skippedSteps: [],
-        stepCommandOverrides: {},
-      }, sessionId);
-      onSendMessage(composeRunMessage(workflow, {
-        preflight: null,
-        inputs,
-        paramValues,
-        stepValues,
-        run: { runId: run.runId || run.runDir.split('/').pop() || 'run', runDir: run.runDir },
-      }), { dedicatedConversation: true });
-      setStarted(true);
-    } catch (e: any) {
-      setFormError(e?.message || '创建流程运行失败');
-    } finally {
-      setStarting(false);
-    }
-  }, [workflow, sessionId, started, needInputs, inputs, missingParams, paramValues, stepValues, onSendMessage]);
+    // 前端校验过后，先做启动前整体检查（软件/参考数据/输入/参数/脚本占位符）
+    await checkBeforeRun();
+  }, [workflow, sessionId, started, needInputs, inputs, missingParams, paramValues, checkBeforeRun]);
 
   if (workflow === undefined) {
     return (
@@ -165,6 +223,27 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
       </header>
 
       <div className="p-3 space-y-2.5">
+        {/* 启动前整体检查的集中问题清单：解答写回配置，重检通过后自动继续 */}
+        {preRunReport ? (
+          <WorkflowPreflightCard
+            workflow={workflow}
+            report={preRunReport}
+            paramValues={paramValues}
+            stepValues={stepValues}
+            refOverrides={refOverrides}
+            inputs={inputs}
+            onParamChange={(name, value) => setParamValues(prev => ({ ...prev, [name]: value }))}
+            onStepParamChange={(step, name, value) => setStepValues(prev => ({ ...prev, [step]: { ...(prev[step] || {}), [name]: value } }))}
+            onReferenceChange={(name, path) => setRefOverrides(prev => ({ ...prev, [name]: path }))}
+            onInputChange={(index, value) => setInputs(list => list.map((p, i) => (i === index ? value : p)))}
+            onProvision={handleProvision}
+            onPickPath={onPickRemoteFolder}
+            onRecheck={() => void checkBeforeRun()}
+            onRunAnyway={() => void handleRunAnyway()}
+            onCancel={() => setPreRunReport(null)}
+            busy={checking || starting}
+          />
+        ) : (<>
         {/* 数据选择（纯参数流程不显示） */}
         {needInputs && (
           <section>
@@ -231,15 +310,16 @@ export default function WorkflowConfigCard({ workflowId, sessionId, onPickRemote
         )}
 
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void handleConfirm()} disabled={!sessionId || starting || started || isPendingDisposal(workflow)}
+          <button type="button" onClick={() => void handleConfirm()} disabled={!sessionId || starting || checking || started || isPendingDisposal(workflow)}
             className="btn-primary flex-1 !py-2 text-xs">
-            {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-            {started ? '已发起运行' : starting ? '正在创建正式运行…' : '确认运行'}
+            {starting || checking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+            {started ? '已发起运行' : starting ? '正在创建正式运行…' : checking ? '正在整体检查…' : '确认运行'}
           </button>
         </div>
         {started && (
           <p className="text-[10px] text-emerald-500">已创建正式运行，执行进度见下方流程运行卡。</p>
         )}
+        </>)}
       </div>
     </div>
   );

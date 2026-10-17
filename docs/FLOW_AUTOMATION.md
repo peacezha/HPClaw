@@ -1,6 +1,6 @@
 # 流程自动化：四板块专属文件夹 + 预检 + 跟踪 + 报告
 
-本文档描述 HPClaw 的流程自动化体系：每个分析流程在集群上拥有一个持久专属文件夹，
+本文档描述 TRACE 的流程自动化体系：每个分析流程在集群上拥有一个持久专属文件夹，
 按"必要软件 / 必要参考数据 / 工作区 / 质控与结果"四个板块组织，运行前自动预检，
 运行中逐步跟踪，收尾自动归档并生成图文并茂的报告。
 
@@ -22,7 +22,7 @@
    （归属判定三级匹配：run.json 的 workflowId → workflowName 的 slug → runDir 所在的流程家目录，
    见 `runBelongsToWorkflow()`）；无法归属到任何流程的运行单独归入流程列表顶部的"未归属流程的运行"。
    进度条 + 步骤时间线（QC 徽章）+ 日志弹窗（`GET /api/workflows/runs/log?dir=<runDir>&n=<行数>`，
-   5s 轮询，路径限定 home 下 hpclaw_flows/hpclaw_runs 工作区内；日志文件在 run 目录内动态发现，
+   5s 轮询，路径限定 home 下 trace_flows/trace_runs 工作区内；日志文件在 run 目录内动态发现，
    返回内容同时带文件来源清单）。
 5. **报告**：reportPath 存在时弹窗内 iframe 渲染自包含 report.html（srcDoc），可下载。
 
@@ -33,7 +33,7 @@
 ## 集群目录约定
 
 ```
-~/hpclaw_flows/<workflow-slug>/          # slug = 流程名（非法字符替换为 _，截断 40 字符）
+~/trace_flows/<workflow-slug>/          # slug = 流程名（非法字符替换为 _，截断 40 字符）
 ├── flow.json                            # 流程清单快照（预检时同步）
 ├── 01_software/                         # 板块1：必要软件
 │   ├── manifest.json                    #   软件清单（module 名、检查命令、是否必需）
@@ -53,7 +53,7 @@
         └── report/                      #   report.html（自包含嵌图）+ report.md + figures/
 ```
 
-旧约定 `~/hpclaw_runs/<run>/` 保留只读兼容（运行监控接口同时扫描两处）。
+旧约定 `~/trace_runs/<run>/` 保留只读兼容（运行监控接口同时扫描两处）。
 
 ## Manifest（流程资源清单 / Workflow Contract v2）
 
@@ -103,8 +103,8 @@ interface FlowManifest {
 ## bioSkills 流水线批量接入
 
 ```bash
-# 在 源码/ 目录下；HPCLAW_DATA_ROOT 指向应用数据目录（默认 ./ ）
-HPCLAW_DATA_ROOT=<数据目录> npx tsx scripts/seed-bioskills-flows.ts
+# 在 源码/ 目录下；TRACE_DATA_ROOT 指向应用数据目录（默认 ./ ）
+TRACE_DATA_ROOT=<数据目录> npx tsx scripts/seed-bioskills-flows.ts
 ```
 
 - 扫描 `skills/bioSkills/workflows/*/SKILL.md`，解析 frontmatter

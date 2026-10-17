@@ -612,8 +612,9 @@ var LoggerService = class LoggerService {
 	*/
 	exporter(exporter) {
 		return this.ctx.effect(() => {
-			this.exporters.set(++this._snExporter, exporter);
-			return () => this.exporters.delete(this._snExporter);
+			const id = ++this._snExporter;
+			this.exporters.set(id, exporter);
+			return () => this.exporters.delete(id);
 		}, "ctx.logger.exporter()");
 	}
 	_resolveConfig() {
@@ -1420,8 +1421,8 @@ var Fiber = class {
 	*
 	* @param config — the new raw config; validated before anything restarts.
 	* @param noSave — hint for persistence hooks not to write the change back.
-	* @returns the update waterfall result; the default restart returns a promise.
-	* @throws when validation, an update listener, or the restarted plugin fails.
+	* @returns nothing; the restart runs behind the `internal/update` waterfall.
+	* @throws {ValidationError} when the new config fails validation.
 	*/
 	update(config, noSave = false) {
 		this.assertActive();
@@ -1433,7 +1434,7 @@ var Fiber = class {
 			return;
 		}
 		config = this._resolveConfig(config);
-		return this.context.waterfall(this, "internal/update", config, noSave, () => {
+		this.context.waterfall(this, "internal/update", config, noSave, () => {
 			this.config = config;
 			this._error = void 0;
 			return this.restart();

@@ -83,8 +83,8 @@ export default function FilePreview({
       ? sessionId
         ? previewRemote(sessionId, file.path, readDescriptor, signal)
         : Promise.reject(new Error('远程预览需要活动的 SSH 会话'))
-      : window.hpclawDesktop?.localFiles.preview
-        ? window.hpclawDesktop.localFiles.preview(file.path, readDescriptor)
+      : window.traceDesktop?.localFiles.preview
+        ? window.traceDesktop.localFiles.preview(file.path, readDescriptor)
         : Promise.reject(new Error('本地预览仅在桌面应用中可用'));
     return request.then(payload => {
       if (!signal.aborted) setState({ status: 'ready', payload });
@@ -144,10 +144,10 @@ export default function FilePreview({
         if (!sessionId) throw new Error('远程保存需要活动的 SSH 会话');
         await writeRemote(sessionId, file.path, editedText);
       } else {
-        if (!window.hpclawDesktop?.localFiles.writeFile) {
+        if (!window.traceDesktop?.localFiles.writeFile) {
           throw new Error('本地文件保存仅在桌面应用中可用');
         }
-        await window.hpclawDesktop.localFiles.writeFile(file.path, editedText);
+        await window.traceDesktop.localFiles.writeFile(file.path, editedText);
       }
       setSaveState({ status: 'saved' });
       onSaved?.();

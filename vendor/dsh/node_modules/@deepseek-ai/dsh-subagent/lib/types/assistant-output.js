@@ -9,6 +9,7 @@
  *
  * @module @deepseek-ai/dsh-subagent/assistant-output
  */
+import { joinAssistantStreamText } from '@deepseek-ai/dsh-llm';
 /**
  * Incremental fold of the selection rule, for backends that observe a child's
  * output as it streams: session-event backends {@link push} each event, and
@@ -20,8 +21,8 @@ export class AssistantOutputFold {
     partial = [];
     /**
      * Fold one session event: a non-empty assistant message becomes the
-     * candidate final answer, and a `text-delta` chunk extends the streamed
-     * fallback; every other event contributes nothing.
+     * candidate final answer, while its embedded stream and any log-only attempt
+     * extend the streamed fallback; every other event contributes nothing.
      * @param event - the next observed session event.
      */
     push(event) {
@@ -30,8 +31,8 @@ export class AssistantOutputFold {
             if (content.length > 0)
                 this.message = content;
         }
-        else if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
-            this.pushText(event.data.chunk.text);
+        if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
+            this.pushText(joinAssistantStreamText(event.data.stream));
         }
     }
     /**

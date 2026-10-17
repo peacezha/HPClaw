@@ -1,9 +1,10 @@
 import { Service } from "@deepseek-ai/cordis";
+import { proxyEnvironmentForChild } from "@deepseek-ai/dsh-http-proxy";
 //#region lib/types/types.js
 /**
 * Vocabulary for the subprocess Service Definition: fully-specified spawn requests with
 * Node-shaped per-stream stdio modes, bounded collected output with spill
-* recovery, raw piped streams, and tree-scoped termination. Command
+* recovery, raw piped streams, and managed-range termination. Command
 * defaulting, shell semantics, protocol framing, and presentation belong to
 * consumers such as the bash executor seam.
 * @module dsh-subprocess/types
@@ -14,7 +15,7 @@ const DSH_ENV_PREFIX = "DSH_";
 //#region lib/types/index.js
 /**
 * Service Definition for the subprocess capability seam (`ctx.subprocess`): execution-world executable lookup,
-* fully specified managed process trees with raw or
+* fully specified provider-managed process ranges with raw or
 * collected stdio, and one terminal-process primitive. Command defaulting,
 * shell semantics, deadlines, protocol framing, terminal readiness, and
 * presentation belong to consumers. The local implementation lives in
@@ -41,11 +42,16 @@ const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i;
 * deliberate lowercase `dsh_*` names on POSIX are implausible. Exported as a plain function so spawners
 * that cannot route through the service (node-pty backends, SDK-managed
 * transports) share the one scrub definition.
+*
+* When a proxy is active the result also carries the resolved proxy names and the flag a child Node
+* needs to honor them, so a child inherits the same routing as its parent.
 * @returns a fresh environment object safe to hand to a child spawn.
 */
 function scrubbedParentEnv() {
 	const env = {};
 	for (const [key, value] of Object.entries(process.env)) if (value !== void 0 && !SENSITIVE_ENV_PATTERN.test(key) && !key.toUpperCase().startsWith("DSH_")) env[key] = value;
+	for (const [name, value] of Object.entries(proxyEnvironmentForChild())) if (value === void 0) Reflect.deleteProperty(env, name);
+	else env[name] = value;
 	return env;
 }
 /**
@@ -57,17 +63,18 @@ function scrubbedParentEnv() {
 * Implementations must honor these semantics:
 * - Executable paths belong to one execution world shared with the mounted
 *   filesystem provider.
-* - {@link spawn} returns immediately with a live handle; `done` resolves at
-*   process close with exit facts and rejects only for spawn-level failures.
+* - {@link spawn} returns a live handle synchronously. Target identity remains
+*   provider-private; `done` resolves with the spawned command's exit facts and
+*   may reject for spawn or provider failures.
 * - Collect-mode readers are offset-based and non-consuming, so independent
 *   readers never consume one another's output; lossy reads report truncation
 *   and the spill file holding the complete stream when one exists. Piped
 *   streams are handed to the caller raw and never buffered here.
-* - {@link SubprocessHandle.terminate} (and the spec's abort signal) escalates
-*   SIGTERM→grace→SIGKILL — the only termination verb — tree-scoped on every
-*   platform. {@link SubprocessHandle.waitForExit} observes whole-tree
-*   liveness, so a consumer-owned teardown ladder can hold each tier on real
-*   quiescence.
+* - {@link SubprocessHandle.terminate} (and the spec's abort signal) starts the
+*   provider's documented procedure against its managed range.
+*   {@link SubprocessHandle.waitForExit} observes that same range so a
+*   consumer-owned teardown ladder can hold each tier on real quiescence; each
+*   provider documents its signalling and observability limits.
 * - Disposal of the service terminates all still-running managed processes
 *   and awaits their exit.
 * - {@link spawnTerminal} owns terminal allocation, text transport,
@@ -81,5 +88,16 @@ var SubprocessRuntime = class extends Service {
 		super(ctx, "subprocess");
 	}
 };
+/** Executable lookup completed without finding an executable file. */
+var SubprocessExecutableNotFoundError = class extends Error {
+	/**
+	* @param message - provider-specific lookup diagnostic.
+	* @param options - original provider failure, when available.
+	*/
+	constructor(message, options) {
+		super(message, options);
+		this.name = "SubprocessExecutableNotFoundError";
+	}
+};
 //#endregion
-export { DSH_ENV_PREFIX, SENSITIVE_ENV_PATTERN, SubprocessRuntime, SubprocessRuntime as default, scrubbedParentEnv };
+export { DSH_ENV_PREFIX, SENSITIVE_ENV_PATTERN, SubprocessExecutableNotFoundError, SubprocessRuntime, SubprocessRuntime as default, scrubbedParentEnv };

@@ -24,7 +24,7 @@ function makeTempDir(prefix: string): string {
 
 /** 布置一套种子输入：空对话库目录 + 打包资源目录（内置两张假 svg） */
 function setupDirs() {
-  const root = makeTempDir('hpclaw-demo-seed-');
+  const root = makeTempDir('trace-demo-seed-');
   const conversationsDir = path.join(root, 'conversations');
   const assetsSourceDir = path.join(root, 'bundle', 'demo-assets');
   const assetsTargetDir = path.join(root, 'data', 'demo-assets');

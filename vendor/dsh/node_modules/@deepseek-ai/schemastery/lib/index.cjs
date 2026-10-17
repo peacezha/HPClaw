@@ -175,6 +175,7 @@ Schema.prototype.pattern = function pattern(regexp) {
 	return schema;
 };
 Schema.prototype.simplify = function simplify(value) {
+	if ((0, _deepseek_ai_cosmokit.isVolatile)(value)) value = value.get();
 	if ((0, _deepseek_ai_cosmokit.deepEqual)(value, this.meta.default, this.type === "dict")) return null;
 	if ((0, _deepseek_ai_cosmokit.isNullable)(value)) return value;
 	if (this.type === "object" || this.type === "dict") {
@@ -231,12 +232,49 @@ for (const key of [
 	};
 	return schema;
 } });
+Schema.prototype.volatile = function volatile() {
+	if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
+	return this.extra("volatile", true);
+};
 const resolvers = {};
+const checkedVolatile = Symbol("checked-volatile-schema");
+function validateVolatileSchema(schema, path = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
+	const states = seen.get(schema) ?? /* @__PURE__ */ new Set();
+	if (states.has(blocked)) return;
+	states.add(blocked);
+	seen.set(schema, states);
+	if (schema.meta?.volatile && blocked) throw new ValidationError("volatile fields require a fixed object path without an enclosing volatile field", { path });
+	const nested = blocked || !!schema.meta?.volatile;
+	if (schema.dict) for (const [key, child] of Object.entries(schema.dict)) validateVolatileSchema(child, [...path, key], nested, seen);
+	if (schema.sKey) validateVolatileSchema(schema.sKey, [...path, "<key>"], true, seen);
+	if (schema.inner && (schema.type !== "lazy" || schema.inner[kSchema])) validateVolatileSchema(schema.inner, [...path, "*"], true, seen);
+	if (schema.list) for (let index = 0; index < schema.list.length; index++) validateVolatileSchema(schema.list[index], [...path, String(index)], true, seen);
+}
 Schema.extend = function extend(type, resolve) {
 	resolvers[type] = resolve;
 };
 Schema.resolve = function resolve(data, schema, options = {}, strict = false) {
 	if (!schema) return [data];
+	if (!options[checkedVolatile]) {
+		validateVolatileSchema(schema, options.path);
+		options = {
+			...options,
+			[checkedVolatile]: true
+		};
+	}
+	if (schema.meta?.volatile) {
+		const inner = Schema(schema);
+		inner.meta = {
+			...schema.meta,
+			volatile: false
+		};
+		const [value, adapted] = Schema.resolve(data, inner, options, strict);
+		try {
+			return [(0, _deepseek_ai_cosmokit.createVolatile)(value), adapted];
+		} catch (error) {
+			throw new ValidationError(error instanceof Error ? error.message : String(error), options);
+		}
+	}
 	if (options.ignore?.(data, schema)) return [data];
 	if ((0, _deepseek_ai_cosmokit.isNullable)(data) && schema.type !== "lazy") {
 		if (schema.meta.required) throw new ValidationError(`missing required value`, options);
@@ -339,6 +377,7 @@ Schema.extend("lazy", (data, schema, options, strict) => {
 			...schema.meta,
 			...schema.inner.meta
 		};
+		validateVolatileSchema(schema.inner, options.path, true);
 	}
 	return Schema.resolve(data, schema.inner, options, strict);
 });
@@ -438,7 +477,7 @@ function property(data, key, schema, options) {
 	} catch (e) {
 		if (!options?.autofix) throw e;
 		delete data[key];
-		return schema.meta.default;
+		return schema.meta.volatile ? (0, _deepseek_ai_cosmokit.createVolatile)(schema.meta.default) : schema.meta.default;
 	}
 }
 Schema.extend("array", (data, { inner, meta }, options) => {

@@ -131,7 +131,7 @@ async function fetchText(url: string, timeoutMs = 25_000): Promise<string> {
   const res = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0 (mailto:hpclaw@localhost)' },
+    headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0 (mailto:trace@localhost)' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}（${url.slice(0, 120)}）`);
   return res.text();
@@ -157,7 +157,7 @@ export async function fetchPaperTextByDoi(doiInput: string): Promise<{ text: str
   // 1. PMC 全文
   try {
     const idconvRaw = await fetchText(
-      `https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids=${encodeURIComponent(doi)}&format=json&tool=hpclaw&email=hpclaw@localhost`,
+      `https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids=${encodeURIComponent(doi)}&format=json&tool=trace&email=trace@localhost`,
     );
     const idconv = JSON.parse(idconvRaw);
     const pmcid = idconv?.records?.[0]?.pmcid;
@@ -667,7 +667,7 @@ export async function checkToolsInBioconda(toolNames: string[]): Promise<Array<{
       try {
         const res = await fetch(`https://bioconda.github.io/recipes/${encodeURIComponent(candidate)}/README.html`, {
           signal: AbortSignal.timeout(8_000),
-          headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0' },
+          headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0' },
         });
         if (res.ok) return { name, status: 'ok' as ToolCheckStatus, hit: candidate };
       } catch {
@@ -735,18 +735,18 @@ export async function fetchRepoCodeExcerpt(repoUrl: string): Promise<{ repoUrl: 
     // 默认分支
     const repoInfo = await (await fetch(api, {
       signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
+      headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
     })).json();
     const branch = repoInfo?.default_branch || 'main';
     const branchInfo = await (await fetch(`${api}/branches/${encodeURIComponent(branch)}`, {
       signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
+      headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
     })).json();
     const commit = branchInfo?.commit?.sha;
     if (typeof commit !== 'string' || !/^[a-f0-9]{40}$/.test(commit)) return null;
     const tree = await (await fetch(`${api}/git/trees/${commit}?recursive=1`, {
       signal: AbortSignal.any([deadline, AbortSignal.timeout(15_000)]),
-      headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
+      headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
     })).json();
     if (!Array.isArray(tree?.tree)) return null;
     const blobs = tree.tree.filter((t: any) => t.type === 'blob' && Number(t.size) <= 200_000);
@@ -764,7 +764,7 @@ export async function fetchRepoCodeExcerpt(repoUrl: string): Promise<{ repoUrl: 
         try {
           const raw = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${commit}/${file.split('/').map(encodeURIComponent).join('/')}`, {
             signal: AbortSignal.any([deadline, AbortSignal.timeout(3_000)]),
-            headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0' },
+            headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0' },
           });
           if (raw.ok) fullText = await raw.text();
         } catch { /* raw.githubusercontent.com may be blocked; use the exact tree blob below */ }
@@ -773,7 +773,7 @@ export async function fetchRepoCodeExcerpt(repoUrl: string): Promise<{ repoUrl: 
           if (!/^[a-f0-9]{40}$/.test(sha || '')) continue;
           const response = await fetch(`${api}/git/blobs/${sha}`, {
             signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]),
-            headers: { 'User-Agent': 'HPClaw-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
+            headers: { 'User-Agent': 'TRACE-WorkflowLearner/1.0', Accept: 'application/vnd.github+json' },
           });
           if (!response.ok) continue;
           const blob = await response.json();

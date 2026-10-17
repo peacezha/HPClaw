@@ -131,7 +131,7 @@ export declare function presentGrepResult(_args: {
     include?: string;
 }, result: ToolResult): SearchResultView | undefined;
 /**
- * Register the `grep` tool and its system-prompt guidance.
+ * Register the `grep` tool and its scope-aware system-prompt guidance.
  *
  * @param ctx - the plugin context; registrations are effects scoped to it, and
  *   execution uses its `subprocess` service.

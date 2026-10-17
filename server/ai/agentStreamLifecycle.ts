@@ -20,6 +20,7 @@ function waitForNext<T>(
   iterator: AsyncIterator<T>,
   signal: AbortSignal,
   timeoutMs: number,
+  isHumanWait?: () => boolean,
 ): Promise<NextResult<T>> {
   if (signal.aborted) return Promise.resolve({ kind: 'aborted' });
 
@@ -28,12 +29,21 @@ function waitForNext<T>(
     const finish = (result: NextResult<T>) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearInterval(timer);
       signal.removeEventListener('abort', onAbort);
       resolve(result);
     };
     const onAbort = () => finish({ kind: 'aborted' });
-    const timer = setTimeout(() => finish({ kind: 'timeout' }), timeoutMs);
+    // 人类等待（命令确认/反问/计划审批）期间不计入空闲超时：与请求看门狗的
+    // waitingHuman 语义对齐——等用户的时间不消耗模型 stall 预算。轮询累计
+    // 而不是一次性定时器，是为了等待开始后（工具执行途中）才进入的挂起也能生效。
+    const checkMs = Math.max(1, Math.min(5_000, timeoutMs));
+    let waitedMs = 0;
+    const timer = setInterval(() => {
+      if (isHumanWait?.()) return;
+      waitedMs += checkMs;
+      if (waitedMs >= timeoutMs) finish({ kind: 'timeout' });
+    }, checkMs);
     signal.addEventListener('abort', onAbort, { once: true });
 
     // Some provider implementations do not settle iterator.next() after their
@@ -44,7 +54,7 @@ function waitForNext<T>(
       error => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        clearInterval(timer);
         signal.removeEventListener('abort', onAbort);
         reject(error);
       },
@@ -72,6 +82,8 @@ export interface ConsumeAgentStreamOptions<T extends AgentStreamPart> {
   onPart: (part: T) => void | Promise<void>;
   onFirstResponse?: (part: T) => void;
   abortProvider?: () => void;
+  /** 人类等待（命令确认/反问/计划审批）为 true 时暂停空闲计时。 */
+  isHumanWait?: () => boolean;
 }
 
 export interface ConsumeAgentStreamResult {
@@ -96,7 +108,7 @@ export async function consumeAgentStream<T extends AgentStreamPart>(
     const timeoutMs = receivedProviderResponse ? idleTimeoutMs : firstResponseTimeoutMs;
     let outcome: NextResult<T>;
     try {
-      outcome = await waitForNext(iterator, options.signal, timeoutMs);
+      outcome = await waitForNext(iterator, options.signal, timeoutMs, options.isHumanWait);
     } catch (error) {
       safeReturn(iterator);
       throw error;

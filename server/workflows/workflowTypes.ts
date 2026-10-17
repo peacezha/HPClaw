@@ -121,7 +121,7 @@ export interface WorkflowPaperImport {
 }
 
 export interface WorkflowProvenance {
-  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'hpclaw' | 'hpclaw-native';
+  provider?: 'bioskills' | 'encode-dcc' | 'encode-partner' | 'trace' | 'trace-native';
   sourcePath?: string;
   sourceName?: string;
   sourceDigest?: string;

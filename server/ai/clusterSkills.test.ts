@@ -21,13 +21,13 @@ describe('cluster skill scanner helpers', () => {
     expect(skill?.filename).toBe('cluster/pipelines/run');
     expect(skill?.source).toBe('cluster');
     expect(skill?.category).toBe('cluster');
-    expect(skill?.sourcePath).toBe('cluster:~/hpclaw_skills/pipelines/run.sh');
+    expect(skill?.sourcePath).toBe('cluster:~/trace_skills/pipelines/run.sh');
   });
 
-  it('builds a scanner command for hpclaw_skills with limits', () => {
+  it('builds a scanner command for trace_skills with limits', () => {
     const command = buildClusterSkillScanCommand();
 
-    expect(command).toContain('hpclaw_skills');
+    expect(command).toContain('trace_skills');
     expect(command).toContain('MAX_FILES');
     expect(command).toContain('MAX_BYTES');
     expect(command).toContain('MAX_TOTAL_BYTES');

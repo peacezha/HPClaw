@@ -3,6 +3,7 @@ import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { io, Socket } from 'socket.io-client';
 import 'xterm/css/xterm.css';
+import { writeClipboardText, readClipboardText } from '../services/clipboard';
 
 const cleanTerminalOutput = (str: string) => {
   let cleaned = str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
@@ -49,25 +50,17 @@ export function createTerminalKeyHandler({ term, getXterm, getSocket }: Terminal
   return (e: KeyboardEvent): boolean => {
     // xterm 对 keyup/keypress 也会回调本处理器；只处理 keydown，
     // 否则按住 Ctrl 先松 V 时 keyup 会再触发一次粘贴（内容出现两次）
-    if (e.type !== 'keydown') return true;
+    if (e.type !== 'keydown' || e.altKey) return true;
 
     const modifier = e.ctrlKey || e.metaKey;
-    const isCtrlShiftC = modifier && e.shiftKey && e.key === 'C';
-    const isCtrlC = modifier && !e.shiftKey && e.key === 'c';
+    const isCtrlShiftC = modifier && e.shiftKey && e.key.toLowerCase() === 'c';
+    const isCtrlC = modifier && !e.shiftKey && e.key.toLowerCase() === 'c';
 
     if (isCtrlShiftC || (isCtrlC && term.hasSelection())) {
       const sel = term.getSelection();
+      e.preventDefault();
       if (sel) {
-        const desktop = (window as any).hpclawDesktop;
-        if (desktop?.clipboard) {
-          desktop.clipboard.writeText(sel).catch(() => {});
-        } else if (navigator.clipboard?.writeText) {
-          navigator.clipboard.writeText(sel).catch(() => {
-            document.execCommand('copy');
-          });
-        } else {
-          document.execCommand('copy');
-        }
+        void writeClipboardText(sel).catch(() => {});
       }
       return false; // Do not send to terminal
     }
@@ -75,15 +68,12 @@ export function createTerminalKeyHandler({ term, getXterm, getSocket }: Terminal
     // 粘贴：自定义通道发送 + 阻止浏览器默认粘贴动作（preventDefault），
     // 保证恰好一次——原生路径在 Electron 里不稳定（Ctrl+V 可能无响应或双发）
     if (modifier && e.key.toLowerCase() === 'v') {
-      const desktop = (window as any).hpclawDesktop;
+      const desktop = (window as any).traceDesktop;
       // HTTP browser deployments cannot use the Clipboard API: leave native paste to xterm.
-      if (!desktop?.clipboard && !navigator.clipboard?.readText) return true;
+      if (!desktop?.clipboard) return true;
       e.preventDefault();
       if (e.repeat) return false; // 长按自动重复只触发一次粘贴
-      const readClipboard = desktop?.clipboard
-        ? () => desktop.clipboard.readText()
-        : () => navigator.clipboard.readText();
-      readClipboard().then(text => {
+      readClipboardText().then(text => {
         if (!text) return;
         const xterm = getXterm();
         if (xterm) {
@@ -175,7 +165,7 @@ const TerminalComponent = forwardRef<TerminalHandle, Props>(
           }
 
           if (silent) {
-            const marker = `__HPCLAW_SILENT_${Math.random().toString(36).slice(2)}__`;
+            const marker = `__TRACE_SILENT_${Math.random().toString(36).slice(2)}__`;
             silentModeRef.current = { active: true, marker, buffer: '', timeoutId: null, hideOutput: !!hideOutput };
             socketRef.current.emit('data', `echo '${marker}'; ${cmd}\n`);
             silentModeRef.current.timeoutId = setTimeout(() => {
@@ -377,7 +367,7 @@ const TerminalComponent = forwardRef<TerminalHandle, Props>(
         xtermRef.current = term;
         fitAddonRef.current = fitAddon;
 
-        const socket = io({ timeout: 60000, auth: { sessionId: sshSessionId }, query: { hpclawCluster: sshSessionId } });
+        const socket = io({ timeout: 60000, auth: { sessionId: sshSessionId }, query: { traceCluster: sshSessionId } });
         socketRef.current = socket;
         onSocketReady(socket);
 
@@ -391,7 +381,11 @@ const TerminalComponent = forwardRef<TerminalHandle, Props>(
           setShellError('');
           term.writeln('\x1b[32m[System]\x1b[0m Remote shell is ready.');
           socket.emit('resize', term.cols, term.rows);
-          if (isActive && !isSidebarOpen) term.focus();
+          // SSH 自动重连也会触发 shell:ready：焦点已在聊天输入框等文本输入元素时不得抢焦点
+          const focusedElement = document.activeElement as HTMLElement | null;
+          const textInputFocused = !!focusedElement
+            && (focusedElement.tagName === 'INPUT' || focusedElement.tagName === 'TEXTAREA' || focusedElement.isContentEditable);
+          if (isActive && !isSidebarOpen && !textInputFocused) term.focus();
         });
 
         // shell 通道死亡（bash 退出/通道被回收）：提示重连

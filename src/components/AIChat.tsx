@@ -51,7 +51,11 @@ import { closeSseReader, type SseReaderCloseReason } from '../services/sseReader
 import { prepareAiRequestBody } from '../services/aiRequestBody';
 import { useCommandApprovals } from '../services/useCommandApprovals';
 import { useUserQuestions } from '../services/useUserQuestions';
+import { usePlanReviews } from '../services/usePlanReviews';
+import { AgentTurnClock } from '@/shared/agentTurnClock';
 import AIQuestionDialog from './AIQuestionDialog';
+import PlanReviewCard from './PlanReviewCard';
+import AgentPlanPanel from './AgentPlanPanel';
 import {
   appendAttachmentRefs,
   baseName,
@@ -69,6 +73,7 @@ import {
   type AgentConfirmationPolicy,
   type AgentPathPolicy,
   type AgentPlanningPolicy,
+  type AgentPlanReviewPolicy,
 } from '../services/agentSettings';
 import {
   loadAgentWorkspaces,
@@ -295,7 +300,7 @@ const MessageBubble = React.memo(function MessageBubble({ msg, index, sessionId,
 
   if (msg.role === 'system') {
     // Filter noisy system messages
-    // 流程解绑标记（[HPCLAW_WORKFLOW_RUN_DETACHED]…）是协议行，不展示原始文本
+    // 流程解绑标记（[TRACE_WORKFLOW_RUN_DETACHED]…）是协议行，不展示原始文本
     const text = stripWorkflowRunDetachedMarkers(msg.content || '');
     if (!text || !shouldRenderSystemMessage(text)) {
       return null; // Don't render noisy progress messages
@@ -469,11 +474,13 @@ function AgentSettingsFields({
   pathPolicy,
   maxCommands,
   maxSteps,
+  planReview,
   onPlanningPolicyChange,
   onConfirmationPolicyChange,
   onPathPolicyChange,
   onMaxCommandsChange,
   onMaxStepsChange,
+  onPlanReviewChange,
 }: {
   engine: AgentEnginePreference;
   onEngineChange: (value: AgentEnginePreference) => void;
@@ -482,11 +489,13 @@ function AgentSettingsFields({
   pathPolicy: AgentPathPolicy;
   maxCommands: number;
   maxSteps: number;
+  planReview: AgentPlanReviewPolicy;
   onPlanningPolicyChange: (value: AgentPlanningPolicy) => void;
   onConfirmationPolicyChange: (value: AgentConfirmationPolicy) => void;
   onPathPolicyChange: (value: AgentPathPolicy) => void;
   onMaxCommandsChange: (value: number) => void;
   onMaxStepsChange: (value: number) => void;
+  onPlanReviewChange: (value: AgentPlanReviewPolicy) => void;
 }) {
   const fieldClass = 'w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent';
   return (
@@ -499,13 +508,13 @@ function AgentSettingsFields({
         ) : (
           <select value={engine} onChange={e => onEngineChange(e.target.value as AgentEnginePreference)} className={fieldClass}>
             <option value="auto">智能选择（推荐）</option>
-            <option value="native">HPClaw 原生智能体</option>
+            <option value="native">TRACE 原生智能体</option>
             <option value="dsh">DSH 智能体</option>
           </select>
         )}
         <p className="mt-1 text-[10px] text-scholar-500">
           {isPublicWeb() ? '网页端只在当前用户连接的集群上执行命令，不提供部署服务器本地工具。' : IS_COMPETITION_EDITION
-            ? '竞赛版仅移除 DSH，固定使用 HPClaw 原生智能体；流程功能完整保留。'
+            ? '竞赛版仅移除 DSH，固定使用 TRACE 原生智能体；流程功能完整保留。'
             : 'DSH 当前用于 DeepSeek 普通 Agent 任务；正式流程自动使用原生引擎，以保留断点、证据和作业监控。'}
         </p>
       </div>
@@ -515,6 +524,14 @@ function AgentSettingsFields({
           <option value="auto">智能判断（推荐）</option>
           <option value="always">所有任务先规划</option>
         </select>
+      </div>
+      <div>
+        <label className="block text-xs text-scholar-300 mb-1">计划审批</label>
+        <select value={planReview} onChange={e => onPlanReviewChange(e.target.value as AgentPlanReviewPolicy)} className={fieldClass}>
+          <option value="auto">较大或含写操作的计划（推荐）</option>
+          <option value="always">所有计划都先审批</option>
+        </select>
+        <p className="mt-1 text-[10px] text-scholar-500">Agent 制定的执行计划先给你过目：可原样批准、修改步骤后批准或取消；批准后才动手。仅普通对话生效，正式流程按其自身步骤执行。</p>
       </div>
       <div>
         <label className="block text-xs text-scholar-300 mb-1">集群路径权限</label>
@@ -568,6 +585,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const [agentPathPolicy, setAgentPathPolicy] = useState<AgentPathPolicy>(initialAgentSettings.pathPolicy);
   const [agentMaxCommands, setAgentMaxCommands] = useState(initialAgentSettings.maxCommands);
   const [agentMaxSteps, setAgentMaxSteps] = useState(initialAgentSettings.maxSteps);
+  const [agentPlanReview, setAgentPlanReview] = useState<AgentPlanReviewPolicy>(initialAgentSettings.planReview);
   const [isAiSetup, setIsAiSetup] = useState(!!initialProfile.apiKey);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -594,7 +612,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const [workspaceError, setWorkspaceError] = useState('');
 
   const handlePickAgentWorkspace = useCallback(async () => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!desktop?.dialog || !desktop.localFiles) return;
     try {
       const picked = await desktop.dialog.pickDirectory();
@@ -645,7 +663,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const handleAttachClick = useCallback(() => {
     setAttachmentError('');
     if (isPublicWeb() && isClusterChat) { attachmentInputRef.current?.click(); return; }
-    if (!window.hpclawDesktop?.getPathForFile || !window.hpclawDesktop.localFiles) {
+    if (!window.traceDesktop?.getPathForFile || !window.traceDesktop.localFiles) {
       setAttachmentError(t('附件功能需要桌面端支持，浏览器模式无法获取文件路径'));
       return;
     }
@@ -657,7 +675,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   }, [t, isClusterChat, agentWorkspace]);
 
   const handleAttachmentFiles = useCallback(async (files: FileList | null) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!files || files.length === 0 || (!isPublicWeb() && (!desktop?.getPathForFile || !desktop.localFiles))) return;
     setAttachmentBusy(true);
     setAttachmentError('');
@@ -683,7 +701,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
         if (!localPath) throw new Error('empty file path');
         const name = file.name || baseName(localPath) || 'attachment';
         if (isClusterChat && sessionId) {
-          // 集群模式：固定上传到 ~/hpclaw_uploads/（SFTP 相对路径即家目录），走传输队列可见进度
+          // 集群模式：固定上传到 ~/trace_uploads/（SFTP 相对路径即家目录），走传输队列可见进度
           try { await mkdirRemote(sessionId, CLUSTER_ATTACHMENT_DIR); } catch { /* 已存在则忽略 */ }
           const remotePath = `${CLUSTER_ATTACHMENT_DIR}/${name}`;
           await enqueueTransfer(sessionId, {
@@ -751,6 +769,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       pathPolicy: agentPathPolicy,
       maxCommands: agentMaxCommands,
       maxSteps: agentMaxSteps,
+      planReview: agentPlanReview,
     });
     setAgentEngine(agentSettings.engine);
     setAgentPlanningPolicy(agentSettings.planningPolicy);
@@ -758,8 +777,9 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     setAgentPathPolicy(agentSettings.pathPolicy);
     setAgentMaxCommands(agentSettings.maxCommands);
     setAgentMaxSteps(agentSettings.maxSteps);
+    setAgentPlanReview(agentSettings.planReview);
     pushAiProfileToServer(saved);
-  }, [aiProvider, aiModel, aiApiKey, aiBaseUrl, agentEngine, agentPlanningPolicy, agentConfirmationPolicy, agentPathPolicy, agentMaxCommands, agentMaxSteps, pushAiProfileToServer]);
+  }, [aiProvider, aiModel, aiApiKey, aiBaseUrl, agentEngine, agentPlanningPolicy, agentConfirmationPolicy, agentPathPolicy, agentMaxCommands, agentMaxSteps, agentPlanReview, pushAiProfileToServer]);
 
   // 启动时同步一次已有配置，保证服务端（QQ 机器人）开箱即用
   useEffect(() => {
@@ -781,12 +801,17 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   const stoppedByUserRef = useRef(false); // distinguish user stop from timeout abort
   const lastUserTextRef = useRef(''); // 最近一次提交的用户输入，断流重试用
   const agentPlanRef = useRef<any>(null); // ask_user/断线后的跨轮结构化计划
+  // 任务清单面板用的 React 状态镜像（ref 变更不触发渲染，面板需要随计划事件刷新）
+  const [agentPlan, setAgentPlan] = useState<any>(null);
   const agentPlanConversationRef = useRef<string | null | undefined>(activeConversationId);
   const persistAgentPlan = useCallback((plan: any | null) => {
     agentPlanRef.current = plan || null;
+    setAgentPlan(plan || null);
     messagesRef.current = upsertAgentPlanCheckpoint(messagesRef.current, plan || null) as Message[];
     onMessagesChange(messagesRef.current);
   }, [onMessagesChange]);
+  // 中途插话提示：发送后置上，steer_applied / 轮末 / 停止时更新或清除
+  const [steerNotice, setSteerNotice] = useState('');
   const lastTriggerRef = useRef({
     agent: triggerAI && sessionId && triggerAI.tabId === sessionId ? triggerAI.count : 0,
   });
@@ -804,7 +829,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   type ConfirmMode = 'ask' | 'trust_all';
   // 信任状态跨轮次、跨重启保留：用户点一次"信任全部"后不再逐条弹确认，
   // 直到在输入区上方主动取消（此前每轮开头强制重置为 ask，信任等于无效）。
-  const CONFIRM_MODE_KEY = 'hpclaw-confirm-mode';
+  const CONFIRM_MODE_KEY = 'trace-confirm-mode';
   const [confirmMode, setConfirmMode] = useState<ConfirmMode>(() => {
     try { return (isPublicWeb() ? readPublicPreference(CONFIRM_MODE_KEY) : localStorage.getItem(CONFIRM_MODE_KEY)) === 'trust_all' ? 'trust_all' : 'ask'; }
     catch { return 'ask'; }
@@ -828,6 +853,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     onLegacyAnswer: async text => { await submitToAI(text, { appendUserMessage: true }); } });
   const pendingAsk = userQuestions.pending;
   const [deferredQuestionKey, setDeferredQuestionKey] = useState('');
+  const planReviews = usePlanReviews({ english: isEnglish });
+  const pendingPlanReview = planReviews.pending;
 
   function checkDirBoundary(cmd: string): boolean {
     // Check if command accesses paths outside common safe locations
@@ -852,11 +879,15 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
-  // behavior 用 auto：流式每个 token 触发一次滚动，smooth 动画叠加重渲染会掉帧
+  // 直接滚动消息容器：scrollIntoView 会滚动所有可滚动祖先，与浏览器滚动锚定拉扯导致列表闪烁。
+  // 容器 CSS 已加 overflow-anchor:none，贴底判定由 stickToBottomRef 负责。
   const scrollToBottom = () => {
-    if (stickToBottomRef.current) messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    const el = messagesContainerRef.current;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
   };
-  useEffect(() => { scrollToBottom(); }, [messages, streamingContent, isStreaming, activeTab]);
+  useEffect(() => { scrollToBottom(); }, [messages, streamingContent, isStreaming]);
+  // 技能库/流程页切回对话时消息容器重建（scrollTop 归零），恢复贴底位置
+  useEffect(() => { if (activeTab === 'chat') scrollToBottom(); }, [activeTab]);
 
   // Only a real conversation switch clears interactions. Adding the question to
   // messages must NOT immediately erase the answer controls (v0.4.47 regression).
@@ -875,8 +906,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       setIsStreaming(false);
       setStreamingContent('');
       agentPlanRef.current = null;
+      setAgentPlan(null);
       commandApprovals.clear();
       userQuestions.clear();
+      planReviews.clear();
+      setSteerNotice('');
       setDeferredQuestionKey('');
       stickToBottomRef.current = true;
     }
@@ -885,8 +919,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
   useEffect(() => {
     const savedPlan = findLatestAgentPlanCheckpoint(messages);
-    if (savedPlan) agentPlanRef.current = savedPlan;
-    else if (!aiRunningRef.current) agentPlanRef.current = null;
+    if (savedPlan) { agentPlanRef.current = savedPlan; setAgentPlan(savedPlan); }
+    else if (!aiRunningRef.current) { agentPlanRef.current = null; setAgentPlan(null); }
   }, [messages]);
 
   // 组件卸载（切换对话/计算目标/视图触发重挂载）时只安静断开连接：
@@ -1030,7 +1064,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     setIsStreaming(true);
     setStreamingReasoning('');
     setStreamingContent('');
-    setAiStatus(workflowRunContext ? '正在恢复流程进度…' : '正在连接 HPClaw Agent…');
+    setAiStatus(workflowRunContext ? '正在恢复流程进度…' : '正在连接 TRACE Agent…');
 
     // 后台运行（detached）要凭 conversationId 回写对话存档：新对话先落库拿 id 再发请求，
     // 否则用户在任务中途切走时服务端无法归属这次运行
@@ -1067,6 +1101,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           pathPolicy: agentPathPolicy,
           maxCommands: agentMaxCommands,
           maxSteps: agentMaxSteps,
+          planReview: agentPlanReview,
         },
         resumePlan: agentPlanRef.current || undefined,
         workflowRunContext: workflowRunContext || undefined,
@@ -1117,7 +1152,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       agentReaderRef.current = reader;
       const decoder = new TextDecoder();
       let buffer = '';
-      const fetchStart = Date.now();
+      const fetchClock = new AgentTurnClock();
 
       while (true) {
         // Check user-initiated stop (handleStop increments aiRunIdRef)
@@ -1126,18 +1161,20 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           break;
         }
         // 总时长上限
-        if (Date.now() - fetchStart > FETCH_TIMEOUT_MS) {
+        const fetchState = fetchClock.snapshot();
+        if ((!fetchState.waitingHuman && fetchState.activeMs > FETCH_TIMEOUT_MS) || fetchState.wallMs > 46 * 60_000) {
           fetchTimedOut = true;
           readerCloseReason = 'timeout';
           break;
         }
         // 流空闲检测：服务端静默时 read() 会永久阻塞，90s 无数据判定断流
         let readResult: ReadableStreamReadResult<Uint8Array>;
+        let readTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           readResult = await Promise.race([
             reader.read(),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('__stream_idle__')), STREAM_IDLE_MS)),
+              { readTimer = setTimeout(() => reject(new Error('__stream_idle__')), STREAM_IDLE_MS); }),
           ]);
         } catch (idleErr: any) {
           if (idleErr?.message === '__stream_idle__') {
@@ -1146,7 +1183,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
             break;
           }
           throw idleErr;
-        }
+        } finally { if (readTimer) clearTimeout(readTimer); }
         const { done, value } = readResult;
         if (done) break;
 
@@ -1160,15 +1197,29 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
           try {
             const event = JSON.parse(trimmed.slice(6));
+            fetchClock.observe(event);
             if (typeof event.requestId === 'string' && event.requestId) aiRequestIdRef.current = event.requestId;
 
             switch (event.type) {
               case 'status':
                 if (event.message) setAiStatus(String(event.message));
                 break;
+              case 'compacted': {
+                // 服务端上下文自动压缩：早期消息已被摘要替换。轻提示，不改变布局。
+                const compactedCount = Number(event.count) || 0;
+                if (compactedCount > 0) {
+                  addMessage({
+                    role: 'system',
+                    content: isEnglish
+                      ? `[🗜️ Context compacted] ${compactedCount} earlier messages were compressed into a summary to fit the model context.`
+                      : `[🗜️ 上下文压缩] 早期 ${compactedCount} 条消息已压缩为摘要，以适配模型上下文长度。`,
+                  });
+                }
+                break;
+              }
               case 'content':
                 fullText += event.content;
-                if (Date.now() - lastPreviewUpdateAt >= 50) {
+                if (Date.now() - lastPreviewUpdateAt >= 100) {
                   lastPreviewUpdateAt = Date.now();
                   setStreamingContent(fullText);
                 }
@@ -1176,7 +1227,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 break;
               case 'reasoning':
                 fullReasoning += event.content || '';
-                if (Date.now() - lastPreviewUpdateAt >= 50) {
+                if (Date.now() - lastPreviewUpdateAt >= 100) {
                   lastPreviewUpdateAt = Date.now();
                   setStreamingReasoning(fullReasoning);
                 }
@@ -1256,6 +1307,24 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'confirm_resolved':
                 commandApprovals.handleEvent(event);
                 break;
+              case 'plan_review': {
+                planReviews.handleEvent(event);
+                setAiStatus(isEnglish ? 'Waiting for plan approval…' : '等待你审批计划…');
+                break;
+              }
+              case 'plan_review_resolved': {
+                planReviews.handleEvent(event);
+                if (event.action === 'approve' || event.action === 'edit') {
+                  setAiStatus(isEnglish ? 'Plan approved, continuing…' : '计划已批准，继续执行…');
+                }
+                break;
+              }
+              case 'steer_applied':
+                setSteerNotice(isEnglish ? 'Steer delivered — the AI is responding to it.' : '插话已注入，AI 正在响应你的最新指示。');
+                break;
+              case 'steer_unconsumed':
+                setSteerNotice(isEnglish ? 'The turn ended before the steer was consumed; it is saved in the conversation.' : '本轮在插话生效前已结束，内容已存入对话，下一轮生效。');
+                break;
               case 'ask_done':
                 // Agent finished after asking. Clear streaming preview first
                 // so the final message doesn't visually duplicate.
@@ -1271,6 +1340,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'done':
                 commandApprovals.clear();
                 userQuestions.clear();
+                planReviews.clear();
+                setSteerNotice('');
                 aiRunningRef.current = false;
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
                 setStreamingContent('');
@@ -1281,7 +1352,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 } else if (isAgentDoneCancelled(fullText, event.content)) {
                   addMessage({ role: 'system', content: '[🛑 Agent cancelled]' });
                 }
-                if (Array.isArray(agentPlanRef.current?.steps) && agentPlanRef.current.steps.every((step: any) => step.status === 'done' || step.status === 'skipped')) {
+                if (agentPlanRef.current?.status === 'cancelled'
+                  || (Array.isArray(agentPlanRef.current?.steps) && agentPlanRef.current.steps.every((step: any) => step.status === 'done' || step.status === 'skipped'))) {
                   persistAgentPlan(null);
                 }
                 fullText = '';
@@ -1313,6 +1385,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'error':
                 commandApprovals.clear();
                 userQuestions.clear();
+                planReviews.clear();
+                setSteerNotice('');
                 addMessage({ role: 'system', content: `[❌ Error] ${event.error}` });
                 setErrorMessage(String(event.error || 'AI 请求出错'));
                 // 错误事件本身就是本轮的终止状态。不等待供应商/服务端
@@ -1406,6 +1480,19 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'confirm_resolved':
                 commandApprovals.handleEvent(event);
                 break;
+              case 'plan_review':
+                planReviews.handleEvent(event);
+                setAiStatus(isEnglish ? 'Waiting for plan approval…' : '等待你审批计划…');
+                break;
+              case 'plan_review_resolved':
+                planReviews.handleEvent(event);
+                break;
+              case 'steer_applied':
+                setSteerNotice(isEnglish ? 'Steer delivered — the AI is responding to it.' : '插话已注入，AI 正在响应你的最新指示。');
+                break;
+              case 'steer_unconsumed':
+                setSteerNotice(isEnglish ? 'The turn ended before the steer was consumed; it is saved in the conversation.' : '本轮在插话生效前已结束，内容已存入对话，下一轮生效。');
+                break;
               case 'ask':
                 userQuestions.handleEvent(event);
                 setAiStatus(isEnglish ? 'Waiting for your answer…' : '正在等待你回答…');
@@ -1418,7 +1505,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                 break;
               case 'content':
                 fullText += event.content;
-                if (Date.now() - lastPreviewUpdateAt >= 50) {
+                if (Date.now() - lastPreviewUpdateAt >= 100) {
                   lastPreviewUpdateAt = Date.now();
                   setStreamingContent(fullText);
                 }
@@ -1430,6 +1517,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'done': {
                 commandApprovals.clear();
                 userQuestions.clear();
+                planReviews.clear();
+                setSteerNotice('');
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1465,6 +1554,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               case 'error':
                 commandApprovals.clear();
                 userQuestions.clear();
+                planReviews.clear();
+                setSteerNotice('');
                 aiRunningRef.current = false;
                 aiRequestIdRef.current = '';
                 if (isCurrentAiRun(aiRunIdRef.current, runId)) setIsAiLoading(false);
@@ -1562,6 +1653,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     setIsAiLoading(true);
     setAiStatus('AI 正在准备…');
     setErrorMessage('');
+    setSteerNotice('');
     // Fresh AbortController per request — never reuse a stale one.
     const controller = new AbortController();
     abortRef.current = controller;
@@ -1620,6 +1712,33 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
   };
 
+  /**
+   * 中途插话：AI 运行中向 /api/ai/steer 投递，不打断当前 SSE。
+   * 服务端会把插话在下一个模型步注入；若该请求正挂着反问，插话直接作为回答送达。
+   * 返回 false 表示运行已结束/不可达，调用方回退为新一轮对话。
+   */
+  const steerActiveRun = async (text: string): Promise<boolean> => {
+    const requestId = aiRequestIdRef.current;
+    if (!requestId) return false;
+    try {
+      const response = await fetch('/api/ai/steer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const receipt = await response.json().catch(() => null);
+      if (!response.ok || !receipt?.success) return false;
+      addMessage({ role: 'user', content: text });
+      setSteerNotice(receipt.delivered === 'question'
+        ? (isEnglish ? 'Your message was delivered as the answer to the pending question.' : '插话已作为当前问题的回答送达。')
+        : (isEnglish ? 'Noted — the AI will respond after its current step.' : '已插话，AI 将在当前步骤后响应。'));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const submitChatInput = async () => {
     const baseText = inputValue.trim();
     if ((!baseText && attachments.length === 0) || isChatInputDisabled) return;
@@ -1628,9 +1747,10 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     resetChatInputHeight();
     setInputValue('');
     if (attachments.length > 0) setAttachments([]);
-    if (!await answerLiveQuestion(userText)) {
-      await submitToAI(userText, { appendUserMessage: true });
-    }
+    if (await answerLiveQuestion(userText)) return;
+    // AI 运行中：插话改向而不是中止当前任务；运行已结束时回退为新一轮对话。
+    if (aiRunningRef.current && aiRequestIdRef.current && await steerActiveRun(userText)) return;
+    await submitToAI(userText, { appendUserMessage: true });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1727,6 +1847,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     stoppedByUserRef.current = true;
     commandApprovals.clear();
     userQuestions.clear();
+    planReviews.clear();
+    setSteerNotice('');
     setIsAiLoading(false);
     setIsStreaming(false);
     setAiStatus('AI 已停止');
@@ -1739,7 +1861,9 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     autoResizeChatInput();
   };
 
-  const isChatInputDisabled = shouldDisableChatInput(isAiLoading, loadingConversationId) || userQuestions.busy;
+  // 回答送达中（userQuestions.busy）不再禁用输入框：送达有 10s 超时兜底，
+  // 期间用户应能继续输入；busy 仍驱动问答卡/对话框的 loading 展示。
+  const isChatInputDisabled = shouldDisableChatInput(isAiLoading, loadingConversationId);
   // 流程卡片用的真实集群会话：本地工作台（App 传入 'local-workbench'）视为未连接集群
   const clusterSessionId = sessionId && sessionId !== 'local-workbench' ? sessionId : null;
   // 稳定引用：MessageBubble/memo 子树共享，避免每次渲染击穿 memo
@@ -1756,12 +1880,39 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
     void submitToAI(text, { appendUserMessage: true });
   };
   const [expandExecutionDetails, setExpandExecutionDetails] = useState(false);
-  const reportContexts = useMemo(() => new Map(messages.flatMap((message, i) => {
-    if (!/\.x?html?\b/i.test(message.content)) return [];
-    return [[i, reportBasePaths(messages.slice(0, i + 1))] as const];
-  })), [messages]);
+  // MessageBubble 的 React.memo 依赖 msg 引用稳定：strip 派生对象按 message 引用缓存
+  // （WeakMap），同一 message 引用复用同一 msg 对象，避免每次渲染新建击穿 memo。
+  const strippedMessagesRef = useRef(new WeakMap<Message, Message | null>());
+  const getStrippedMessage = (message: Message, strip: (content: string) => string): Message | null => {
+    if (strippedMessagesRef.current.has(message)) return strippedMessagesRef.current.get(message) ?? null;
+    const remainder = strip(message.content);
+    const derived = remainder ? { ...message, content: remainder } : null;
+    strippedMessagesRef.current.set(message, derived);
+    return derived;
+  };
+  // reportBasePaths 每次返回新数组会击穿含 .html 气泡的 memo：缓存上次的 Map 与 messages，
+  // 与上次渲染引用相等的前缀条目直接复用旧数组，只有真正变化的 index 才新建。
+  const reportContextsCacheRef = useRef<{ messages: Message[]; map: Map<number, string[]> } | null>(null);
+  const reportContexts = useMemo(() => {
+    const prev = reportContextsCacheRef.current;
+    let sharedPrefix = 0;
+    if (prev) {
+      const limit = Math.min(prev.messages.length, messages.length);
+      while (sharedPrefix < limit && prev.messages[sharedPrefix] === messages[sharedPrefix]) sharedPrefix += 1;
+    }
+    const next = new Map<number, string[]>();
+    messages.forEach((message, i) => {
+      if (!/\.x?html?\b/i.test(message.content)) return;
+      const cached = prev && i < sharedPrefix ? prev.map.get(i) : undefined;
+      next.set(i, cached ?? reportBasePaths(messages.slice(0, i + 1)));
+    });
+    reportContextsCacheRef.current = { messages, map: next };
+    return next;
+  }, [messages]);
   // Rendering and model context budgets are independent: never discard older chat rows.
   const conversationTimeline = useMemo(() => buildConversationTimeline(messages, 0), [messages]);
+  // contentVisibility 虚拟化只对长对话启用：短对话下估算高/真实高切换会引起布局抖动
+  const virtualizeMessages = messages.length > 100;
   const runCardIndices = useMemo(() => {
     const indices = new Map<string, number>();
     messages.forEach((message, index) => {
@@ -1782,7 +1933,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
   if (!isOpen) return null;
 
   return (
-    <div className={`relative h-full flex flex-col bg-scholar-900 ${workspaceLayout ? 'hpclaw-chat-workspace' : 'border-r border-scholar-700'}`}>
+    <div className={`relative h-full flex flex-col bg-scholar-900 ${workspaceLayout ? 'trace-chat-workspace' : 'border-r border-scholar-700'}`}>
       {/* 主工作台使用轻量标题栏；旧侧栏模式仍保留原标签导航。 */}
       <div className={`border-b border-scholar-700 bg-scholar-900 flex items-center justify-between gap-2 shrink-0 ${workspaceLayout ? 'h-14 px-5' : 'px-2 py-2'}`}>
         {workspaceLayout ? (
@@ -1847,7 +1998,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
           {isAiSetup && activeTab === 'chat' && (
             <>
               {onNewChat && (
-                <button onClick={() => { agentPlanRef.current = null; onNewChat(); }} className="btn-ghost !px-2 !py-1.5 text-xs" aria-label="新对话" title="新对话">
+                <button onClick={() => { agentPlanRef.current = null; setAgentPlan(null); onNewChat(); }} className="btn-ghost !px-2 !py-1.5 text-xs" aria-label="新对话" title="新对话">
                   <MessageSquarePlus className="w-4 h-4" /> <span className="max-md:hidden">新对话</span>
                 </button>
               )}
@@ -1926,11 +2077,13 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   pathPolicy={agentPathPolicy}
                   maxCommands={agentMaxCommands}
                   maxSteps={agentMaxSteps}
+                  planReview={agentPlanReview}
                   onPlanningPolicyChange={setAgentPlanningPolicy}
                   onConfirmationPolicyChange={setAgentConfirmationPolicy}
                   onPathPolicyChange={setAgentPathPolicy}
                   onMaxCommandsChange={setAgentMaxCommands}
                   onMaxStepsChange={setAgentMaxSteps}
+                  onPlanReviewChange={setAgentPlanReview}
                 />
               </div>
               <div className="shrink-0 border-t border-scholar-700 p-4">
@@ -2004,11 +2157,13 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               pathPolicy={agentPathPolicy}
               maxCommands={agentMaxCommands}
               maxSteps={agentMaxSteps}
+              planReview={agentPlanReview}
               onPlanningPolicyChange={setAgentPlanningPolicy}
               onConfirmationPolicyChange={setAgentConfirmationPolicy}
               onPathPolicyChange={setAgentPathPolicy}
               onMaxCommandsChange={setAgentMaxCommands}
               onMaxStepsChange={setAgentMaxSteps}
+              onPlanReviewChange={setAgentPlanReview}
             />
             <button type="submit" className="btn-primary w-full">保存设置</button>
           </form>
@@ -2017,6 +2172,8 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
       ) : (
         /* Chat area */
         <div className="flex-1 flex flex-col min-h-0">
+          {/* 任务清单面板：有计划时显示进度与当前步骤，无计划整条隐藏 */}
+          <AgentPlanPanel plan={agentPlan} english={isEnglish} />
           {/* Error banner */}
           {errorMessage && (
             <div className="mx-3 mt-2 p-2 bg-[rgb(var(--danger-rgb)/0.08)] border border-[rgb(var(--danger-rgb)/0.3)] rounded-lg flex items-start gap-2 text-[var(--color-danger)] text-xs shrink-0">
@@ -2038,7 +2195,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
             </div>
           )}
           {/* Messages */}
-          <div ref={messagesContainerRef} onScroll={handleMessagesScroll} data-chat-messages className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-1">
+          <div ref={messagesContainerRef} onScroll={handleMessagesScroll} data-chat-messages className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-1 [overflow-anchor:none]">
             {loadingConversationId && (
               <div className="flex flex-col items-center justify-center h-full text-scholar-400 text-xs gap-3 px-4">
                 <Loader2 className="w-8 h-8 animate-spin text-accent" />
@@ -2049,7 +2206,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               <div className="flex flex-col items-center justify-center h-full text-scholar-400 text-xs gap-3 px-4 pb-10">
                 <span className="mb-1 flex h-12 w-12 items-center justify-center rounded-lg bg-accent/10 text-accent"><Bot className="w-6 h-6" /></span>
                 <p className="text-lg text-scholar-100 font-semibold">今天想完成什么任务？</p>
-                <p className="text-center max-w-lg text-sm leading-6">可以先讨论方案，也可以选择左侧文件或流程；需要计算时，HPClaw 会调用后台计算资源。</p>
+                <p className="text-center max-w-lg text-sm leading-6">可以先讨论方案，也可以选择左侧文件或流程；需要计算时，TRACE 会调用后台计算资源。</p>
                 <div className="grid grid-cols-2 gap-2 w-full max-w-2xl mt-3">
                   {['对当前目录的 FASTQ 文件做质控分析',
                     '查看计算资源作业状态并分析资源使用',
@@ -2083,11 +2240,11 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               if (message.role === 'user') {
                 const runContext = parseWorkflowExecutionContext(message.content);
                 if (runContext) {
-                  const remainder = stripWorkflowExecutionMarkers(message.content);
+                  const stripped = getStrippedMessage(message, stripWorkflowExecutionMarkers);
                   const showCard = runCardIndices.get(workflowRunIdentity(runContext)) === absoluteIndex;
                   return (
                     <div key={absoluteIndex} className="mx-1 mb-3 max-w-[95%]">
-                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
+                      {stripped && <MessageBubble msg={stripped} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
                       {showCard && <WorkflowRunCard
                         context={runContext}
                         sessionId={clusterSessionId}
@@ -2106,10 +2263,10 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
               if (message.role !== 'system') {
                 const directive = parseWorkflowConfigureDirective(message.content);
                 if (directive) {
-                  const remainder = stripWorkflowConfigureDirectives(message.content);
+                  const stripped = getStrippedMessage(message, stripWorkflowConfigureDirectives);
                   return (
                     <div key={absoluteIndex} className="mx-1 mb-3 max-w-[95%] space-y-1.5">
-                      {remainder && <MessageBubble msg={{ ...message, content: remainder }} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
+                      {stripped && <MessageBubble msg={stripped} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} />}
                       <WorkflowConfigCard
                         workflowId={directive.workflowId}
                         sessionId={clusterSessionId}
@@ -2121,7 +2278,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   );
                 }
               }
-              return <div key={absoluteIndex} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' }}><MessageBubble msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} /></div>;
+              return <div key={absoluteIndex} style={virtualizeMessages ? { contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' } : undefined}><MessageBubble msg={message} index={absoluteIndex} sessionId={sessionId} workspace={agentWorkspace || undefined} workflowRunDir={workflowRunDir} remoteBasePaths={reportContexts.get(absoluteIndex)} onOpenWebPanel={handleOpenWebPanel} expandDetails={expandExecutionDetails} /></div>;
             })}
 
             {/* Streaming preview */}
@@ -2234,6 +2391,17 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
 
 
           {userQuestions.notice && !pendingAsk && <p role="status" className="mx-3 mb-2 text-xs text-scholar-300">{userQuestions.notice}</p>}
+          {planReviews.notice && !pendingPlanReview && <p role="status" className="mx-3 mb-2 text-xs text-scholar-300">{planReviews.notice}</p>}
+          {pendingPlanReview && (
+            <PlanReviewCard
+              key={pendingPlanReview.id}
+              review={pendingPlanReview}
+              english={isEnglish}
+              busy={planReviews.busy}
+              error={planReviews.error}
+              onDecide={planReviews.decide}
+            />
+          )}
           {pendingAsk && pendingAsk.key === deferredQuestionKey && <div className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
             <div className="min-w-0">
               <p className="text-sm text-scholar-200">{userQuestions.busy
@@ -2285,7 +2453,7 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   </div>
                 )}
                 <div className="flex items-center gap-1.5">
-                {window.hpclawDesktop?.dialog ? (
+                {window.traceDesktop?.dialog ? (
                   <>
                     <button
                       type="button"
@@ -2421,6 +2589,9 @@ export default function AIChat({ isOpen, executeCommand, socket, sessionId, onSk
                   ? ' — You can stop at any time; an AI timeout will not disconnect the compute resource.'
                   : '，可随时停止；AI 超时不会断开计算资源'}
               </p>
+            )}
+            {steerNotice && (
+              <p role="status" className="text-xs text-accent mt-1 text-center">{steerNotice}</p>
             )}
           </div>
         </div>

@@ -7,7 +7,7 @@ describe('reproducible clean platform installs', () => {
     const files = [
       'vendor/dsh/node_modules/sharp/dist/index.cjs',
       'vendor/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
-      'vendor/dsh/node_modules/@aws-crypto/sha256-js/build/main/index.js',
+      'vendor/dsh/node_modules/@deepseek-ai/dsh-sdk-protocol/lib/index.js',
       'vendor/dsh/node_modules/openai/resources/conversations/index.js',
     ];
     for (const file of files) expect(fs.existsSync(file), file).toBe(true);

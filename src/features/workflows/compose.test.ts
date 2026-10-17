@@ -57,7 +57,7 @@ describe('composeUseMessage 隔离工作目录协议', () => {
 
 describe('composeRunMessage 正式运行协议', () => {
   it('只携带运行标记，参数和步骤从结构化 run.json 读取', () => {
-    const run = { runId: 'run-001', runDir: '/home/u/hpclaw_flows/wf/03_workspace/runs/run-001' };
+    const run = { runId: 'run-001', runDir: '/home/u/trace_flows/wf/03_workspace/runs/run-001' };
     const msg = composeRunMessage(makeWorkflow(), {
       inputs: ['/data/projectA/fastq'],
       paramValues: { INPUT_DIR: '/data/projectA/fastq', THREADS: '8', EMPTY: '' },
@@ -77,5 +77,31 @@ describe('composeRunMessage 正式运行协议', () => {
     const msg = composeRunMessage(makeWorkflow(), { inputs: [], paramValues: {} });
     expect(msg).toContain('使用流程面板创建运行记录');
     expect(msg).toContain('环境尚未检查');
+  });
+});
+
+describe('composeRunMessage 启动前整体检查话术', () => {
+  const run = { runId: 'run-001', runDir: '/home/u/trace_flows/wf/03_workspace/runs/run-001' };
+
+  it('整体检查通过：写明扫描范围已覆盖，只有新问题才暂停询问', () => {
+    const msg = composeRunMessage(makeWorkflow(), {
+      inputs: [], paramValues: {}, run,
+      preRunCheck: { passed: true },
+    });
+    expect(msg).toContain('已完成启动前整体检查');
+    expect(msg).toContain('本次扫描未覆盖的新问题');
+    // 不再使用"遇到缺项才询问、不扫描其他目录"的旧话术
+    expect(msg).not.toContain('不扫描其他目录');
+    expect(msg).not.toContain('环境尚未检查');
+  });
+
+  it('用户强制运行：列出已接受的警告并要求不重复询问', () => {
+    const msg = composeRunMessage(makeWorkflow(), {
+      inputs: [], paramValues: {}, run,
+      preRunCheck: { passed: false, acceptedWarnings: ['可选库：待用户指定路径（OPTIONAL_DB 未提供）'] },
+    });
+    expect(msg).toContain('未全部通过');
+    expect(msg).toContain('可选库：待用户指定路径（OPTIONAL_DB 未提供）');
+    expect(msg).toContain('不要重复询问');
   });
 });

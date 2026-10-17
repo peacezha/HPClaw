@@ -66,5 +66,17 @@ function launchEnvironmentOf(ctx) {
 		values: process.env
 	}]);
 }
+/**
+* Detect SSH from non-empty SSH_CONNECTION or SSH_TTY inherited at launch.
+* Project and user `.env` values never establish an SSH session.
+* @param environment - the launcher's environment snapshot.
+* @returns whether the inherited process layer carries either SSH marker.
+*/
+function launchedThroughSsh(environment) {
+	return ["SSH_CONNECTION", "SSH_TTY"].some((name) => {
+		const value = environment.getFrom(name, ["process"])?.value;
+		return value !== void 0 && value !== "";
+	});
+}
 //#endregion
-export { DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot, launchEnvironmentOf };
+export { DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot, launchEnvironmentOf, launchedThroughSsh };

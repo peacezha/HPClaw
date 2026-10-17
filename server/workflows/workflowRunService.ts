@@ -6,6 +6,7 @@ import { renderWorkflowCommand, type Workflow } from './workflowTypes';
 import { translateSchedulerDirectives } from '../notifications/scheduler';
 import { reconcileRunsWithScheduler } from './runAnnotate';
 import { workflowSlug } from '../../shared/flowManifest';
+import { localizeWorkflowMetadata, normalizeReportLanguage, reportCommandForLanguage } from '../../shared/workflowLocale';
 import { qcPauseReason, unresolvedQcFailures, QC_FAILURE_MESSAGE, QC_WARNING_MESSAGE } from '../../shared/workflowQc';
 import type {
   WorkflowRun,
@@ -113,6 +114,7 @@ function cleanStepCommands(value: unknown): Record<number, string> {
 export function sanitizeRunConfig(value: unknown): WorkflowRunConfig {
   const v = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
+    ...(v.reportLanguage === 'zh' || v.reportLanguage === 'en' ? { reportLanguage: v.reportLanguage } : {}),
     inputs: Array.isArray(v.inputs) ? v.inputs.map(String).map(s => s.trim()).filter(Boolean).slice(0, 200) : [],
     params: cleanRecord(v.params),
     stepParams: cleanStepParams(v.stepParams),
@@ -135,7 +137,7 @@ export function resolveWorkflowRunDir(home: string, runDir: string): string | nu
   const trimmed = String(runDir || '').trim();
   if (!trimmed || trimmed.includes('..') || /[\r\n\0]/.test(trimmed)) return null;
   const expanded = trimmed.startsWith('~/') ? `${normalizedHome}/${trimmed.slice(2)}` : trimmed;
-  if (!expanded.startsWith(`${normalizedHome}/hpclaw_flows/`)) return null;
+  if (![`${normalizedHome}/trace_flows/`, `${normalizedHome}/hpclaw_flows/`].some(root => expanded.startsWith(root))) return null;
   if (!expanded.includes('/03_workspace/runs/')) return null;
   return expanded.replace(/\/+$/, '');
 }
@@ -185,7 +187,8 @@ export function buildWorkflowStepScript(
   const step = workflow.steps[stepNumber - 1];
   if (!step) throw new Error(`步骤不存在: ${stepNumber}`);
   const flowDir = runDir.split('/03_workspace/runs/')[0] || runDir;
-  const template = config.stepCommandOverrides[stepNumber] || step.command || '';
+  const language = normalizeReportLanguage(config.reportLanguage, workflow.id.endsWith('-en') ? 'en' : 'zh');
+  const template = reportCommandForLanguage(config.stepCommandOverrides[stepNumber] || step.command || '', language);
   const rendered = translateSchedulerDirectives(
     renderWorkflowCommand(template, workflowRunValues(config, stepNumber, runDir, flowDir))
       .replaceAll('<RUN>', runDir)
@@ -206,38 +209,42 @@ export function buildWorkflowStepScript(
     ...schedulerDirectives,
     'set -eo pipefail',
     '',
-    `# HPClaw 流程：${workflow.name}`,
-    `# 步骤 ${stepNumber}/${workflow.steps.length}：${step.title}`,
-    '# 这是本步骤实际运行脚本。可以在流程面板中查看和修改；保存后，尚未提交的步骤会使用修改内容。',
-    '# 已经提交到调度器的作业不会被修改；需要重跑时请先确认作业状态。',
-    ...(step.notes ? [`# 注意：${step.notes.replace(/\r?\n/g, ' ')}`] : []),
+    `# TRACE ${language === 'en' ? 'workflow: ' : '流程：'}${workflow.name}`,
+    `# ${language === 'en' ? 'Step ' : '步骤 '}${stepNumber}/${workflow.steps.length}${language === 'en' ? ': ' : '：'}${step.title}`,
+    language === 'en' ? '# This is the executable step script. Saved edits apply only to steps not yet submitted.' : '# 这是本步骤实际运行脚本。可以在流程面板中查看和修改；保存后，尚未提交的步骤会使用修改内容。',
+    language === 'en' ? '# Submitted scheduler jobs are not changed. Check their status before rerunning.' : '# 已经提交到调度器的作业不会被修改；需要重跑时请先确认作业状态。',
+    ...(step.notes ? [`# ${language === 'en' ? 'Note: ' : '注意：'}${step.notes.replace(/\r?\n/g, ' ')}`] : []),
     ...(uniqueUnresolved.length > 0
-      ? [`# HPCLAW_REVIEW_REQUIRED：以下参数尚未确定，请在运行前补齐：${uniqueUnresolved.join(', ')}`]
+      ? [`# TRACE_REVIEW_REQUIRED: ${language === 'en' ? 'Resolve these parameters before running: ' : '以下参数尚未确定，请在运行前补齐：'}${uniqueUnresolved.join(', ')}`]
       : []),
     '',
-    renderedBody || '# 当前步骤没有可直接执行的命令，请在此处补充。',
+    `export TRACE_REPORT_LANGUAGE=${language}`,
+    renderedBody || (language === 'en' ? '# No executable command is defined; add it here.' : '# 当前步骤没有可直接执行的命令，请在此处补充。'),
     '',
   ].join('\n');
 }
 
-function buildCodeReadme(workflow: Workflow, runDir: string): string {
+function buildCodeReadme(workflow: Workflow, runDir: string, language: 'zh' | 'en' = 'zh'): string {
+  const en = language === 'en';
   const graph = resolveWorkflowStepGraph(workflow);
   const stepLines = workflow.steps.map((step, index) => {
-    const deps = graph[index].dependsOn.length ? `；依赖 ${graph[index].dependsOn.join('、')}` : '；无前置依赖';
-    return `- 步骤 ${index + 1} [${graph[index].stepId}]：\`step-${String(index + 1).padStart(2, '0')}.sh\` — ${step.title}${deps}`;
+    const deps = graph[index].dependsOn.length
+      ? `${en ? '; depends on ' : '；依赖 '}${graph[index].dependsOn.join(en ? ', ' : '、')}`
+      : (en ? '; no prerequisite' : '；无前置依赖');
+    return `- ${en ? 'Step ' : '步骤 '}${index + 1} [${graph[index].stepId}]${en ? ': ' : '：'}\`step-${String(index + 1).padStart(2, '0')}.sh\` — ${step.title}${deps}`;
   });
   return [
-    `# ${workflow.name} — 本次运行代码`,
+    `# ${workflow.name} — ${en ? 'Run scripts' : '本次运行代码'}`,
     '',
-    `运行目录：\`${runDir}\``,
+    `${en ? 'Run directory: ' : '运行目录：'}\`${runDir}\``,
     '',
-    '这里保存本次运行真正使用的脚本，一个流程步骤对应一个脚本。',
-    '你可以在 HPClaw 的“查看/修改代码”中编辑；Agent 在执行尚未提交的步骤前会读取对应脚本。',
-    '修改脚本不会改变已经提交到调度器的作业。手动在终端执行脚本时，run.json 的步骤状态不会自动更新。',
+    en ? 'These are the executable scripts for this run, one per workflow step.' : '这里保存本次运行真正使用的脚本，一个流程步骤对应一个脚本。',
+    en ? 'Edit them in TRACE using View/edit code. The agent reads each script before executing a step that has not yet been submitted.' : '你可以在 TRACE 的“查看/修改代码”中编辑；Agent 在执行尚未提交的步骤前会读取对应脚本。',
+    en ? 'Edits do not change submitted scheduler jobs. Running a script manually does not automatically update step states in run.json.' : '修改脚本不会改变已经提交到调度器的作业。手动在终端执行脚本时，run.json 的步骤状态不会自动更新。',
     '',
     ...stepLines,
     '',
-    '日志保存在 `../logs/`，结果保存在 `../results/`，运行状态保存在 `../run.json`。',
+    en ? 'Logs: `../logs/`. Results: `../results/`. Run state: `../run.json`.' : '日志保存在 `../logs/`，结果保存在 `../results/`，运行状态保存在 `../run.json`。',
     '',
   ].join('\n');
 }
@@ -275,31 +282,43 @@ export function resolveWorkflowStepGraph(workflow: Pick<Workflow, 'steps'>): Res
   return graph;
 }
 
-export async function writeWorkflowRun(exec: RunExec, home: string, run: WorkflowRun): Promise<void> {
+export async function writeWorkflowRun(exec: RunExec, home: string, run: WorkflowRun, timeoutMs = 20_000): Promise<void> {
   const safeDir = resolveWorkflowRunDir(home, run.runDir);
   if (!safeDir) throw new Error('非法流程运行目录');
-  await exec(atomicJsonCommand(`${safeDir}/run.json`, run), 20_000);
+  await exec(atomicJsonCommand(`${safeDir}/run.json`, run), timeoutMs);
+}
+
+/** reconcile 链路（读 + 条件写）的 SSH 超时：大 LSF 集群上 cat/写 run.json 可能远超 15s。 */
+export interface RunIoTimeouts {
+  readTimeoutMs?: number;
+  writeTimeoutMs?: number;
 }
 
 /** Scheduler reconciliation shares the same lock as Agent/user writes: never overwrite a newer step. */
-export async function reconcileWorkflowRunWithScheduler(exec: RunExec, home: string, runDir: string, states: Map<string, string>): Promise<WorkflowRun> {
+export async function reconcileWorkflowRunWithScheduler(
+  exec: RunExec,
+  home: string,
+  runDir: string,
+  states: Map<string, string>,
+  timeouts: RunIoTimeouts = {},
+): Promise<WorkflowRun> {
   const safeDir = resolveWorkflowRunDir(home, runDir);
   if (!safeDir) throw new Error('流程运行目录无效');
   return withRunUpdateLock(safeDir, async () => {
-    const before = await readWorkflowRun(exec, home, safeDir);
+    const before = await readWorkflowRun(exec, home, safeDir, timeouts.readTimeoutMs ?? 15_000);
     const after = reconcileRunsWithScheduler([before], states)[0];
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       after.revision = (before.revision || 0) + 1;
-      await writeWorkflowRun(exec, home, after);
+      await writeWorkflowRun(exec, home, after, timeouts.writeTimeoutMs ?? 20_000);
     }
     return after;
   });
 }
 
-export async function readWorkflowRun(exec: RunExec, home: string, runDir: string): Promise<WorkflowRun> {
+export async function readWorkflowRun(exec: RunExec, home: string, runDir: string, timeoutMs = 15_000): Promise<WorkflowRun> {
   const safeDir = resolveWorkflowRunDir(home, runDir);
   if (!safeDir) throw new Error('非法流程运行目录');
-  const raw = await exec(`cat ${shq(`${safeDir}/run.json`)}`, 15_000);
+  const raw = await exec(`cat ${shq(`${safeDir}/run.json`)}`, timeoutMs);
   const parsed = JSON.parse(raw) as WorkflowRun;
   if (!parsed || !parsed.runId || !Array.isArray(parsed.steps)) throw new Error('运行记录格式无效');
   parsed.runDir = safeDir;
@@ -313,6 +332,7 @@ function markdownCell(value: unknown): string {
 
 /** 不调用模型，直接从已验证的运行证据生成轻量报告，避免额外 Token。 */
 export function buildWorkflowRunSummary(run: WorkflowRun): string {
+  const en = normalizeReportLanguage(run.config?.reportLanguage, run.workflowId.endsWith('-en') ? 'en' : 'zh') === 'en';
   const issues = run.steps.filter(step => step.qc?.status === 'fail' || step.qc?.status === 'warn');
   const stepRows = run.steps.map(step => [
     step.n,
@@ -323,30 +343,30 @@ export function buildWorkflowRunSummary(run: WorkflowRun): string {
     step.qc?.status || '',
   ].join(' | '));
   return [
-    `# ${run.workflowName} — 运行报告`,
+    `# ${run.workflowName} — ${en ? 'Run report' : '运行报告'}`,
     '',
-    `- 运行 ID：\`${run.runId}\``,
-    `- 状态：${run.status}`,
-    `- 开始时间：${new Date(run.startedAt).toISOString()}`,
-    `- 完成时间：${new Date(run.endedAt || run.updatedAt).toISOString()}`,
-    `- 工作目录：\`${run.runDir}\``,
+    `- ${en ? 'Run ID: ' : '运行 ID：'}\`${run.runId}\``,
+    `- ${en ? 'Status: ' : '状态：'}${run.status}`,
+    `- ${en ? 'Started: ' : '开始时间：'}${new Date(run.startedAt).toISOString()}`,
+    `- ${en ? 'Completed: ' : '完成时间：'}${new Date(run.endedAt || run.updatedAt).toISOString()}`,
+    `- ${en ? 'Working directory: ' : '工作目录：'}\`${run.runDir}\``,
     '',
-    ...(issues.length ? ['## 质控风险提醒', '', ...issues.flatMap(step => [
+    ...(issues.length ? [en ? '## QC risk warnings' : '## 质控风险提醒', '', ...issues.flatMap(step => [
       `### ${step.n}. ${step.title} — QC ${step.qc!.status}`,
       '',
-      step.qc!.status === 'fail' ? QC_FAILURE_MESSAGE.replace('；自动推进已暂停。', '。') : QC_WARNING_MESSAGE,
-      ...(step.qcOverride ? [`用户已于 ${new Date(step.qcOverride.approvedAt).toISOString()} 明确确认继续；这不代表质控通过。`] : []),
+      en ? (step.qc!.status === 'fail' ? 'QC failed: poor quality; downstream analysis is not recommended.' : 'QC warning: review the metrics before proceeding.') : step.qc!.status === 'fail' ? QC_FAILURE_MESSAGE.replace('；自动推进已暂停。', '。') : QC_WARNING_MESSAGE,
+      ...(step.qcOverride ? [en ? `The user acknowledged continuation at ${new Date(step.qcOverride.approvedAt).toISOString()}; this does not establish a QC pass.` : `用户已于 ${new Date(step.qcOverride.approvedAt).toISOString()} 明确确认继续；这不代表质控通过。`] : []),
       ...Object.entries(step.qc!.metrics || {}).map(([key, value]) => `- ${markdownCell(key)}: ${markdownCell(value)}`),
       ...(step.summary ? [markdownCell(step.summary)] : []),
       '',
     ])] : []),
-    '## 步骤与证据',
+    en ? '## Steps and evidence' : '## 步骤与证据',
     '',
-    '序号 | 步骤 | 状态 | 结果摘要 | 输出 | QC',
+    en ? 'No. | Step | Status | Summary | Outputs | QC' : '序号 | 步骤 | 状态 | 结果摘要 | 输出 | QC',
     '--- | --- | --- | --- | --- | ---',
     ...stepRows,
     '',
-    '> 本报告由 HPClaw 根据 run.json 中已经验证的步骤状态、输出和 QC 证据自动生成，不额外调用 AI 模型。',
+    en ? '> TRACE generated this report from verified step states, outputs and QC evidence in run.json, without an additional AI call.' : '> 本报告由 TRACE 根据 run.json 中已经验证的步骤状态、输出和 QC 证据自动生成，不额外调用 AI 模型。',
     '',
   ].join('\n');
 }
@@ -362,9 +382,12 @@ export async function createWorkflowRun(
   const now = Date.now();
   const slug = workflowSlug(workflow.name);
   const runId = `${slug}-${formatRunStamp(now)}-${crypto.randomBytes(2).toString('hex')}`;
-  const runDir = `${home.replace(/\/+$/, '')}/hpclaw_flows/${slug}/03_workspace/runs/${runId}`;
+  const runDir = `${home.replace(/\/+$/, '')}/trace_flows/${slug}/03_workspace/runs/${runId}`;
   const codeDir = `${runDir}/code`;
   const config = sanitizeRunConfig(rawConfig);
+  config.reportLanguage = normalizeReportLanguage(config.reportLanguage, workflow.id.endsWith('-en') ? 'en' : 'zh');
+  workflow = localizeWorkflowMetadata(workflow, config.reportLanguage);
+  workflow.steps = workflow.steps.map(step => ({ ...step, command: reportCommandForLanguage(step.command, config.reportLanguage!) }));
   const graph = resolveWorkflowStepGraph(workflow);
   const stepScripts = workflow.steps.map((_step, index) =>
     buildWorkflowStepScript(workflow, config, index + 1, runDir, deploy?.scheduler ?? 'lsf'));
@@ -403,7 +426,7 @@ export async function createWorkflowRun(
   if (!safeDir) throw new Error('无法创建流程运行目录');
   const commands = [
     `mkdir -p ${shq(codeDir)} ${shq(`${safeDir}/logs`)} ${shq(`${safeDir}/results`)}`,
-    atomicTextCommand(`${codeDir}/README.md`, buildCodeReadme(workflow, safeDir)),
+    atomicTextCommand(`${codeDir}/README.md`, buildCodeReadme(workflow, safeDir, config.reportLanguage)),
     ...workflow.steps.map((_step, index) => atomicTextCommand(
       workflowStepScriptPath(safeDir, index + 1),
       stepScripts[index],
@@ -418,8 +441,8 @@ export async function createWorkflowRun(
     }),
     atomicJsonCommand(`${safeDir}/workflow.snapshot.json`, workflow),
     atomicJsonCommand(`${safeDir}/run.json`, run),
-    `mkdir -p ${shq(`${home.replace(/\/+$/, '')}/hpclaw_flows/.hpclaw`)}`,
-    `printf '%s\\n' ${shq(safeDir)} >> ${shq(`${home.replace(/\/+$/, '')}/hpclaw_flows/.hpclaw/run-index.txt`)}`,
+    `mkdir -p ${shq(`${home.replace(/\/+$/, '')}/trace_flows/.trace`)}`,
+    `printf '%s\\n' ${shq(safeDir)} >> ${shq(`${home.replace(/\/+$/, '')}/trace_flows/.trace/run-index.txt`)}`,
   ];
   await exec(commands.join('\n'), 30_000);
 
@@ -512,12 +535,12 @@ export async function updateWorkflowRun(
   home: string,
   runDir: string,
   patch: WorkflowRunPatch,
-  options: { acknowledgeFailedQc?: boolean } = {},
+  options: { acknowledgeFailedQc?: boolean } & RunIoTimeouts = {},
 ): Promise<WorkflowRun> {
   const safeDir = resolveWorkflowRunDir(home, runDir);
   if (!safeDir) throw new Error('非法流程运行目录');
   return withRunUpdateLock(safeDir, async () => {
-  const run = await readWorkflowRun(exec, home, safeDir);
+  const run = await readWorkflowRun(exec, home, safeDir, options.readTimeoutMs ?? 15_000);
   if (Number.isInteger(patch.expectedRevision) && patch.expectedRevision !== run.revision) {
     throw new Error(`流程状态已被其他操作更新（期望 revision ${patch.expectedRevision}，当前 ${run.revision}），请刷新后重试`);
   }
@@ -654,7 +677,7 @@ export async function updateWorkflowRun(
   if (run.status === 'done' && !run.reportPath) {
     const reportPath = `${safeDir}/results/run-summary.md`;
     try {
-      await exec(`mkdir -p ${shq(`${safeDir}/results`)} && ${atomicTextCommand(reportPath, buildWorkflowRunSummary(run))}`, 20_000);
+      await exec(`mkdir -p ${shq(`${safeDir}/results`)} && ${atomicTextCommand(reportPath, buildWorkflowRunSummary(run))}`, options.writeTimeoutMs ?? 20_000);
       run.reportPath = reportPath;
     } catch {
       // 报告生成失败不能反向抹掉已经验证完成的流程；运行记录仍会正常落盘。
@@ -663,7 +686,7 @@ export async function updateWorkflowRun(
   run.updatedAt = now;
   run.heartbeatAt = now;
   run.revision = (run.revision || 0) + 1;
-  await writeWorkflowRun(exec, home, run);
+  await writeWorkflowRun(exec, home, run, options.writeTimeoutMs ?? 20_000);
   return run;
   });
 }

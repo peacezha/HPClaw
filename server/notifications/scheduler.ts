@@ -33,12 +33,18 @@ export async function saveSchedulerType(scheduler: SchedulerType): Promise<void>
   await fs.rename(tmp, CONFIG_PATH);
 }
 
+// 远端自杀包装：本地 exec 超时放弃后，远端查询进程也会在给定秒数内退出，
+// 避免大 LSF 集群上每 45s 一轮的慢 bjobs/sacct 在登录节点堆积。
+// LSF/Slurm 登录节点是 Linux，coreutils timeout 必有，直接包即可。
+const REMOTE_POLL_TIMEOUT_S = 50;
+const REMOTE_FINAL_STATE_TIMEOUT_S = 25;
+
 const JOBS_COMMANDS: Record<SchedulerType, string> = {
-  lsf: 'bjobs -w 2>/dev/null',
+  lsf: `timeout ${REMOTE_POLL_TIMEOUT_S} bjobs -w 2>/dev/null`,
   // 管道分隔避免空白切分问题；%M = 已运行时间
-  slurm: 'squeue -u "$(whoami)" -o "%i|%j|%T|%P|%M" --noheader 2>/dev/null',
+  slurm: `timeout ${REMOTE_POLL_TIMEOUT_S} squeue -u "$(whoami)" -o "%i|%j|%T|%P|%M" --noheader 2>/dev/null`,
   // PBS/Torque 默认定宽表：JobID Name User TimeUse State Queue
-  pbs: 'qstat -u "$(whoami)" 2>/dev/null',
+  pbs: `timeout ${REMOTE_POLL_TIMEOUT_S} qstat -u "$(whoami)" 2>/dev/null`,
   // 无调度器：只能按当前用户进程近似
   none: 'true',
 };
@@ -47,7 +53,34 @@ export function jobsCommand(scheduler: SchedulerType): string {
   return JOBS_COMMANDS[scheduler];
 }
 
-/** PBS qstat 状态字母 → HPClaw 作业状态 */
+/**
+ * LSF 按 ID 定点查询：一条命令查全部已跟踪作业，替代大集群上动辄超时的全量 bjobs -w。
+ * 已结束/被清理的作业不在输出中（等同消失，由调用方按补查流程确认终态）；
+ * 个别 ID 未知时 bjobs 退出码非零，`; true` 保住其余 ID 的部分输出。
+ */
+export function lsfJobsByIdsCommand(jobIds: string[]): string {
+  const safe = jobIds.map(id => String(id).trim()).filter(id => /^[\d._]+$/.test(id)).slice(0, 100);
+  return safe.length
+    ? `timeout ${REMOTE_POLL_TIMEOUT_S} bjobs -noheader -o "jobid stat" ${safe.join(' ')} 2>/dev/null; true`
+    : 'true';
+}
+
+/** 解析 `bjobs -noheader -o "jobid stat"` 输出；name/queue 由调用方按上轮快照补齐。 */
+export function parseLsfJobsByIdsOutput(raw: string): Array<{ jobId: string; status: JobEntry['status'] }> {
+  const out: Array<{ jobId: string; status: JobEntry['status'] }> = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)(?:[._]\S+)?\s+(\w+)/);
+    if (!m) continue;
+    const stat = m[2].toUpperCase();
+    out.push({
+      jobId: m[1],
+      status: stat === 'RUN' ? 'RUN' : stat === 'PEND' ? 'PEND' : stat === 'DONE' ? 'DONE' : stat === 'EXIT' ? 'EXIT' : 'UNKNOWN',
+    });
+  }
+  return out;
+}
+
+/** PBS qstat 状态字母 → TRACE 作业状态 */
 function normalizePbsStatus(letter: string): JobEntry['status'] {
   const s = letter.trim().toUpperCase();
   if (s === 'R' || s === 'E') return 'RUN';
@@ -85,14 +118,14 @@ export function parseJobsOutput(scheduler: SchedulerType, raw: string): JobEntry
 /** sacct 补查 Slurm 作业最终状态（squeue 中作业一结束即消失，无法区分成功/失败） */
 export function slurmFinalStateCommand(jobId: string): string {
   // jobId 只可能是数字（来自 squeue %i），无注入风险
-  return `sacct -j ${jobId} --format=State --noheader -X 2>/dev/null | head -1`;
+  return `timeout ${REMOTE_FINAL_STATE_TIMEOUT_S} sacct -j ${jobId} --format=State --noheader -X 2>/dev/null | head -1`;
 }
 
 /** PBS 作业离开 qstat 后补查：-x 含历史，Exit_status=0 判 DONE。 */
 export function pbsFinalStateCommand(jobId: string): string {
   const safe = /^[\d._]+$/.test(jobId) ? jobId : '';
   return safe
-    ? `qstat -x -f ${safe} 2>/dev/null | grep -E 'job_state|Exit_status' | tr '\\n' ' '`
+    ? `timeout ${REMOTE_FINAL_STATE_TIMEOUT_S} qstat -x -f ${safe} 2>/dev/null | grep -E 'job_state|Exit_status' | tr '\\n' ' '`
     : 'false';
 }
 
@@ -157,7 +190,7 @@ function translateBsubLine(args: string, target: 'slurm' | 'pbs'): string | null
 export function lsfFinalStateCommand(jobId: string): string {
   // jobId 来自调度器解析或提交回执，只允许数字及数组任务分隔符。
   const safe = /^[\d._]+$/.test(jobId) ? jobId : '';
-  return safe ? `bjobs -a -noheader -o stat ${safe} 2>/dev/null | head -1` : 'false';
+  return safe ? `timeout ${REMOTE_FINAL_STATE_TIMEOUT_S} bjobs -a -noheader -o stat ${safe} 2>/dev/null | head -1` : 'false';
 }
 
 /** LSF 作业输出尾部摘要：bpeek 对已结束作业仍可读；无输出时为空。 */

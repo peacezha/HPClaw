@@ -23,18 +23,18 @@ export declare class Entry {
     static readonly key: unique symbol;
     ctx: Context;
     fiber?: Fiber;
+    /** Raw import result before export normalization; HMR updates it after a successful reload. */
+    moduleNamespace: unknown;
     parent: EntryGroup;
     options: EntryOptions;
     subgroup?: EntryGroup;
     subtree?: EntryTree;
     _initTask?: Promise<void>;
-    _disposing: number;
     constructor(loader: Loader);
     get context(): Context;
     get id(): string;
     /** True when this entry or any owning parent entry is disabled. */
     get disabled(): boolean;
-    private _disabled;
     /**
      * Effective disabled state: a `!!js` expression evaluates against the loader
      * context. The raw node stays in the options, so write-back keeps the form.
@@ -43,14 +43,17 @@ export declare class Entry {
     evaluate(expr: string): any;
     private _patchContext;
     refresh(): Promise<void>;
-    _dispose(fiber?: Fiber | undefined): Promise<void>;
     /** Merge new options, restart as needed, and persist through the parent tree. */
     update(options: Partial<EntryOptions>, create?: boolean, force?: boolean): Promise<void>;
+    /**
+     * Parse a volatile-only raw config change and commit its values into the running fiber's references.
+     * An invalid candidate is logged and leaves the running references unchanged; the raw config stays retained for the next activation.
+     * @returns `false` when an ordinary effective value changed, so the caller applies the ordinary update lifecycle.
+     */
+    private _commitVolatile;
     getOuterStack: () => string[];
     /** Import and start the configured plugin if it is not already running. */
     init(): Promise<void>;
-    _await(): Promise<void>;
     private _init;
-    private _start;
 }
 //# sourceMappingURL=entry.d.ts.map

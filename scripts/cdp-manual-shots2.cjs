@@ -2,7 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9222';
-const OUT = 'E:/0612hpclaw/hpclaw_v2/docs-manual/img';
+const OUT = 'E:/0612trace/trace_v2/docs-manual/img';
 
 function getJson(path) {
   return new Promise((resolve, reject) => {

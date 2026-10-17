@@ -104,25 +104,27 @@ describe('update manager', () => {
     expect(updater.setFeedURL).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'github',
       owner: 'peacezha',
-      repo: 'HPClaw',
+      repo: 'TRACE',
     }));
     expect(state).toMatchObject({ phase: 'not-available', currentVersion: '0.2.4' });
   });
 
   it('routes a saved github.com repo URL to the github provider instead of generic', async () => {
-    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw/')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
-    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw.git')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
-    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw/releases')).toEqual({ owner: 'peacezha', repo: 'HPClaw' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/HPClaw/releases')).toEqual({ owner: 'peacezha', repo: 'TRACE' });
+    expect(parseGithubRepoUrl('https://github.com/someone/HPClaw')).toEqual({ owner: 'someone', repo: 'HPClaw' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/TRACE/')).toEqual({ owner: 'peacezha', repo: 'TRACE' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/TRACE.git')).toEqual({ owner: 'peacezha', repo: 'TRACE' });
+    expect(parseGithubRepoUrl('https://github.com/peacezha/TRACE/releases')).toEqual({ owner: 'peacezha', repo: 'TRACE' });
     expect(parseGithubRepoUrl('https://updates.example.com/hpclaw/')).toBeNull();
     expect(parseGithubRepoUrl('https://github.com/peacezha')).toBeNull();
 
-    const { manager, updater } = createManager('https://github.com/peacezha/HPClaw/');
+    const { manager, updater } = createManager('https://github.com/peacezha/TRACE/');
     updater.checkForUpdates.mockImplementation(async () => undefined);
     await manager.check();
     expect(updater.setFeedURL).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'github',
       owner: 'peacezha',
-      repo: 'HPClaw',
+      repo: 'TRACE',
     }));
   });
 });

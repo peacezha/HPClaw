@@ -14,9 +14,9 @@ afterEach(() => {
 
 describe('server path helpers', () => {
   it('uses cwd for all roots by default', async () => {
-    delete process.env.HPCLAW_APP_ROOT;
-    delete process.env.HPCLAW_STATIC_ROOT;
-    delete process.env.HPCLAW_DATA_ROOT;
+    delete process.env.TRACE_APP_ROOT;
+    delete process.env.TRACE_STATIC_ROOT;
+    delete process.env.TRACE_DATA_ROOT;
 
     const paths = await loadPaths();
 
@@ -29,14 +29,14 @@ describe('server path helpers', () => {
   });
 
   it('allows Electron to split app, static, and data roots', async () => {
-    process.env.HPCLAW_APP_ROOT = 'C:/Program Files/HPClaw/resources/app.asar';
-    process.env.HPCLAW_STATIC_ROOT = 'C:/Program Files/HPClaw/resources/app.asar';
-    process.env.HPCLAW_DATA_ROOT = 'C:/Users/example/AppData/Roaming/HPClaw/runtime';
+    process.env.TRACE_APP_ROOT = 'C:/Program Files/TRACE/resources/app.asar';
+    process.env.TRACE_STATIC_ROOT = 'C:/Program Files/TRACE/resources/app.asar';
+    process.env.TRACE_DATA_ROOT = 'C:/Users/example/AppData/Roaming/TRACE/runtime';
 
     const paths = await loadPaths();
 
-    expect(paths.appPath('lsf_skills')).toBe(path.resolve('C:/Program Files/HPClaw/resources/app.asar', 'lsf_skills'));
-    expect(paths.staticPath('dist')).toBe(path.resolve('C:/Program Files/HPClaw/resources/app.asar', 'dist'));
-    expect(paths.dataPath('skills')).toBe(path.resolve('C:/Users/example/AppData/Roaming/HPClaw/runtime', 'skills'));
+    expect(paths.appPath('lsf_skills')).toBe(path.resolve('C:/Program Files/TRACE/resources/app.asar', 'lsf_skills'));
+    expect(paths.staticPath('dist')).toBe(path.resolve('C:/Program Files/TRACE/resources/app.asar', 'dist'));
+    expect(paths.dataPath('skills')).toBe(path.resolve('C:/Users/example/AppData/Roaming/TRACE/runtime', 'skills'));
   });
 });

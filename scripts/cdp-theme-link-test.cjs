@@ -1,4 +1,4 @@
-// HPClaw v2 主题/Tab栏/终端链接预览 实机验证
+// TRACE v2 主题/Tab栏/终端链接预览 实机验证
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9222';
@@ -71,13 +71,13 @@ function getJson(path) {
   await sleep(600);
   const dark = await evalJs(`({ theme: document.documentElement.dataset.theme, bodyBg: getComputedStyle(document.body).backgroundColor, headerBg: getComputedStyle(document.querySelector('header')).backgroundColor })`);
   ok('切换到黑夜模式生效', dark.theme === 'dark' && dark.bodyBg !== before.bodyBg, `dark bg=${dark.bodyBg}`);
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-dark.png');
+  await shot('E:/0612trace/trace_v2/smoke-dark.png');
   // 切回 light
   await evalJs(`(() => { const b = document.querySelector('button[aria-label="切换到白天模式"]'); if (b) b.click(); })()`);
   await sleep(600);
   const light = await evalJs(`({ theme: document.documentElement.dataset.theme || 'light', bodyBg: getComputedStyle(document.body).backgroundColor })`);
   ok('切回白天模式生效', light.bodyBg !== dark.bodyBg, `light bg=${light.bodyBg}`);
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-light.png');
+  await shot('E:/0612trace/trace_v2/smoke-light.png');
 
   // ── 2. Tab 栏不溢出（打开 AI 侧栏检查三个 tab + 图标都在一行）──
   await evalJs(`(() => { const b = document.querySelector('button[aria-label="打开 AI 助手"]'); if (b) b.click(); })()`);
@@ -119,7 +119,7 @@ function getJson(path) {
     await sleep(3000);
     const previewOpen = await evalJs(`!!document.querySelector('[data-testid="preview-overlay"]')`);
     ok('点击文件名打开预览', previewOpen);
-    await shot('E:/0612hpclaw/hpclaw_v2/smoke-link-preview.png');
+    await shot('E:/0612trace/trace_v2/smoke-link-preview.png');
   }
 
   console.log('---');

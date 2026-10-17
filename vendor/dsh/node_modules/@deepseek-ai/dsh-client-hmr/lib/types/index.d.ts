@@ -4,7 +4,7 @@ export type { PluginsEventFrame } from './events.ts';
 export { EVENTS_ENDPOINT } from './events.ts';
 /** Cordis plugin name. */
 export declare const name = "client-hmr";
-/** Required services: the web plugin table and the route registry. */
+/** Required services: the client graph and Web route registry. */
 export declare const inject: string[];
 /** Plugin config, validated by the same-named schemastery schema. */
 export interface Config {
@@ -13,8 +13,8 @@ export interface Config {
 }
 export declare const Config: z<Config>;
 /**
- * Mount the dev chain: bundle watches, rebuilt reporting, and the SSE channel.
- * @param ctx - host plugin context carrying clientModuleHost and webServer.
+ * Mount bundle watches and graph/rebuilt SSE delivery.
+ * @param ctx - host plugin context carrying clientModules and webServer.
  * @param config - validated {@link Config}.
  */
 export declare function apply(ctx: Context, config: Config): void;

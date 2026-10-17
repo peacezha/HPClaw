@@ -12,7 +12,7 @@ vi.mock('../paths', () => ({
 }));
 
 async function freshModule(): Promise<typeof import('./schedulerProfile')> {
-  state.tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hpclaw-sched-'));
+  state.tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'trace-sched-'));
   vi.resetModules();
   return import('./schedulerProfile');
 }

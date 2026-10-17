@@ -7,7 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-export { WEB_SEARCH_MAX_RESULTS, applyWebSearchTool, formatSearchOutput, parseSearchArgs, presentSearchCall, presentSearchResult, searchMetaFromValue, searchMetaFromResult } from './search.ts';
+export { WEB_SEARCH_MAX_QUERIES, WEB_SEARCH_MAX_RESULTS, applyWebSearchTool, formatSearchOutput, presentSearchCall, presentSearchResult, searchMetaFromValue, searchMetaFromResult } from './search.ts';
 export type { WebSearchMeta } from './search.ts';
 export { applyWebFetchTool, formatFetchOutput, parseFetchArgs, presentFetchCall, presentFetchResult, fetchMetaFromValue, fetchMetaFromResult } from './fetch.ts';
 export type { WebFetchMeta } from './fetch.ts';
@@ -23,7 +23,7 @@ export declare const DEFAULT_WEB_TOOL_TIMEOUT_MS = 30000;
  * 100,000-character body cap while bounding custom providers and rendered output.
  */
 export declare const DEFAULT_FETCH_MAX_OUTPUT_CHARS = 200000;
-/** Plugin config: which web tools to register, the source cap, per-tool budgets, and the fetch output cap. */
+/** Plugin config: which web tools to register, search bounds, per-tool budgets, and the fetch output cap. */
 export interface Config {
     /** Register `web_search`. Defaults to true. */
     search?: boolean;
@@ -31,6 +31,8 @@ export interface Config {
     fetch?: boolean;
     /** Upper bound on sources returned by one `web_search` call. */
     searchMaxResults?: number;
+    /** Upper bound on queries accepted by one `web_search` call. */
+    searchMaxQueries?: number;
     /** Cooperative timeout budget (ms) for `web_fetch`. Defaults to 30000. */
     fetchTimeoutMs?: number;
     /** Cooperative timeout budget (ms) for `web_search`. Defaults to 30000. */

@@ -15,7 +15,7 @@ export interface AIProfile {
 export type AIProfileInput = Omit<Partial<AIProfile>, 'provider'> & { provider?: string };
 
 export const PROVIDER_MODELS: Record<AIProvider, string[]> = {
-  deepseek: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+  deepseek: ['deepseek-flash', 'deepseek-v4-pro'],
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
   gemini: ['gemini-3.1-pro-preview', 'gemini-3.1-flash-preview', 'gemini-2.5-flash'],
   grok: ['grok-2', 'grok-2-latest'],
@@ -32,7 +32,7 @@ export const PROVIDER_LABELS: Record<AIProvider, string> = {
   'custom-openai': 'Custom OpenAI-compatible',
 };
 
-const STORAGE_KEY = 'hpclaw_ai_profile';
+const STORAGE_KEY = 'trace_ai_profile';
 // 桌面端加密存储中本模块使用的 key（secret-store.cjs 白名单内）
 const DESKTOP_SECRET_KEY = 'aiProfile';
 const LEGACY_KEYS = ['ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url'];
@@ -40,12 +40,12 @@ const LEGACY_KEYS = ['ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url'];
 // 模块级内存缓存：AI 补全按键路径（aiTerminal.requestAutocomplete）每键都会调
 // loadAIProfile，未命中时还要连读 4 个 legacy key；缓存后仅首次读存储。
 // 一致性：仅本模块写这些 key，saveAIProfile 时同步缓存；另监听已有的
-// hpclaw-ai-profile-change 事件兜底，不引入跨窗口 storage 事件复杂度。
+// trace-ai-profile-change 事件兜底，不引入跨窗口 storage 事件复杂度。
 let profileCache: AIProfile | null = null;
 const publicProfiles = new Map<string, AIProfile>();
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('hpclaw-ai-profile-change', (event) => {
+  window.addEventListener('trace-ai-profile-change', (event) => {
     profileCache = (event as CustomEvent<AIProfile>).detail ?? null;
   });
 }
@@ -160,7 +160,7 @@ export function saveAIProfile(profile: AIProfileInput, sessionId = getPublicClus
   } else if (!isPublicWeb()) {
     writeToLocalStorage(normalized);
   }
-  window.dispatchEvent(new CustomEvent('hpclaw-ai-profile-change', { detail: normalized }));
+  window.dispatchEvent(new CustomEvent('trace-ai-profile-change', { detail: normalized }));
   return normalized;
 }
 

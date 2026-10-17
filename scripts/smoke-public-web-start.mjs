@@ -24,7 +24,7 @@ const origin = 'http://127.0.0.1:' + port;
 // Run the deployment's real launcher, not the source gateway factory.
 const child = spawn(process.execPath, ['scripts/start-public-web.mjs'], {
   cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, PORT: String(port), HPCLAW_HOST: '127.0.0.1', HPCLAW_WEB_ORIGIN: origin },
+  env: { ...process.env, PORT: String(port), TRACE_HOST: '127.0.0.1', TRACE_WEB_ORIGIN: origin },
 });
 const exited = once(child, 'exit');
 let output = '';
@@ -37,7 +37,7 @@ try {
     try {
       const response = await fetch(origin, { signal: AbortSignal.timeout(1000) });
       if (response.ok) {
-        assert((await response.text()).includes('window.hpclawPublicWeb=true'));
+        assert((await response.text()).includes('window.tracePublicWeb=true'));
         ready = true;
         break;
       }

@@ -11,6 +11,12 @@ function fixture(extra = {}) {
   return { ...view, props, onReply, onDefer };
 }
 describe('question modal', () => {
+  it('lets the user request an explanation without confirming the selected option', () => {
+    const f = fixture();
+    fireEvent.click(screen.getByRole('button', { name: /IWGSC RefSeq/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Explain options first' }));
+    expect(f.onReply).toHaveBeenCalledWith({ selected: [], custom: expect.stringContaining('explain'), intent: 'clarification' });
+  });
   it('renders in English with explicit submission and preserves scientific identifiers verbatim', async () => {
     const f = fixture();
     expect(screen.getByRole('dialog', { name: 'The agent needs your answer' })).toHaveAttribute('aria-modal', 'true');
@@ -28,13 +34,18 @@ describe('question modal', () => {
     expect(f.onReply).toHaveBeenCalledWith({ selected: [], custom: '/data/sample_R1.fastq.gz' });
     expect(screen.queryByText('Use recommended option')).toBeNull();
   });
-  it('does not silently cancel or submit on Escape, and traps Tab focus in the visible dialog', () => {
+  it('treats Escape as "answer later" without cancelling or submitting, and traps Tab focus in the visible dialog', () => {
     const f = fixture(); const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveFocus();
-    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(f.onReply).not.toHaveBeenCalled(); expect(f.onDefer).not.toHaveBeenCalled();
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(f.onReply).not.toHaveBeenCalled(); expect(f.onDefer).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(dialog, { key: 'Tab' }); expect(screen.getByRole('button', { name: /IWGSC/ })).toHaveFocus();
     fireEvent.keyDown(screen.getByRole('button', { name: /IWGSC/ }), { key: 'Tab', shiftKey: true });
     expect(screen.getByRole('button', { name: 'Cancel question' })).toHaveFocus();
+  });
+  it('ignores Escape while the answer is being delivered, matching the disabled defer button', () => {
+    const f = fixture({ busy: true }); const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(f.onDefer).not.toHaveBeenCalled(); expect(f.onReply).not.toHaveBeenCalled();
   });
   it('retains a typed draft while deferred and keeps delivery failures visible', () => {
     const f = fixture();

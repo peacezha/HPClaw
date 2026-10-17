@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { selectDshEngine } from './engineRouter';
 
 describe('selectDshEngine', () => {
-  it('routes plain agent mode with a supported provider to dsh by default', () => {
+  it('routes plain agent mode with a supported provider to the native engine by default', () => {
     expect(selectDshEngine({ mode: 'agent', hasWorkflowRunContext: false, provider: 'deepseek' }))
-      .toEqual({ engine: 'dsh', reason: 'default' });
+      .toEqual({ engine: 'legacy', reason: 'default (native engine since v0.4.57)' });
   });
 
   it('lets env=legacy veto everything', () => {

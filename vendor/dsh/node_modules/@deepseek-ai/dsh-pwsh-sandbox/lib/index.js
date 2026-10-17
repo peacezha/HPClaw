@@ -22,7 +22,7 @@ function isUsableWorkdir(path) {
 	}
 }
 /**
-* Attribute only Node ENOENT/EACCES failures with positive argv[0] provenance
+* Attribute only Node ENOENT/EACCES failures whose path or syscall identifies argv[0]
 * after independently ruling out the caller-owned cwd. A supplied error path
 * must exactly identify the runner; without one, the syscall must. With a
 * usable cwd, these codes describe resolution or execute permission for that
@@ -98,12 +98,12 @@ function matchesSignature(exitCode, stderr, signatures) {
 * `@deepseek-ai/dsh-bash-sandbox`. It wraps the exact local pwsh argv through
 * `ctx.sandbox` (which on Windows resolves to the ACL restricted-token runner
 * chain), inherits local process mechanics, and reports the selected mode,
-* enforcement, and denial facts. Positive runner-launch evidence means the
-* command never ran: foreground calls throw `SANDBOX_UNAVAILABLE`, while
-* background processes carry `runnerFailed`; other spawn rejections retain
-* local-executor semantics. The tool layer owns the escalation approval flow
-* through `ctx.approval`; this executor reports the sandbox facts the tool
-* renders.
+* enforcement, and denial facts. Positive runner-executable evidence
+* identifies a broken confinement runner: foreground calls throw
+* `SANDBOX_UNAVAILABLE`, while background processes carry `runnerFailed`;
+* other provider rejections retain stage-neutral local-executor semantics. The
+* tool layer owns the escalation approval flow through `ctx.approval`; this
+* executor reports the sandbox facts the tool renders.
 * @module @deepseek-ai/dsh-pwsh-sandbox
 */
 /**
@@ -115,7 +115,7 @@ function matchesSignature(exitCode, stderr, signatures) {
 * `result.sandbox` reports the mode, enforcement, and denial facts the tool
 * renders.
 */
-var SandboxPwshExecutor = class extends PwshLocalExecutor {
+var SandboxPwshExecutor = class SandboxPwshExecutor extends PwshLocalExecutor {
 	static inject = [
 		"subprocess",
 		"sandbox",
@@ -148,74 +148,84 @@ var SandboxPwshExecutor = class extends PwshLocalExecutor {
 			sandboxPolicy: request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
 		};
 	}
-	async run(spec) {
+	async execute(spec) {
 		const policy = spec.sandboxPolicy;
 		const { mode } = policy;
-		if (mode === "danger-full-access") return {
-			...await super.run(spec),
+		if (mode === "danger-full-access") return SandboxPwshExecutor.decorateResult(await super.execute(spec), (result) => ({
+			...result,
 			sandbox: {
 				mode,
 				denied: false
 			}
-		};
-		const confined = this.confine(spec, {
-			...policy,
-			mode
-		});
-		let result;
-		try {
-			result = await this.runArgv(spec, confined.argv);
-		} catch (error) {
-			if (spec.signal?.aborted === true) spec.signal.throwIfAborted();
-			if (isRunnerSpawnFailure(error, confined.argv[0], spec.workdir)) throw new SandboxUnavailableError(mode, String(error));
-			throw error;
-		}
-		const runnerFailure = classifyRunnerFailure(result.exitCode, result.stderr.text, confined.runnerFailureRules);
-		if (runnerFailure !== void 0) throw new SandboxUnavailableError(mode, runnerFailure.detail);
-		return {
-			...result,
-			sandbox: {
+		}));
+		let confined;
+		const ex = await this.executeArgv(spec, async (signal) => {
+			const prepared = await this.confine(spec, {
+				...policy,
+				mode
+			}, signal);
+			signal.throwIfAborted();
+			confined = prepared;
+			return prepared.argv;
+		}, (process) => {
+			const facts = confined;
+			this.processFacts.set(process, {
 				mode,
-				denied: classifyDenial(result, confined.denialSignatures),
-				enforcement: confined.enforcement
-			}
-		};
-	}
-	start(spec) {
-		const policy = spec.sandboxPolicy;
-		const { mode } = policy;
-		if (mode === "danger-full-access") return super.start(spec);
-		const confined = this.confine(spec, {
-			...policy,
-			mode
+				enforcement: facts.enforcement,
+				denialSignatures: facts.denialSignatures,
+				runnerFailureRules: facts.runnerFailureRules,
+				runnerProgram: facts.argv[0],
+				workdir: spec.workdir
+			});
 		});
-		let proc;
-		try {
-			proc = this.startArgv(spec, confined.argv);
-		} catch (error) {
-			if (isRunnerSpawnFailure(error, confined.argv[0], spec.workdir)) throw new SandboxUnavailableError(mode, String(error));
+		return SandboxPwshExecutor.decorateResult(ex, (result) => {
+			if (confined === void 0) return {
+				...result,
+				sandbox: {
+					mode,
+					denied: false
+				}
+			};
+			const { enforcement, denialSignatures, runnerFailureRules } = confined;
+			const runnerFailure = classifyRunnerFailure(result.exitCode, result.stderr.text, runnerFailureRules);
+			if (runnerFailure !== void 0) throw new SandboxUnavailableError(mode, runnerFailure.detail);
+			return {
+				...result,
+				sandbox: {
+					mode,
+					denied: classifyDenial(result, denialSignatures),
+					enforcement
+				}
+			};
+		}, (error) => {
+			if (spec.signal?.aborted === true) spec.signal.throwIfAborted();
+			if (confined !== void 0 && isRunnerSpawnFailure(error, confined.argv[0], spec.workdir)) throw new SandboxUnavailableError(mode, String(error));
 			throw error;
-		}
-		const { enforcement, denialSignatures, runnerFailureRules } = confined;
-		this.processFacts.set(proc, {
-			mode,
-			enforcement,
-			denialSignatures,
-			runnerFailureRules,
-			runnerProgram: confined.argv[0],
-			workdir: spec.workdir
 		});
-		return proc;
+	}
+	/**
+	* Decorate the handle's foreground projection in place, memoized once. The
+	* handle keeps its identity (never wrapped in a second object) because the
+	* per-process facts and `onProcessDone` key on the exact instance.
+	*/
+	static decorateResult(ex, map, mapError) {
+		const base = ex.result.bind(ex);
+		let decorated;
+		ex.result = () => {
+			decorated ??= base().then(map, mapError);
+			return decorated;
+		};
+		return ex;
 	}
 	/**
 	* Stamp per-process sandbox facts before `done` settles. Full-access
 	* processes have no facts; signal deaths are not denials.
 	*/
-	onProcessDone(proc, stderr, spawnFailed, spawnError) {
+	onProcessDone(proc, stderr, providerRejected, providerError) {
 		const facts = this.processFacts.get(proc);
 		if (facts !== void 0) {
 			this.processFacts.delete(proc);
-			const runnerFailed = spawnFailed ? isRunnerSpawnFailure(spawnError, facts.runnerProgram, facts.workdir) : classifyRunnerFailure(proc.exitCode, stderr, facts.runnerFailureRules) !== void 0;
+			const runnerFailed = providerRejected ? isRunnerSpawnFailure(providerError, facts.runnerProgram, facts.workdir) : classifyRunnerFailure(proc.exitCode, stderr, facts.runnerFailureRules) !== void 0;
 			proc.sandbox = {
 				mode: facts.mode,
 				denied: !runnerFailed && matchesSignature(proc.exitCode, stderr, facts.denialSignatures),
@@ -223,7 +233,7 @@ var SandboxPwshExecutor = class extends PwshLocalExecutor {
 				...runnerFailed ? { runnerFailed } : {}
 			};
 		}
-		super.onProcessDone(proc, stderr, spawnFailed, spawnError);
+		super.onProcessDone(proc, stderr, providerRejected, providerError);
 	}
 	/**
 	* Wrap one pwsh invocation via the `ctx.sandbox` provider. Provider errors
@@ -231,10 +241,11 @@ var SandboxPwshExecutor = class extends PwshLocalExecutor {
 	* executor's subprocess path.
 	* @param spec - resolved execution spec whose pwsh argv is confined.
 	* @param policy - resolved confined execution policy.
+	* @param signal - cancellation of confinement preparation.
 	* @returns the provider's exact argv and settlement-classification facts.
 	*/
-	confine(spec, policy) {
-		return this.ctx.sandbox.confine(this.argv(spec), policy);
+	confine(spec, policy, signal) {
+		return this.ctx.sandbox.confine(this.argv(spec), policy, signal);
 	}
 };
 //#endregion

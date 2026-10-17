@@ -92,8 +92,7 @@ export declare class ShellEnvRegistry extends Service {
     list(): BashEnvVariableInfo[];
 }
 /**
- * Load the shell-env plugin: register the `ctx.shellEnv` service and the
- * shell-agnostic persistence contributor (`DSH_SESSION_JSONL`).
+ * Load the shell-env plugin: register the `ctx.shellEnv` registry service.
  * @param ctx - Cordis context that owns the service and registrations.
  * @param config - home-directory configuration for the built-in variables.
  */

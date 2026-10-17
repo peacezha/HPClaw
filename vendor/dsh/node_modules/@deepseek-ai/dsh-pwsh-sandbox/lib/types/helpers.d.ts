@@ -8,7 +8,7 @@
 import type { ShellRunResult } from '@deepseek-ai/dsh-shell';
 import type { RunnerFailureRule } from '@deepseek-ai/dsh-sandbox';
 /**
- * Attribute only Node ENOENT/EACCES failures with positive argv[0] provenance
+ * Attribute only Node ENOENT/EACCES failures whose path or syscall identifies argv[0]
  * after independently ruling out the caller-owned cwd. A supplied error path
  * must exactly identify the runner; without one, the syscall must. With a
  * usable cwd, these codes describe resolution or execute permission for that

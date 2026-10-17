@@ -136,7 +136,7 @@ export declare function presentGlobResult(_args: {
     path?: string;
 }, result: ToolResult): SearchResultView | undefined;
 /**
- * Register the `glob` tool and its system-prompt guidance.
+ * Register the `glob` tool and its scope-aware system-prompt guidance.
  *
  * @param ctx - the plugin context; registrations are effects scoped to it, and
  *   execution uses its `subprocess` service.

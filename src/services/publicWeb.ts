@@ -1,9 +1,10 @@
+import { migrateLegacyPreferenceRecord } from './legacyBrandStorage';
 let activeCluster: string | undefined;
 const preferences = new Map<string, Record<string, string>>();
-export function isPublicWeb(): boolean { return (window as any).hpclawPublicWeb === true; }
+export function isPublicWeb(): boolean { return (window as any).tracePublicWeb === true; }
 export function setPublicCluster(sessionId?: string | null) { activeCluster = sessionId || undefined; }
 export function getPublicCluster() { return activeCluster; }
-export function hydratePublicPreferences(sessionId: string, value: Record<string, string>) { preferences.set(sessionId, value || {}); }
+export function hydratePublicPreferences(sessionId: string, value: Record<string, string>) { preferences.set(sessionId, migrateLegacyPreferenceRecord(value || {})); }
 export function readPublicPreference(key: string) { return activeCluster ? preferences.get(activeCluster)?.[key] || null : null; }
 export function savePublicPreference(key: string, value: string) {
   if (!activeCluster) return Promise.resolve(false);
@@ -12,18 +13,18 @@ export function savePublicPreference(key: string, value: string) {
     body: JSON.stringify({ key, value }) }).then(async response => {
     if (!response.ok) throw new Error((await response.json()).error || '集群偏好设置保存失败');
     return true;
-  }).catch(error => { window.dispatchEvent(new CustomEvent('hpclaw-persistence-error', { detail: error.message })); return false; });
+  }).catch(error => { window.dispatchEvent(new CustomEvent('trace-persistence-error', { detail: error.message })); return false; });
 }
 
 export async function initializePublicWeb() {
-  if (window.hpclawDesktop) return;
+  if (window.traceDesktop) return;
   const originalFetch = window.fetch.bind(window);
   if (!isPublicWeb()) try {
     const result = await originalFetch('/api/app-info', { signal: AbortSignal.timeout(3000) });
     const info = await result.json();
     if (info.deployment !== 'public-web') return;
   } catch { return; }
-  (window as any).hpclawPublicWeb = true;
+  (window as any).tracePublicWeb = true;
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, window.location.href);
     if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/')

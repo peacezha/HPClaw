@@ -8,7 +8,7 @@ export interface HistoryEntry {
   lastUsed: number;
 }
 
-const STORAGE_KEY = 'hpclaw_cmd_history';
+const STORAGE_KEY = 'trace_cmd_history';
 const MAX_ENTRIES = 200;
 const MAX_SUGGEST = 3;
 

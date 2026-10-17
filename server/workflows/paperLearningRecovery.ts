@@ -71,7 +71,7 @@ export function recoverPaperWorkflow(value: any, evidence: EvidenceInventory | n
       : '原文明确描述此分析，但完整命令、输入输出及参数映射仍需核对。';
     return {
       title: title.slice(0, 180),
-      command: '# HPCLAW_REVIEW_REQUIRED\n# REVIEW_REQUIRED: ' + gap + '\nexit 2',
+      command: '# TRACE_REVIEW_REQUIRED\n# REVIEW_REQUIRED: ' + gap + '\nexit 2',
       notes: quote,
       agent: { kind: 'compute', sourceType: 'paper', sourcePath: 'paper', sourceSection: 'Methods (recovered evidence)',
         evidence: quote, confidence: 'low', requiresReview: true, template: true, contractVersion: 'paper-agent-v5' },

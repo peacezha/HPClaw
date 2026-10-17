@@ -11,6 +11,12 @@ function fixture(extra = {}) {
 }
 
 describe('one-shot user questions', () => {
+  it('records clarification separately and never preserves an execution selection', async () => {
+    const { manager, promise, events } = fixture();
+    expect(manager.respond('q1', { selected: ['A'], custom: '有哪些修复方案？' }).success).toBe(true);
+    expect(await promise).toEqual({ selected: [], custom: '有哪些修复方案？', intent: 'clarification' });
+    expect(events[1].answer.intent).toBe('clarification');
+  });
   it('registers before emitting, so an immediate answer is accepted', async () => {
     const manager = new UserQuestions();
     const result = manager.request({ id: 'q', question: 'Path?', options: [], signal: new AbortController().signal,
@@ -47,5 +53,15 @@ describe('one-shot user questions', () => {
     const signal = new AbortController(); signal.abort();
     const { promise, events } = fixture({ signal: signal.signal });
     expect(await promise).toBeNull(); expect(events.some(event => event.type === 'ask')).toBe(false);
+  });
+  it('routes a steer text to the pending question of the same request', async () => {
+    const { manager, promise } = fixture({ requestId: 'req-9' });
+    const stray = new UserQuestions();
+    expect(stray.respondForRequest('req-9', '别的请求').success).toBe(false);
+    const receipt = manager.respondForRequest('req-9', '换用 IWGSC v2.1');
+    expect(receipt).toMatchObject({ success: true, reason: 'answered', id: 'q1' });
+    expect(await promise).toEqual({ selected: [], custom: '换用 IWGSC v2.1' });
+    // 已定结的问题不再接收同一请求的第二次插话
+    expect(manager.respondForRequest('req-9', '再一次').success).toBe(false);
   });
 });

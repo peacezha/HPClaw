@@ -9,7 +9,7 @@ import type { WorkflowRun } from '../features/workflows/api';
 afterEach(() => { cleanup(); window.localStorage.clear(); });
 function run(qc: 'pass' | 'warn' | 'fail' = 'fail'): WorkflowRun {
   return {
-    runId: 'qc-run', workflowId: 'qc', runDir: '/home/qc/hpclaw_flows/qc/03_workspace/runs/qc-run',
+    runId: 'qc-run', workflowId: 'qc', runDir: '/home/qc/trace_flows/qc/03_workspace/runs/qc-run',
     revision: 4, status: 'waiting_user', currentStep: 1, totalSteps: 2,
     steps: [
       { n: 1, title: '质控', status: 'done', qc: { status: qc, metrics: { FRiP: '0.005', sample: '样本_01' } },

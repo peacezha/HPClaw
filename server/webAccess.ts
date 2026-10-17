@@ -10,25 +10,25 @@ export interface WebAccessConfig {
 }
 
 export function readWebAccessConfig(env: NodeJS.ProcessEnv = process.env): WebAccessConfig {
-  const enabled = env.HPCLAW_WEB_MODE === '1';
-  const host = enabled ? (env.HPCLAW_HOST || '127.0.0.1') : '127.0.0.1';
+  const enabled = env.TRACE_WEB_MODE === '1';
+  const host = enabled ? (env.TRACE_HOST || '127.0.0.1') : '127.0.0.1';
   if (!enabled) return { enabled, host, username: '', password: '' };
-  const username = env.HPCLAW_WEB_USERNAME || 'hpclaw';
-  const password = env.HPCLAW_WEB_PASSWORD || '';
+  const username = env.TRACE_WEB_USERNAME || 'trace';
+  const password = env.TRACE_WEB_PASSWORD || '';
   if (!/^[A-Za-z0-9_.-]{1,64}$/.test(username) || password.length < 16 || password.includes('\0')) {
-    throw new Error('Web deployment requires a valid username and HPCLAW_WEB_PASSWORD of at least 16 characters');
+    throw new Error('Web deployment requires a valid username and TRACE_WEB_PASSWORD of at least 16 characters');
   }
   if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) throw new Error('Web deployment requires SESSION_SECRET of at least 32 characters');
   let origin: string | undefined;
-  if (env.HPCLAW_WEB_ORIGIN) {
-    const url = new URL(env.HPCLAW_WEB_ORIGIN);
+  if (env.TRACE_WEB_ORIGIN) {
+    const url = new URL(env.TRACE_WEB_ORIGIN);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-      throw new Error('HPCLAW_WEB_ORIGIN must be an HTTP(S) origin, without credentials, path or query');
+      throw new Error('TRACE_WEB_ORIGIN must be an HTTP(S) origin, without credentials, path or query');
     }
     origin = url.origin;
   }
   if (!['localhost', '127.0.0.1', '::1'].includes(host) && !origin) {
-    throw new Error('A network-facing web deployment requires HPCLAW_WEB_ORIGIN');
+    throw new Error('A network-facing web deployment requires TRACE_WEB_ORIGIN');
   }
   origin ||= `http://${host === '::1' ? '[::1]' : host}:${env.PORT || 3003}`;
   return { enabled, host, username, password, origin };
@@ -57,7 +57,7 @@ export function createWebAccess(config: WebAccessConfig, getBridgeToken: () => s
   };
   const authorized = (req: { headers: Record<string, unknown>; session?: any }): boolean => {
     return basic(req.headers.authorization) || (
-      typeof req.session?.hpclawWebAccess === 'string' && equal(req.session.hpclawWebAccess, sessionKey)
+      typeof req.session?.traceWebAccess === 'string' && equal(req.session.traceWebAccess, sessionKey)
     );
   };
   const middleware = (req: Request, res: Response, next: NextFunction) => {
@@ -67,15 +67,15 @@ export function createWebAccess(config: WebAccessConfig, getBridgeToken: () => s
       return res.status(403).json({ error: 'Cross-origin web request denied' });
     }
     const remote = req.socket.remoteAddress;
-    const bridge = req.get('X-HPClaw-Bridge');
+    const bridge = req.get('X-TRACE-Bridge');
     if (req.path.startsWith('/api/bridge/') && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote || '')
       && bridge && equal(bridge, getBridgeToken())) return next();
     if (!authorized(req)) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="HPClaw", charset="UTF-8"');
+      res.setHeader('WWW-Authenticate', 'Basic realm="TRACE", charset="UTF-8"');
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(401).send('HPClaw web access requires authentication');
+      return res.status(401).send('TRACE web access requires authentication');
     }
-    if (req.session) (req.session as any).hpclawWebAccess = sessionKey;
+    if (req.session) (req.session as any).traceWebAccess = sessionKey;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();

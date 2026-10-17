@@ -1,6 +1,6 @@
-export type HpclawEdition = 'full' | 'competition';
+export type TraceEdition = 'full' | 'competition';
 
-export function normalizeHpclawEdition(value: unknown): HpclawEdition {
+export function normalizeTraceEdition(value: unknown): TraceEdition {
   return String(value || '').trim().toLowerCase() === 'competition' ? 'competition' : 'full';
 }
 

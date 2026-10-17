@@ -50,7 +50,7 @@ function seedVisionArtifact(dataRoot: string, name = 'R16_D_view.png', bytes = B
 
 describe('local file routes', () => {
   it('streams HTML and its relative CSS within the report directory', async () => {
-    const root = makeTempDir('hpclaw-html-stream-');
+    const root = makeTempDir('trace-html-stream-');
     const report = path.join(root, 'report.html');
     fs.writeFileSync(report, '<!doctype html><html><head><link rel="stylesheet" href="style.css"></head><body>结果</body></html>');
     fs.writeFileSync(path.join(root, 'style.css'), 'body{color:red}');
@@ -69,7 +69,7 @@ describe('local file routes', () => {
     expect([403, 404]).toContain(traversal.status);
   });
   it('reads a dot-relative dsh artifact path (form 1)', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     seedVisionArtifact(dataRoot);
     const baseUrl = await startRoutes(dataRoot);
 
@@ -85,7 +85,7 @@ describe('local file routes', () => {
   });
 
   it('reads a unix-ized cwd-relative path via the stripped and suffix fallbacks (form 2)', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     seedVisionArtifact(dataRoot);
     const baseUrl = await startRoutes(dataRoot);
 
@@ -104,14 +104,14 @@ describe('local file routes', () => {
   });
 
   it('reads an absolute path under DATA_ROOT (form 3) and forbids paths outside the roots', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     const absolute = seedVisionArtifact(dataRoot);
     const baseUrl = await startRoutes(dataRoot);
 
     const response = await post(baseUrl, '/api/local/files/read', { path: absolute });
     expect(response.status).toBe(200);
 
-    const outsideDir = makeTempDir('hpclaw-local-outside-');
+    const outsideDir = makeTempDir('trace-local-outside-');
     const outsideFile = path.join(outsideDir, 'secret.png');
     fs.writeFileSync(outsideFile, 'secret');
     const forbidden = await post(baseUrl, '/api/local/files/read', { path: outsideFile });
@@ -120,8 +120,8 @@ describe('local file routes', () => {
   });
 
   it('treats the workspace as an additional allowed root only when provided', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
-    const workspace = makeTempDir('hpclaw-local-workspace-');
+    const dataRoot = makeTempDir('trace-local-root-');
+    const workspace = makeTempDir('trace-local-workspace-');
     const workspaceFile = path.join(workspace, 'out', 'result.csv');
     fs.mkdirSync(path.dirname(workspaceFile), { recursive: true });
     fs.writeFileSync(workspaceFile, 'a,b\n1,2');
@@ -142,8 +142,8 @@ describe('local file routes', () => {
   });
 
   it('rejects symlink/junction escapes from inside a root', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
-    const outsideDir = makeTempDir('hpclaw-local-outside-');
+    const dataRoot = makeTempDir('trace-local-root-');
+    const outsideDir = makeTempDir('trace-local-outside-');
     const outsideFile = path.join(outsideDir, 'secret.txt');
     fs.writeFileSync(outsideFile, 'secret');
     const linkPath = path.join(dataRoot, 'escape-link');
@@ -155,7 +155,7 @@ describe('local file routes', () => {
   });
 
   it('returns 400 for directories and missing path fields', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     fs.mkdirSync(path.join(dataRoot, 'adir'));
     const baseUrl = await startRoutes(dataRoot);
 
@@ -168,7 +168,7 @@ describe('local file routes', () => {
   });
 
   it('returns 404 for files that do not exist inside any allowed root', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     const baseUrl = await startRoutes(dataRoot);
 
     const response = await post(baseUrl, '/api/local/files/read', { path: '.dsh-vision-toolkit/artifacts/missing.png' });
@@ -177,7 +177,7 @@ describe('local file routes', () => {
   });
 
   it('returns 413 for oversized files and 415 for unsupported formats', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     fs.writeFileSync(path.join(dataRoot, 'big.csv'), Buffer.alloc(10 * 1024 * 1024 + 1, 65));
     fs.writeFileSync(path.join(dataRoot, 'pack.zip'), 'zip');
     const baseUrl = await startRoutes(dataRoot);
@@ -190,7 +190,7 @@ describe('local file routes', () => {
   });
 
   it('omits per-file failures from /api/local/files/read/batch results', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     fs.writeFileSync(path.join(dataRoot, 'ok.txt'), 'ok');
     const baseUrl = await startRoutes(dataRoot);
 
@@ -207,7 +207,7 @@ describe('local file routes', () => {
   });
 
   it('streams /api/local/files/view with detected Content-Type and cache header', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
+    const dataRoot = makeTempDir('trace-local-root-');
     seedVisionArtifact(dataRoot);
     fs.writeFileSync(path.join(dataRoot, 'notes.txt'), 'hello');
     const baseUrl = await startRoutes(dataRoot);
@@ -222,7 +222,7 @@ describe('local file routes', () => {
     expect(text.status).toBe(200);
     expect(text.headers.get('content-type')).toBe('text/plain; charset=utf-8');
 
-    const outsideDir = makeTempDir('hpclaw-local-outside-');
+    const outsideDir = makeTempDir('trace-local-outside-');
     const outsideFile = path.join(outsideDir, 'secret.png');
     fs.writeFileSync(outsideFile, 'secret');
     const forbidden = await fetch(`${baseUrl}/api/local/files/view?path=${encodeURIComponent(outsideFile)}`);
@@ -235,8 +235,8 @@ describe('local file routes', () => {
   });
 
   it('passes the workspace through /api/local/files/view for root probing', async () => {
-    const dataRoot = makeTempDir('hpclaw-local-root-');
-    const workspace = makeTempDir('hpclaw-local-workspace-');
+    const dataRoot = makeTempDir('trace-local-root-');
+    const workspace = makeTempDir('trace-local-workspace-');
     fs.writeFileSync(path.join(workspace, 'plot.png'), 'plot-bytes');
     const baseUrl = await startRoutes(dataRoot);
 

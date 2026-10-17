@@ -8,11 +8,11 @@ const token = process.env.GITHUB_TOKEN;
 if (!token) throw new Error('GITHUB_TOKEN is required');
 const directory = path.resolve(process.argv[2] || 'platform-artifacts');
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-const tag = process.env.HPCLAW_RELEASE_TAG || 'v' + version;
-const prefix = 'HPClaw-' + tag.slice(1) + '-';
-const repository = 'peacezha/HPClaw';
+const tag = process.env.TRACE_RELEASE_TAG || 'v' + version;
+const prefix = 'TRACE-' + tag.slice(1) + '-';
+const repository = 'peacezha/TRACE';
 const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'hpclaw-platform-release' };
+  'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'trace-platform-release' };
 const response = await fetch(`https://api.github.com/repos/${repository}/releases/tags/${tag}`, { headers });
 let release;
 if (response.ok) release = await response.json();
@@ -62,7 +62,7 @@ if (!release.body?.includes(heading)) {
   const body = (release.body || '') + '\n\n' + heading + '\n\n'
     + '- Apple 芯片：' + prefix + 'mac-arm64.dmg；Intel：' + prefix + 'mac-x64.dmg。未配置 Apple 签名/公证；首次打开须按系统提示确认，当前手动更新。\n'
     + (files.includes(prefix + 'web-linux-x64.tar.gz') ? '- Linux 私有网页部署：' + prefix + 'web-linux-x64.tar.gz，单用户工作台；面向大众请用 public-web 包。\n' : '')
-    + '- [安装与部署说明](https://github.com/peacezha/HPClaw/blob/main/docs/MAC_WEB_DEPLOYMENT.md)。公网须使用 HTTPS 或 SSH 隧道。\n'
+    + '- [安装与部署说明](https://github.com/peacezha/TRACE/blob/main/docs/MAC_WEB_DEPLOYMENT.md)。公网须使用 HTTPS 或 SSH 隧道。\n'
     + '- Windows 安装包和 latest.yml 保持不变；附平台产物 SHA-256 与构建来源。\n';
   const updated = await fetch(`https://api.github.com/repos/${repository}/releases/${release.id}`, {
     method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body, tag_name: tag, target_commitish: release.target_commitish }),

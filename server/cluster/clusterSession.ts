@@ -268,8 +268,8 @@ export class ClusterSession extends EventEmitter {
 
         const hasVerificationCode = credentials.verificationCode.trim().length > 0;
         const config: ConnectConfig = {
-          host: process.env.HPCLAW_PUBLIC_WORKER === '1'
-            ? process.env.HPCLAW_PUBLIC_SSH_ADDRESS : credentials.host,
+          host: process.env.TRACE_PUBLIC_WORKER === '1'
+            ? process.env.TRACE_PUBLIC_SSH_ADDRESS : credentials.host,
           port: credentials.port,
           username: credentials.username,
           tryKeyboard: true,

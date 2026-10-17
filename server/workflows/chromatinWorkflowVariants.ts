@@ -41,14 +41,14 @@ const EN_NAMES: Record<Assay, string> = {
 };
 
 const ZH_DESCRIPTIONS: Record<Assay, string> = {
-  dap: 'DAP-seq 标准分析：原始序列质控、BWA MEM 比对、高质量比对筛选与去重、以裸 gDNA 文库为阴性对照的 MACS2 窄峰调用，并输出 FRiP、SPOT、TSS 富集曲线、信号轨迹、基序富集和峰关联基因。',
+  dap: 'DAP-seq 分析：原始序列质控、BWA MEM 比对、过滤去重、裸 gDNA 对照 MACS2 峰调用、FRiP/SPOT/TSS 质控、按转录因子与条件分组的生物学重复 IDR、可重复峰的基序富集与基因注释。',
   'chip-tf': '参照 ENCODE 转录因子 ChIP-seq 分析框架：比对、过滤去重、链交叉相关性、MACS2 窄峰、FRiP 与 IDR；扩展输出 SPOT 值和 TSS 富集曲线。',
   'chip-histone': '参照 ENCODE 组蛋白修饰 ChIP-seq 分析框架：比对、过滤去重、链交叉相关性、SPP 宽峰、FRiP 与 IDR；扩展输出 SPOT 值和 TSS 富集曲线。',
   atac: '参照 ENCODE ATAC-seq 分析框架：Bowtie2 比对、细胞器序列去除、高质量比对筛选与去重、Tn5 插入位点校正、MACS2 开放染色质峰调用，并输出 FRiP、SPOT、TSS 富集曲线和片段长度分布。',
 };
 
 const EN_DESCRIPTIONS: Record<Assay, string> = {
-  dap: 'DAP-seq analysis with raw-read QC, BWA-MEM alignment, high-quality alignment filtering and deduplication, MACS2 narrow-peak calling against a naked-gDNA control, FRiP, SPOT, TSS-enrichment profiles, signal tracks, motif enrichment, and peak-to-gene annotation.',
+  dap: 'DAP-seq analysis with raw-read QC, BWA-MEM alignment, filtering and deduplication, MACS2 peaks against matched naked-gDNA controls, FRiP/SPOT/TSS QC, biological-replicate IDR grouped by transcription factor and condition, and motif enrichment and gene annotation of reproducible peaks.',
   'chip-tf': 'ENCODE-aligned TF ChIP-seq analysis with alignment, filtering and deduplication, strand cross-correlation, MACS2 narrow peaks, FRiP and IDR, plus extended SPOT and TSS-enrichment-profile QC.',
   'chip-histone': 'ENCODE-aligned histone ChIP-seq analysis with alignment, filtering and deduplication, strand cross-correlation, SPP broad peaks, FRiP and IDR, plus extended SPOT and TSS-enrichment-profile QC.',
   atac: 'ENCODE-aligned ATAC-seq analysis with Bowtie2 alignment, organelle-read removal, high-quality alignment filtering and deduplication, Tn5 insertion-site correction, MACS2 accessible-chromatin peaks, FRiP, SPOT, TSS-enrichment profiles, and fragment-size distribution.',
@@ -166,6 +166,10 @@ function qcCommand(spec: QcSpec): string {
   const insert = spec.includeInsertSize
     ? '\n  java -jar $EBROOTPICARD/picard.jar CollectInsertSizeMetrics I="$b" O=qc/"${s}".insert_size_metrics.txt H=qc/"${s}".insert_size.png'
     : '';
+  const bamList = spec.assay === 'dap'
+    ? 'python3 <RUN>/tools/dapseq_idr.py list-bams --sample-sheet "{{DAP_SAMPLE_SHEET}}" --input-dir "{{INPUT_DIR}}" > qc/dap-experimental-bams.txt\nwhile IFS= read -r b; do'
+    : `for b in ${spec.bamGlob}; do`;
+  const endLoop = spec.assay === 'dap' ? 'done < qc/dap-experimental-bams.txt' : 'done';
   return `#BSUB -J ${spec.assay.replace(/[^a-z]/g, '_')}_signal_qc -n {{THREADS}} -q {{QUEUE}}
 module load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0${spec.includeInsertSize ? ' Picard/2.27.4' : ''}
 cd {{INPUT_DIR}} && mkdir -p qc/tracks hotspots
@@ -175,21 +179,21 @@ ${PREPARE_GENE_BED}
 : > qc/tss_enrichment.tsv
 bw_files=()
 sample_labels=()
-for b in ${spec.bamGlob}; do
-  s=\${b%${spec.bamSuffix}}
+${bamList}
+  s=$(basename "$b" ${spec.bamSuffix})
   bw=qc/tracks/"\${s}".rpkm.bw
   bamCoverage -b "$b" -o "$bw" -p {{THREADS}} --normalizeUsing RPKM
   bw_files+=("$bw")
   sample_labels+=("$s")${insert}
   total=$(samtools view -c "$b")
-  inpeak=$(bedtools intersect -a "$b" -b peaks/"\${s}"${spec.peakSuffix} -u | samtools view -c - || true)
+  inpeak=$(bedtools intersect -a "$b" -b peaks/"\${s}"${spec.peakSuffix} -u | samtools view -c -${spec.assay === 'dap' ? '' : ' || true'})
   printf '%s\\t%s\\t%s\\n' "$s" "$total" "$inpeak" >> qc/frip.tsv
   samtools view -H "$b" | awk -F'\\t' '/^@SQ/{split($2,a,":");split($3,c,":");print a[2]"\\t0\\t"c[2]}' > qc/"\${s}".chrom.sizes.bed
   hotspot2.sh -c qc/"\${s}".chrom.sizes.bed "$b" hotspots/"\${s}"
   spot_file=$(find hotspots/"\${s}" -type f -name '*.SPOT.txt' | head -1)
   test -s "$spot_file"
   printf '%s\\t%s\\n' "$s" "$(tr -d '[:space:]' < "$spot_file")" >> qc/spot.tsv
-done
+${endLoop}
 test "\${#bw_files[@]}" -gt 0
 computeMatrix scale-regions -p {{THREADS}} -S "\${bw_files[@]}" -R qc/geneR1.bed -b 3000 -a 3000 -m 5000 --skipZeros --samplesLabel "\${sample_labels[@]}" -o qc/${profilePrefix}.mat.gz
 plotProfile --dpi 720 -m qc/${profilePrefix}.mat.gz -out qc/${profilePrefix}.profile.pdf --plotFileFormat pdf --perGroup --outFileNameData qc/${profilePrefix}.profile.tsv
@@ -327,17 +331,38 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
   preflight.notes = '只读检查。必须提供 BED6 基因区间（如 geneR1.bed）或 GTF/GFF 基因注释；流程将在质控步骤自动生成标准 qc/geneR1.bed。';
 
   if (assay === 'dap') {
+    workflow.params = workflow.params.map(param => param.name === 'GENOME_SIZE' ? {
+      ...param, required: true, defaultValue: undefined,
+      help: '必填：填写当前物种的有效基因组大小；hs/mm 仅适用于人/小鼠，不得用于小麦等其他物种。',
+    } : param);
+    workflow.params.push(
+      { name: 'DAP_SAMPLE_SHEET', label: 'DAP 生物学重复与对照分组表（TSV）', type: 'path', required: true,
+        help: '必填列：sample、target、condition、replicate、bam、control_bam。每个转录因子/条件至少两个独立重复；bam 为该样本的 sample.dedup.bam，control_bam 显式指定匹配的裸 gDNA 对照。相对 BAM 路径以 INPUT_DIR 为基准。' },
+      { name: 'IDR_THRESHOLD', label: '全局 IDR 阈值', type: 'number', defaultValue: '0.05', min: 0.000001, max: 0.99, required: false },
+      { name: 'IDR_PEAK_PVALUE', label: 'IDR 候选峰的宽松 p 值阈值', type: 'number', defaultValue: '0.001', min: 0.000001, max: 0.99, required: false,
+        help: 'IDR 单独使用宽松候选峰，不使用经过严格阈值筛选的最终峰；默认 p=0.001，可按实验设计调整。这是 TRACE 的 DAP-seq 扩展，并非 ENCODE 官方流程。' },
+    );
+    const dapCommand = (action: string) => `#BSUB -J dapseq_${action} -n {{THREADS}} -q {{QUEUE}}\nset -euo pipefail\nmodule load SAMtools/1.17 MACS2/2.2.7.1${action === 'idr' ? ' IDR/2.0.4.2' : ''}\npython3 <RUN>/tools/dapseq_idr.py ${action} --sample-sheet "{{DAP_SAMPLE_SHEET}}" --input-dir "{{INPUT_DIR}}" --genome-size "{{GENOME_SIZE}}" --threads {{THREADS}} --idr-threshold {{IDR_THRESHOLD}} --idr-peak-pvalue {{IDR_PEAK_PVALUE}}`;
+    preflight.command = preflight.command.replace('set -euo pipefail', 'set -euo pipefail\nmodule load SAMtools/1.17 BEDTools/2.30.0 deepTools/3.5.1 IDR/2.0.4.2');
+    preflight.command += '\ncommand -v python3\ncommand -v idr\npython3 <RUN>/tools/dapseq_idr.py validate --sample-sheet "{{DAP_SAMPLE_SHEET}}" --input-dir "{{INPUT_DIR}}"';
+    workflow.assets = [...(workflow.assets || []), { source: 'encode/dapseq_idr.py', remotePath: 'tools/dapseq_idr.py', label: 'DAP-seq 生物学重复 IDR 分析工具' }];
+    workflow.manifest?.software.push({ name: 'IDR', module: 'IDR/2.0.4.2', checkCmd: 'command -v idr', required: true });
+    workflow.manifest?.references.push({ name: 'DAP 生物学重复与对照分组表（TSV）', path: '{{DAP_SAMPLE_SHEET}}', type: 'other', required: true,
+      source: '显式提供样本、转录因子、条件、独立重复和匹配裸 gDNA 对照；禁止仅根据文件名推测分组。' });
     setStep(workflow.steps[1], '原始序列质控（FastQC）', workflow.steps[1].command, '检查碱基质量、接头残留和序列含量分布。');
     setStep(workflow.steps[2], 'BWA MEM 比对与坐标排序', workflow.steps[2].command, '实验文库和裸 gDNA 对照文库需采用相同参数处理。');
-    setStep(workflow.steps[3], '高质量比对筛选与 PCR 重复去除', workflow.steps[3].command, 'MAPQ≥30；保留正确配对并去除未比对、次要比对、质控失败和 PCR 重复 reads。');
-    setStep(workflow.steps[4], 'MACS2 窄峰调用（裸 gDNA 阴性对照）', workflow.steps[4].command
-      .replace(/\n  if \[ -s \{\{BLACKLIST\}\} \]; then[\s\S]*?\n  fi\n/g, '\n  cp peaks/"${s}"_peaks.narrowPeak peaks/"${s}".peaks.final.bed\n'), '裸 gDNA 对照是 DAP-seq 背景校正的关键；候选峰供后续富集质控与注释。');
+    setStep(workflow.steps[3], '高质量比对筛选与 PCR 重复去除', workflow.steps[3].command.replace(/\bsamtools index(?!\s+-c)\b/g, 'samtools index -c'), 'MAPQ≥30；保留正确配对并去除未比对、次要比对、质控失败和 PCR 重复 reads。');
+    setStep(workflow.steps[4], 'MACS2 窄峰调用（匹配裸 gDNA 对照与 IDR 候选峰）', dapCommand('peaks'), '按分组表逐样本匹配裸 gDNA 对照；采用 BAMPE，分别产出常规峰与独立的宽松 IDR 候选峰。');
     setStep(workflow.steps[5], '扩展质控：FRiP、SPOT、TSS/基因体富集曲线与信号轨迹', qcCommand({ assay, bamGlob: '*.dedup.bam', bamSuffix: '.dedup.bam', peakSuffix: '.peaks.final.bed', fripPass: 0.05 }), '由 BED6 或 GTF/GFF 自动生成 qc/geneR1.bed；按上游 3 kb、标准化基因体 5 kb、下游 3 kb 生成 720 dpi profile PDF 和 heatmap PNG。qc/library_verdict.tsv 对每个文库直接给出 PASS 或 FAILED。');
     workflow.steps[6].title = '基序富集与峰关联基因注释';
+    workflow.steps[6].command = workflow.steps[6].command.replace('for p in peaks/*.peaks.final.bed;', 'for p in idr/final/*.peaks.final.bed;');
     setStep(workflow.steps[7], '生成中文分析与质控报告', reportCommand('zh', assay), '采用生物信息学规范术语；对未达标样本明确标记“文库质控失败”并列出实际失败指标。');
+    workflow.steps.splice(6, 0, { title: '生物学重复 IDR 一致性评估', command: dapCommand('idr'), phase: 'IDR',
+      notes: '仅比较同一转录因子、同一条件的独立生物学重复。全局 IDR 使用第 12 列的 -log10 分数；输出重复对诊断图、分组汇总和可重复峰。单重复、零可重复峰或计算失败均不得标记通过；下游使用 IDR 可重复峰。' });
     if (workflow.manifest) workflow.manifest.qcGates = [
       { afterStep: 4, metric: '比对质量与文库复杂度', pass: '高质量比对率与去重后保留率达到项目预设标准', warn: '任一关键指标低于阈值时直接标记文库质控失败' },
       { afterStep: 6, metric: 'FRiP、SPOT 与 TSS 富集曲线', pass: 'FRiP≥5%；SPOT 和 TSS 曲线必须成功产出', warn: '指标缺失或 FRiP<5% 时标记文库质控失败' },
+      { afterStep: 7, metric: 'DAP 生物学重复 IDR', pass: '每组至少两个独立重复，且存在通过全局 IDR 阈值的可重复峰', warn: '单重复、零可重复峰、缺少证据或 IDR 计算失败时，不建议继续下游分析' },
     ];
   } else if (assay === 'chip-tf' || assay === 'chip-histone') {
     const broad = assay === 'chip-histone';
@@ -376,15 +401,15 @@ function upgradeChinese(workflow: Workflow, assay: Assay): void {
   // These dependencies are backed by the commands' actual input files. ATAC's
   // combined peak/QC steps stay sequential; do not invent cosmetic branches.
   const dependencies: string[][] = assay === 'dap'
-    ? [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['peaks'], ['peaks'], ['extended-qc', 'motif-annotation']]
+    ? [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['peaks'], ['peaks'], ['idr'], ['extended-qc', 'idr', 'motif-annotation']]
     : assay === 'atac'
       ? [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['peaks'], ['extended-qc']]
       : [[], ['preflight'], ['fastqc'], ['align'], ['filter-dedup'], ['filter-dedup'], ['peaks'], ['peaks'], ['xcor', 'extended-qc', 'idr-frip']];
-  const ids = assay === 'dap' ? ['preflight', 'fastqc', 'align', 'filter-dedup', 'peaks', 'extended-qc', 'motif-annotation', 'report']
+  const ids = assay === 'dap' ? ['preflight', 'fastqc', 'align', 'filter-dedup', 'peaks', 'extended-qc', 'idr', 'motif-annotation', 'report']
     : assay === 'atac' ? ['preflight', 'fastqc', 'align', 'filter-dedup', 'peaks', 'extended-qc', 'report']
       : ['preflight', 'fastqc', 'align', 'filter-dedup', 'xcor', 'peaks', 'extended-qc', 'idr-frip', 'report'];
   workflow.steps.forEach((step, i) => { step.id = ids[i]; step.dependsOn = dependencies[i]; });
-  if (workflow.provenance) workflow.provenance.importerVersion = 'chromatin-qc-bilingual-v4';
+  if (workflow.provenance) workflow.provenance.importerVersion = assay === 'dap' ? 'chromatin-qc-bilingual-v5' : 'chromatin-qc-bilingual-v4';
 }
 
 function englishParam(param: WorkflowParam): WorkflowParam {
@@ -394,10 +419,13 @@ function englishParam(param: WorkflowParam): WorkflowParam {
     TSS_BED: 'Gene regions for the TSS profile (BED6/GTF/GFF)', GENES_BED: 'Gene annotation, BED/GFF',
     GENOME_SIZE: 'MACS2 effective genome size', MOTIF_DB: 'Motif database in MEME format',
     ORGANELLE_REGEX: 'Organelle chromosome-name pattern', QUEUE: 'Queue', THREADS: 'Threads',
+    DAP_SAMPLE_SHEET: 'DAP biological-replicate and matched-control sheet (TSV)', IDR_THRESHOLD: 'Global IDR threshold', IDR_PEAK_PVALUE: 'Permissive p-value threshold for IDR candidate peaks',
   };
   const help: Record<string, string> = {
     TSS_BED: 'Required. Provide a strand-aware BED6 file such as geneR1.bed, or a matching GTF/GFF; gene regions are extracted automatically.', GENOME_SIZE: 'Use hs, mm, or a numeric effective genome size.',
     ORGANELLE_REGEX: 'Adjust this pattern to the mitochondrial and chloroplast chromosome names in the selected assembly; leave empty to retain organelle reads.',
+    DAP_SAMPLE_SHEET: 'Required columns: sample, target, condition, replicate, bam, control_bam. Provide at least two independent replicates per target/condition. bam must be sample.dedup.bam; specify the matched naked-gDNA control explicitly. Relative BAM paths are resolved against INPUT_DIR.',
+    IDR_PEAK_PVALUE: 'IDR uses separate permissive candidate peaks, not pre-filtered final peaks. Default p=0.001; adjust to the experimental design. This is a TRACE DAP-seq extension, not an official ENCODE workflow.',
   };
   return { ...param, label: labels[param.name] || param.label, placeholder: param.required === false ? 'Optional; the agent can help locate or prepare this input' : param.placeholder, help: help[param.name] };
 }
@@ -409,8 +437,11 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
   clone.description = EN_DESCRIPTIONS[assay];
   clone.keywords = Array.from(new Set([...clone.keywords.filter(word => !/[\u3400-\u9fff]/.test(word)), 'English', 'SPOT', 'TSS enrichment', 'library QC']));
   clone.params = clone.params.map(englishParam);
+  if (assay === 'dap') clone.params = clone.params.map(param => param.name === 'GENOME_SIZE' ? {
+    ...param, help: 'Required: provide the effective genome size for the selected species. hs/mm apply only to human/mouse, not wheat or other species.',
+  } : param);
   const titles: Record<Assay, string[]> = {
-    dap: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'MACS2 narrow-peak calling against the naked-gDNA control', 'Extended QC: FRiP, SPOT, TSS/gene-body profile, and signal tracks', 'Motif enrichment and peak-to-gene annotation', 'Generate the English analysis and QC report'],
+    dap: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'MACS2 narrow-peak calling with matched naked-gDNA controls and IDR candidates', 'Extended QC: FRiP, SPOT, TSS/gene-body profile, and signal tracks', 'Biological-replicate IDR reproducibility assessment', 'Motif enrichment and peak-to-gene annotation', 'Generate the English analysis and QC report'],
     'chip-tf': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'MACS2 narrow-peak calling', 'Extended QC: SPOT, TSS/gene-body profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
     'chip-histone': ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'BWA-MEM alignment and coordinate sorting', 'High-quality alignment filtering and PCR duplicate removal', 'Strand cross-correlation and library-complexity QC', 'SPP broad-peak calling', 'Extended QC: SPOT, TSS/gene-body profile, and signal tracks', 'FRiP and cross-replicate IDR reproducibility', 'Generate the English analysis and QC report'],
     atac: ['Preflight: software, inputs, and references', 'Raw-read QC with FastQC', 'Bowtie2 alignment and coordinate sorting', 'Organelle-read removal, high-quality alignment filtering, and deduplication', 'Tn5 insertion-site correction and MACS2 accessible-chromatin peak calling', 'QC: TSS/gene-body profile, FRiP, SPOT, fragment-size distribution, and signal tracks', 'Generate the English analysis and QC report'],
@@ -431,6 +462,7 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
       '{{BWA_INDEX}}': 'BWA index', '{{BOWTIE2_INDEX}}': 'Bowtie2 index', '{{REF_FA}}': 'Reference genome FASTA',
       '{{TSS_BED}}': 'Gene regions for the TSS profile (BED6/GTF/GFF)', '{{GENES_BED}}': 'Gene annotation, BED/GFF',
       '{{MOTIF_DB}}': 'Motif database in MEME format',
+      '{{DAP_SAMPLE_SHEET}}': 'DAP biological-replicate and matched-control sheet (TSV)',
     };
     clone.manifest.references = clone.manifest.references.map(ref => ({
       ...ref,
@@ -445,6 +477,7 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
     ] : assay === 'dap' ? [
       { afterStep: 4, metric: 'Alignment quality and library complexity', pass: 'Project high-quality-alignment and post-deduplication retention criteria met', warn: 'Library QC failed when a required metric is below its threshold' },
       { afterStep: 6, metric: 'FRiP, SPOT, and TSS-enrichment profile', pass: 'FRiP ≥5% and complete SPOT/TSS-profile outputs', warn: 'Library QC failed when a required metric is missing or FRiP <5%' },
+      { afterStep: 7, metric: 'DAP biological-replicate IDR', pass: 'At least two independent replicates per group, with reproducible peaks passing the global IDR threshold', warn: 'Downstream analysis is not recommended with a single replicate, zero reproducible peaks, missing evidence, or an IDR computation failure' },
     ] : [
       { afterStep: 5, metric: 'Strand cross-correlation and library complexity', pass: 'NSC ≥1.05, RSC ≥0.8, and NRF ≥0.8', warn: 'Library QC failed when a required metric is below its threshold' },
       { afterStep: 7, metric: 'SPOT and TSS-enrichment profile', pass: 'Both the SPOT value and TSS-enrichment profile are produced', warn: 'Library QC failed when either required output is missing' },
@@ -453,8 +486,8 @@ function englishClone(source: Workflow, assay: Assay, now: number): Workflow {
   }
   clone.createdAt = now;
   clone.updatedAt = now;
-  clone.assets = clone.assets?.map(asset => ({ ...asset, label: asset.remotePath === 'tools/encode_native_report.py' ? 'Deterministic analysis and QC report generator' : asset.label }));
-  if (clone.provenance) clone.provenance.importerVersion = 'chromatin-qc-bilingual-v3-en';
+  clone.assets = clone.assets?.map(asset => ({ ...asset, label: asset.remotePath === 'tools/encode_native_report.py' ? 'Deterministic analysis and QC report generator' : asset.remotePath === 'tools/dapseq_idr.py' ? 'DAP-seq biological-replicate IDR analysis helper' : asset.label }));
+  if (clone.provenance) clone.provenance.importerVersion = assay === 'dap' ? 'chromatin-qc-bilingual-v5-en' : 'chromatin-qc-bilingual-v3-en';
   return clone;
 }
 

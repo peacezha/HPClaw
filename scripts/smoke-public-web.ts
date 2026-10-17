@@ -15,8 +15,8 @@ const gateway = createPublicGateway({ root, origin: 'http://127.0.0.1:3003',
 await new Promise<void>(resolve => gateway.server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${(gateway.server.address() as any).port}`;
 const login = async (letter: 'A' | 'B') => {
-  const credentials = { host: 'fixture.hpclaw.test', port: 22222,
-    username: process.env[`HPCLAW_SMOKE_USER_${letter}`], password: process.env[`HPCLAW_SMOKE_PASSWORD_${letter}`] };
+  const credentials = { host: 'fixture.trace.test', port: 22222,
+    username: process.env[`TRACE_SMOKE_USER_${letter}`], password: process.env[`TRACE_SMOKE_PASSWORD_${letter}`] };
   assert(credentials.username && credentials.password, 'Missing isolated credentials');
   let response = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) });
   const cookie = response.headers.get('set-cookie')!.split(';')[0];
@@ -34,7 +34,7 @@ const request = (user: Awaited<ReturnType<typeof login>>, url: string, method = 
 });
 try {
   assert.equal((await fetch(base + '/api/conversations')).status, 401);
-  assert((await (await fetch(base)).text()).includes('window.hpclawPublicWeb=true'));
+  assert((await (await fetch(base)).text()).includes('window.tracePublicWeb=true'));
   const alice = await login('A'); const bob = await login('B');
   assert.equal(workers.length, 2, 'Fingerprint retry must reuse the pending worker');
   assert.equal((await fetch(`http://127.0.0.1:${workers[0].port}/api/public/profile`)).status, 403, 'Direct worker access forbidden');
@@ -44,28 +44,28 @@ try {
   assert((await request(alice, '/api/ai-profile', 'POST', { profile })).ok);
   assert.equal((await (await request(alice, '/api/public/profile')).json()).profile.apiKey, profile.apiKey);
   assert(!(await (await request(bob, '/api/public/profile')).json()).profile?.apiKey, 'API profiles are private');
-  assert((await request(alice, '/api/public/preferences', 'PUT', { key: 'hpclaw_workflow_run_config_v1:fixture', value: '{"input":"cluster-owned"}' })).ok);
+  assert((await request(alice, '/api/public/preferences', 'PUT', { key: 'trace_workflow_run_config_v1:fixture', value: '{"input":"cluster-owned"}' })).ok);
   const saved = await (await request(alice, '/api/conversations', 'POST', { title: 'CI cluster archive', messages: [{ role: 'user', content: 'cluster-owned conversation' }] })).json();
   assert(saved.success); const conversationId = saved.conversation.id;
   assert.equal((await request(bob, '/api/conversations/' + conversationId)).status, 404);
   const remotePath = alice.home + '/report.html';
-  const report = '<html><head></head><body>HPCLAW_PUBLIC_REMOTE_REPORT</body></html>';
+  const report = '<html><head></head><body>TRACE_PUBLIC_REMOTE_REPORT</body></html>';
   const upload = await fetch(base + '/api/public/upload?path=' + encodeURIComponent(remotePath), { method: 'POST', headers: {
     Cookie: alice.cookie, 'X-SSH-Session-Id': alice.sid, 'Content-Type': 'application/octet-stream' }, body: report });
   assert(upload.ok, 'Browser upload streams to real SFTP');
   assert.equal(await (await request(alice, '/api/files/download?path=' + encodeURIComponent(remotePath))).text(), report);
   const document = await (await request(alice, '/api/files/html/document?path=' + encodeURIComponent(remotePath) + '&sessionId=' + alice.sid)).text();
-  assert(document.includes('HPCLAW_PUBLIC_REMOTE_REPORT'));
+  assert(document.includes('TRACE_PUBLIC_REMOTE_REPORT'));
   const reportAssets = document.match(/\/api\/public\/report-assets\/[a-f0-9]{64}\//)?.[0];
   assert(reportAssets, 'Sandbox report gets an opaque-origin read-only resource capability');
   assert.equal(await (await fetch(base + reportAssets + 'report.html')).text(), report, 'Report assets load even without session cookie');
-  assert.equal((await fetch(base + reportAssets + 'hpclaw_web/state.json')).status, 403);
-  const socket = io(base, { transports: ['websocket'], auth: { sessionId: alice.sid }, query: { hpclawCluster: alice.sid },
+  assert.equal((await fetch(base + reportAssets + 'trace_web/state.json')).status, 403);
+  const socket = io(base, { transports: ['websocket'], auth: { sessionId: alice.sid }, query: { traceCluster: alice.sid },
     extraHeaders: { Cookie: alice.cookie }, reconnection: false, timeout: 10000 });
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Real WebSocket SSH terminal timed out')), 15000);
-      const marker = 'HPCLAW_TERMINAL_' + Date.now();
+      const marker = 'TRACE_TERMINAL_' + Date.now();
       socket.on('shell:ready', () => socket.emit('data', `printf '${marker}\\n'\n`));
       socket.on('data', value => { if (String(value).includes(marker)) { clearTimeout(timer); resolve(); } });
       socket.on('connect_error', () => { clearTimeout(timer); reject(new Error('WebSocket handshake failed')); });
@@ -76,7 +76,7 @@ try {
   const restored = await login('A');
   assert.equal((await (await request(restored, '/api/public/profile')).json()).profile.apiKey, profile.apiKey, 'API key restored from cluster, not shared server');
   const restoredProfile = await (await request(restored, '/api/public/profile')).json();
-  assert.equal(restoredProfile.preferences['hpclaw_workflow_run_config_v1:fixture'], '{"input":"cluster-owned"}');
+  assert.equal(restoredProfile.preferences['trace_workflow_run_config_v1:fixture'], '{"input":"cluster-owned"}');
   const list = await (await request(restored, '/api/conversations')).json();
   assert(list.conversations.some((item: any) => item.id === conversationId), 'Conversation survives worker replacement');
   assert((await request(restored, '/api/logout', 'POST')).ok);

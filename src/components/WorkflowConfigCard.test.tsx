@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import WorkflowConfigCard from './WorkflowConfigCard';
 import type { Workflow } from '@/shared/workflow';
-import { createWorkflowRun, listWorkflows } from '../features/workflows/api';
+import { createWorkflowRun, listWorkflows, runPreflightForConfig } from '../features/workflows/api';
 
 vi.mock('../features/workflows/api', async () => {
   const actual = await vi.importActual<typeof import('../features/workflows/api')>('../features/workflows/api');
@@ -14,12 +14,14 @@ vi.mock('../features/workflows/api', async () => {
       runId: 'run-card-001',
       workflowId: 'wf-test',
       workflowName: '测试流程',
-      runDir: '/home/u/hpclaw_flows/test/03_workspace/runs/run-card-001',
+      runDir: '/home/u/trace_flows/test/03_workspace/runs/run-card-001',
       status: 'running',
       currentStep: 0,
       totalSteps: 1,
       steps: [{ n: 1, title: 's1', status: 'pending' }],
     })),
+    // 启动前整体检查：默认全部就绪（无问题项），直接进入建运行
+    runPreflightForConfig: vi.fn(async () => ({ ok: true, issues: [], preflight: null })),
   };
 });
 
@@ -98,11 +100,68 @@ describe('WorkflowConfigCard', () => {
       params: expect.objectContaining({ INPUT_DIR: '/data/fastq', QUEUE: 'normal', THREADS: '8' }),
     }), 's1');
     const message = onSendMessage.mock.calls[0][0] as string;
-    expect(message).toContain('[HPCLAW_WORKFLOW_RUN]');
+    expect(message).toContain('[TRACE_WORKFLOW_RUN]');
     expect(message).toContain('run-card-001');
     // 确认运行 → 告知 App 开该次运行专属的对话
     expect(onSendMessage.mock.calls[0][1]).toEqual({ dedicatedConversation: true });
     expect(await screen.findByText('已发起运行')).toBeInTheDocument();
+  });
+
+  it('启动前整体检查发现 blocker 时在卡片内展示集中问题清单，取消可返回表单', async () => {
+    vi.mocked(listWorkflows).mockResolvedValueOnce([makeWorkflow()]);
+    vi.mocked(runPreflightForConfig).mockResolvedValueOnce({
+      ok: false,
+      preflight: null,
+      issues: [{ kind: 'software', name: 'FastQC', label: 'FastQC', message: 'module 不可用', severity: 'blocker' }],
+    });
+    const onSendMessage = vi.fn();
+    render(<WorkflowConfigCard workflowId="wf-test" sessionId="s1" onSendMessage={onSendMessage} />);
+    await screen.findByText('确认运行');
+
+    const pathInput = screen.getByPlaceholderText('或手动输入计算资源路径后回车');
+    fireEvent.change(pathInput, { target: { value: '/data/fastq' } });
+    fireEvent.keyDown(pathInput, { key: 'Enter' });
+    fireEvent.change(screen.getByPlaceholderText('INPUT_DIR'), { target: { value: '/data/fastq' } });
+    fireEvent.click(screen.getByText('确认运行'));
+
+    // 有 blocker → 卡片内展示问题清单，不建运行，"仍然开始运行"禁用
+    expect(await screen.findByText('启动前整体检查')).toBeInTheDocument();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(screen.getByText('仍然开始运行').closest('button')).toBeDisabled();
+
+    // 软件问题可交给 AI 补齐（留在当前对话）
+    fireEvent.click(screen.getByText('让 AI 补齐'));
+    expect(onSendMessage).toHaveBeenCalledTimes(1);
+    expect(onSendMessage.mock.calls[0][0]).toContain('FastQC');
+
+    // 取消返回配置表单
+    fireEvent.click(screen.getByText('取消'));
+    expect(await screen.findByText('确认运行')).toBeInTheDocument();
+  });
+
+  it('整体检查通过时直接建运行，消息携带整体检查结论与真实 preflight', async () => {
+    vi.mocked(listWorkflows).mockResolvedValueOnce([makeWorkflow()]);
+    const preflight = {
+      workflowId: 'wf-test', checkedAt: 1, scheduler: 'lsf' as const, ready: true,
+      software: [{ name: 'FastQC', ok: true, required: true }], references: [],
+    };
+    vi.mocked(runPreflightForConfig).mockResolvedValueOnce({ ok: true, issues: [], preflight });
+    const onSendMessage = vi.fn();
+    render(<WorkflowConfigCard workflowId="wf-test" sessionId="s1" onSendMessage={onSendMessage} />);
+    await screen.findByText('确认运行');
+    const pathInput = screen.getByPlaceholderText('或手动输入计算资源路径后回车');
+    fireEvent.change(pathInput, { target: { value: '/data/fastq' } });
+    fireEvent.keyDown(pathInput, { key: 'Enter' });
+    fireEvent.change(screen.getByPlaceholderText('INPUT_DIR'), { target: { value: '/data/fastq' } });
+    fireEvent.click(screen.getByText('确认运行'));
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledTimes(1));
+    expect(runPreflightForConfig).toHaveBeenCalledWith('wf-test', expect.objectContaining({
+      inputs: ['/data/fastq'],
+      params: expect.objectContaining({ INPUT_DIR: '/data/fastq' }),
+    }), 's1');
+    const message = onSendMessage.mock.calls[0][0] as string;
+    expect(message).toContain('已完成启动前整体检查');
+    expect(message).not.toContain('环境尚未检查');
   });
 
   it('无集群会话时禁用运行并提示', async () => {

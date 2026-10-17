@@ -25,6 +25,10 @@ export interface FormalWorkflowContinuation {
   resumeCount: number;
   submittedAt: number;
   updatedAt: number;
+  /** 连续对账失败次数（旧记录无此字段按 0 处理）；成功对账后清零。 */
+  reconcileAttempts?: number;
+  /** 最近一次对账失败时间；配合 reconcileAttempts 做退避调度。 */
+  lastAttemptAt?: number;
 }
 
 export interface FormalWorkflowContinuationContext {
@@ -170,6 +174,88 @@ export function markFormalWorkflowWaitingUser(id: string): void {
   record.state = 'waiting_user';
   record.updatedAt = Date.now();
   persist();
+}
+
+// ── 对账退避与失败上限 ──────────────────────────────────────────────
+// 大 LSF 集群上一次对账超时不代表永远失败；每 45s 无差别重放会把登录节点
+// 打出更多慢查询。失败按 45s→2min→5min→15min 退避，连续失败到上限后
+// 暂停为 waiting_user 并明确告知用户，避免无限 deferred。
+
+/** 连续对账失败达到该次数后暂停自动续跑，转人工恢复。 */
+export const FORMAL_RECONCILE_MAX_ATTEMPTS = 8;
+
+const RECONCILE_BACKOFF_MS = [45_000, 120_000, 300_000, 900_000];
+
+/** 第 attempts 次失败后的重试间隔（45s→2min→5min→15min 封顶）。 */
+export function reconcileBackoffMs(attempts: number): number {
+  const n = Math.max(1, Math.floor(attempts));
+  return RECONCILE_BACKOFF_MS[Math.min(n - 1, RECONCILE_BACKOFF_MS.length - 1)];
+}
+
+/** 该记录是否到了下一次对账时间（sweep 用；旧记录缺字段时立即到期）。 */
+export function isFormalWorkflowReconcileDue(record: FormalWorkflowContinuation, now = Date.now()): boolean {
+  const attempts = record.reconcileAttempts ?? 0;
+  if (attempts <= 0 || !record.lastAttemptAt) return true;
+  return now - record.lastAttemptAt >= reconcileBackoffMs(attempts);
+}
+
+/** 记录一次对账失败（递增计数并落盘），返回更新后的记录。 */
+export function noteFormalWorkflowReconcileAttempt(id: string, now = Date.now()): FormalWorkflowContinuation | undefined {
+  const record = load().find(item => item.id === id);
+  if (!record) return undefined;
+  record.reconcileAttempts = (record.reconcileAttempts ?? 0) + 1;
+  record.lastAttemptAt = now;
+  record.updatedAt = now;
+  persist();
+  return { ...record };
+}
+
+/** 对账成功后清零失败计数，让后续失败重新从最短退避开始。 */
+export function resetFormalWorkflowReconcileAttempts(id: string): void {
+  const record = load().find(item => item.id === id);
+  if (!record || !record.reconcileAttempts) return;
+  record.reconcileAttempts = 0;
+  record.lastAttemptAt = undefined;
+  record.updatedAt = Date.now();
+  persist();
+}
+
+export interface FormalReconcileFailureDeps {
+  /** 把 run 置为 waiting_user 并写明暂停原因（可能因集群仍缓慢而失败，调用方自行兜底）。 */
+  pauseRun: (runDir: string, error: string) => Promise<unknown>;
+  /** 复用现有外部通知通道（notify-config 配置的渠道）。 */
+  notify?: (title: string, content: string) => Promise<unknown> | unknown;
+  now?: () => number;
+}
+
+/**
+ * 对账失败的统一决策：递增失败计数；未达上限 → 'retry'（调用方负责重新排队，sweep 按退避到期再来）；
+ * 达到上限 → 'pause'，记录转 waiting_user（不再被 sweep 捞起）、run 写明可人工恢复的原因并通知用户。
+ */
+export async function handleFormalReconcileFailure(
+  record: FormalWorkflowContinuation,
+  deps: FormalReconcileFailureDeps,
+): Promise<{ action: 'retry' | 'pause'; attempts: number }> {
+  const now = (deps.now ?? Date.now)();
+  const updated = noteFormalWorkflowReconcileAttempt(record.id, now);
+  const attempts = updated?.reconcileAttempts ?? (record.reconcileAttempts ?? 0) + 1;
+  if (attempts < FORMAL_RECONCILE_MAX_ATTEMPTS) return { action: 'retry', attempts };
+  markFormalWorkflowWaitingUser(record.id);
+  const error = `自动续跑对账因集群响应缓慢连续失败 ${attempts} 次，已暂停；你的作业未被取消，可在对话里发送「继续」手动恢复。`;
+  try {
+    await deps.pauseRun(record.runDir, error);
+  } catch (err) {
+    console.warn('[workflow-continuation] 暂停流程运行写入失败: %s', err instanceof Error ? err.message : String(err));
+  }
+  try {
+    await deps.notify?.(
+      '流程自动续跑已暂停',
+      `运行 ${record.runId}（${record.runDir}）的自动续跑对账连续失败 ${attempts} 次（集群响应缓慢），已暂停；作业未被取消，可在对话里发送「继续」手动恢复。`,
+    );
+  } catch (err) {
+    console.warn('[workflow-continuation] 暂停通知发送失败: %s', err instanceof Error ? err.message : String(err));
+  }
+  return { action: 'pause', attempts };
 }
 
 export function removeFormalWorkflowContinuation(id: string): boolean {

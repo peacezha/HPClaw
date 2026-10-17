@@ -29,9 +29,15 @@ export declare function resolveConfig(config?: BasicCompactionConfig): ResolvedC
 export declare function resolveTargetPolicy(config: ResolvedConfig, target: Pick<LlmCallConfig, 'provider' | 'model'>): ResolvedTargetPolicy;
 /**
  * Scale one routed policy into concrete token budgets for its model capacity.
+ *
+ * Pressure is capped by both the window fraction and the capacity remaining
+ * after the routed output reservation plus compaction headroom. Retention scales
+ * the message budget before headroom is deducted.
+ *
  * @param policy - merged policy for the exact routed target.
  * @param contextWindow - positive adapter-owned capacity for that target.
+ * @param reservedCompletionTokens - output tokens one routed request reserves.
  * @returns detached immutable pressure and retention budgets.
  */
-export declare function resolveCompactSpec(policy: ResolvedTargetPolicy, contextWindow: number): ResolvedCompactSpec;
+export declare function resolveCompactSpec(policy: ResolvedTargetPolicy, contextWindow: number, reservedCompletionTokens: number): ResolvedCompactSpec;
 //# sourceMappingURL=config.d.ts.map

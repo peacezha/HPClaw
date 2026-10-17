@@ -8,7 +8,7 @@ import { loadWorkflows } from './workflowStore';
 
 vi.mock('./workflowStore', () => ({ loadWorkflows: vi.fn(async () => []) }));
 
-const runDir = '/home/qc/hpclaw_flows/qc/03_workspace/runs/qc-test';
+const runDir = '/home/qc/trace_flows/qc/03_workspace/runs/qc-test';
 function fixture(qc?: 'pass' | 'warn' | 'fail') {
   let stored: WorkflowRun = {
     runId: 'qc-test', workflowId: 'qc', workflowName: 'QC test', workflowVersion: 1,

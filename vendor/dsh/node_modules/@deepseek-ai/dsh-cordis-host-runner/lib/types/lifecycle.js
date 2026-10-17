@@ -28,8 +28,8 @@ export async function startHostHalf(group, plugin, reportGuardFailure) {
         // The commonest startup collision is running a NEW version of a package
         // while the old run still holds the name — teach the replace recipe.
         if (message.includes('already registered')) {
-            throw new Error(`${message} — to REPLACE something an earlier dynamic package registered, first cordis_stop that package's id `
-                + '(find it with cordis_runtime_inspect what:"temporary"), then run the new version.');
+            throw new Error(`${message} — to REPLACE something an earlier dynamic package registered, first stop that package through its runner or the Cordis panel `
+                + 'before running the new version.');
         }
         throw error instanceof Error ? error : new Error(message);
     }

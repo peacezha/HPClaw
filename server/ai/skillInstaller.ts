@@ -106,7 +106,7 @@ async function extractArchive(archivePath: string, targetDir: string): Promise<n
     cwd: targetDir,
     filter: (entryPath, entry) => {
       assertSafeArchivePath(entryPath);
-      if (process.env.HPCLAW_PUBLIC_WORKER === '1' && !['File', 'Directory'].includes((entry as { type?: string }).type || '')) return false;
+      if (process.env.TRACE_PUBLIC_WORKER === '1' && !['File', 'Directory'].includes((entry as { type?: string }).type || '')) return false;
       const allowed = isAllowedFile(entryPath);
       if (allowed) count++;
       return allowed;
@@ -142,12 +142,12 @@ export async function installSkillFromSource(
   source: SkillInstallSource,
   options: SkillInstallOptions,
 ): Promise<{ success: true; installedPath: string; fileCount: number; index: SkillIndex }> {
-  if (process.env.HPCLAW_PUBLIC_WORKER === '1' && (source.type === 'git' || source.type === 'local' && !source.content)) {
+  if (process.env.TRACE_PUBLIC_WORKER === '1' && (source.type === 'git' || source.type === 'local' && !source.content)) {
     throw new Error('公共网页不读取部署服务器本地技能或执行 Git；请使用技能文本或 HTTPS 归档链接');
   }
   const writableRoot = options.userSkillsDir || options.appSkillsDir || options.skillsDir;
   const importedRoot = path.join(writableRoot, 'imported');
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-skill-'));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-skill-'));
   let installedPath = '';
   let fileCount = 0;
 

@@ -8,7 +8,7 @@ import {
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
     runId: 'run-1',
-    runDir: '/home/u/hpclaw_flows/demo/03_workspace/runs/run-1',
+    runDir: '/home/u/trace_flows/demo/03_workspace/runs/run-1',
     status: 'running',
     updatedAt: 100,
     currentStep: 1,

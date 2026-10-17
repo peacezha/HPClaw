@@ -2,9 +2,9 @@
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9228';
-const screenshotPath = process.argv[3] || 'hpclaw-workflow-code-editor.png';
+const screenshotPath = process.argv[3] || 'trace-workflow-code-editor.png';
 const workflowName = '集群作业排查流程';
-const marker = '# HPCLAW_CODE_EDIT_REGRESSION';
+const marker = '# TRACE_CODE_EDIT_REGRESSION';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function getJson(path) {
@@ -22,7 +22,7 @@ function getJson(path) {
 (async () => {
   const targets = await getJson('/json');
   const target = targets.find(item => item.type === 'page' && !item.url.startsWith('devtools'));
-  if (!target) throw new Error('没有找到 HPClaw 页面');
+  if (!target) throw new Error('没有找到 TRACE 页面');
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();

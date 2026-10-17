@@ -50,14 +50,28 @@ const sample = (id: string, title = '测试对话') => ({
 });
 
 describe('ClusterConversationStore', () => {
+  it('reads legacy archives, writes updated copies to TRACE, and does not resurrect an explicitly deleted record', async () => {
+    const { files, dirs, service } = makeFakeService();
+    dirs.add(`${HOME}/hpclaw_conversations`);
+    files.set(`${HOME}/hpclaw_conversations/old-1.json`, JSON.stringify(sample('old-1', 'Original archive')));
+    const store = new ClusterConversationStore(service, HOME);
+    expect((await store.list()).map(item => item.id)).toEqual(['old-1']);
+    expect((await store.get('old-1'))?.title).toBe('Original archive');
+    await store.save({ ...sample('old-1', 'Updated in TRACE'), updatedAt: 3000 });
+    expect((await store.list()).map(item => item.id)).toEqual(['old-1']);
+    expect((await store.get('old-1'))?.title).toBe('Updated in TRACE');
+    expect(JSON.parse(files.get(`${HOME}/hpclaw_conversations/old-1.json`)!).title).toBe('Original archive');
+    await store.remove('old-1'); expect(await store.list()).toEqual([]); expect(await store.get('old-1')).toBeUndefined();
+  });
+
   it('save 后可 get 读取完整记录，且文件写入集群目录', async () => {
     const { files, service } = makeFakeService();
     const store = new ClusterConversationStore(service, HOME);
     await store.save(sample('abc-1'));
     const record = await store.get('abc-1');
     expect(record?.title).toBe('测试对话');
-    expect(files.has(`${HOME}/hpclaw_conversations/abc-1.json`)).toBe(true);
-    expect(files.has(`${HOME}/hpclaw_conversations/index.json`)).toBe(true);
+    expect(files.has(`${HOME}/trace_conversations/abc-1.json`)).toBe(true);
+    expect(files.has(`${HOME}/trace_conversations/index.json`)).toBe(true);
   });
 
   it('list 返回摘要（倒序），不含消息体', async () => {
@@ -77,7 +91,7 @@ describe('ClusterConversationStore', () => {
     const store = new ClusterConversationStore(service, HOME);
     await store.save(sample('x-1'));
     await store.save(sample('y-2'));
-    files.set(`${HOME}/hpclaw_conversations/index.json`, '{corrupted');
+    files.set(`${HOME}/trace_conversations/index.json`, '{corrupted');
     const list = await store.list();
     expect(list.map(s => s.id).sort()).toEqual(['x-1', 'y-2']);
   });

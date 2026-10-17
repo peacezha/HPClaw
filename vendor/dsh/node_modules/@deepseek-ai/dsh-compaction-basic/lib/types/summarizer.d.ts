@@ -18,11 +18,9 @@ interface SummaryConfig {
  * compaction instruction is then the only novel input.
  */
 export interface SummarizationInput {
-    /** The conversation's own system prompt, reused for prefix-cache alignment; absent for a system-less request. */
-    readonly system?: string;
     /** The conversation's tool schemas, reused for prefix-cache alignment; absent when the request carried none. */
     readonly tools?: readonly ToolSchema[];
-    /** The shadowed region, in surface order, that precedes the compaction instruction. */
+    /** The derived system head, when present, followed by the shadowed region in surface order. */
     readonly messages: readonly Message[];
 }
 /** Safe summary content plus the exact auxiliary call envelope recorded with it. */

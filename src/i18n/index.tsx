@@ -10,14 +10,16 @@ import {
 import { Languages } from 'lucide-react';
 import { BIOINFORMATICS_PHRASES } from './bioinformatics';
 import { WORKFLOW_PHRASES, translateWorkflowTemplate } from './workflowCopy';
+import { WORKFLOW_RUNTIME_PHRASES } from '../../shared/workflowLocale';
+import { currentProductText } from '../../shared/branding';
 
 export type AppLocale = 'zh-CN' | 'en-US';
 
-const LANGUAGE_STORAGE_KEY = 'hpclaw_language';
+const LANGUAGE_STORAGE_KEY = 'trace_language';
 
 /** Apply the Windows install/user preference before rendering; browser mode is unchanged. */
 export async function hydrateDesktopLocale(): Promise<void> {
-  const api = window.hpclawDesktop?.locale;
+  const api = window.traceDesktop?.locale;
   if (!api) return;
   try {
     const locale = await api.get();
@@ -26,7 +28,7 @@ export async function hydrateDesktopLocale(): Promise<void> {
 }
 
 /**
- * HPClaw 的界面短语表。左侧是默认中文，右侧是英文。
+ * TRACE 的界面短语表。左侧是默认中文，右侧是英文。
  * 用户输入、文件名、代码、终端原始输出和 AI 历史消息不属于界面短语，
  * 不在这里自动改写，避免科研内容失真。
  */
@@ -59,7 +61,7 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ["三路 IDR 可重复性","Three-way IDR reproducibility"],
   ["rescue ratio 与 self-consistency ratio 均≤2，且峰数非零","Both rescue and self-consistency ratios ≤2, with nonzero peak counts"],
   ["任一比值>2 或不可计算时不建议继续下游分析","Downstream analysis is not recommended if either ratio exceeds 2 or cannot be calculated"],
-  ["参照 ENCODE 依赖结构的原生双端 TF ChIP-seq 流程：链交叉相关性、真重复峰与互补伪重复分支，三路 IDR 与信号质控汇入报告。使用直接文件参数；这是 HPClaw 扩展实现，不是官方 WDL。","Native paired-end TF ChIP-seq workflow following the ENCODE dependency structure: strand cross-correlation, true-replicate peaks and complementary pseudoreplicates branch separately; three-way IDR and signal QC converge on the report. Direct file parameters are used. This is an HPClaw extension, not the official WDL."],
+  ["参照 ENCODE 依赖结构的原生双端 TF ChIP-seq 流程：链交叉相关性、真重复峰与互补伪重复分支，三路 IDR 与信号质控汇入报告。使用直接文件参数；这是 TRACE 扩展实现，不是官方 WDL。","Native paired-end TF ChIP-seq workflow following the ENCODE dependency structure: strand cross-correlation, true-replicate peaks and complementary pseudoreplicates branch separately; three-way IDR and signal QC converge on the report. Direct file parameters are used. This is a TRACE extension, not the official WDL."],
   ['待弃置', 'Pending disposal'], ['流程板块', 'Workflow sections'],
   ['移入待弃置', 'Move to pending disposal'], ['恢复到正式流程', 'Restore to saved workflows'],
   ['查看待弃置流程', 'View pending-disposal workflow'], ['删除流程定义', 'Delete workflow definition'],
@@ -79,6 +81,8 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。', 'This workflow is pending disposal and cannot start a new run. Restore it in workflow management. Existing tasks are unaffected.'],
   ...BIOINFORMATICS_PHRASES,
   ...WORKFLOW_PHRASES,
+  ...WORKFLOW_RUNTIME_PHRASES,
+  ['默认', 'Default'], ['留空由 AI 处理', 'Leave empty for AI assistance'], ['已指定：', 'Specified: '],
   ['质控未通过：质量不佳，不建议继续下游分析', 'QC failed: poor quality; downstream analysis is not recommended'],
   ['质控警告：请谨慎继续分析', 'QC warning: proceed with caution'],
   ['自动推进已暂停。建议先检查质控报告和原始数据，处理未达标项目。', 'Automatic progression is paused. Review the QC report and raw data, and address the failed checks first.'],
@@ -111,7 +115,7 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['执行过程', 'Execution details'], ['执行记录', 'Execution record'],
   ['思考过程', 'Reasoning details'], ['思考过程（点击展开）', 'Reasoning details (expand)'],
   ['智能体引擎', 'Agent engine'], ['智能选择（推荐）', 'Automatic selection (recommended)'],
-  ['HPClaw 原生智能体', 'HPClaw native agent'], ['DSH 智能体', 'DSH agent'],
+  ['TRACE 原生智能体', 'TRACE native agent'], ['DSH 智能体', 'DSH agent'],
   ['AI 与执行设置', 'AI and execution settings'], ['模型、规划和命令确认策略', 'Model, planning and command approval policy'],
   ['达到上限时会暂停当前任务，不会删除对话；已保存流程会自动使用 200 步执行档，通常可一轮跑完整个流程。', 'Reaching the limit pauses the task without deleting the conversation. Saved workflows automatically use the 200-step execution preset.'],
   ['已信任全部命令：AI 的命令不再逐条确认（硬性安全拦截仍生效）', 'All commands are trusted: individual approval is disabled; mandatory safety checks remain active'],
@@ -138,7 +142,7 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['当前任务执行位置', 'Execution target'],
   ['收起导航', 'Collapse navigation'], ['展开导航', 'Expand navigation'], ['关闭导航', 'Close navigation'],
   ['高级执行设置', 'Advanced execution settings'], ['今天想完成什么任务？', 'What would you like to accomplish?'],
-  ['可以先讨论方案，也可以选择左侧文件或流程；需要计算时，HPClaw 会调用后台计算资源。', 'Discuss a plan, choose your data or a workflow, and run it on your selected compute resource.'],
+  ['可以先讨论方案，也可以选择左侧文件或流程；需要计算时，TRACE 会调用后台计算资源。', 'Discuss a plan, choose your data or a workflow, and run it on your selected compute resource.'],
   ['配置你的 AI 工作台', 'Set up your AI workspace'],
   ['完成一次配置后，就可以直接从对话开始科研计算任务。', 'Configure once, then start research tasks directly from a conversation.'],
   ['全屏预览', 'Full-screen preview'], ['退出全屏预览', 'Exit full-screen preview'],
@@ -210,7 +214,7 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['已连接', 'Connected'],
 
   ['AI 助理', 'AI Assistant'],
-  ['HPClaw 智能助手', 'HPClaw Intelligent Assistant'],
+  ['TRACE 智能助手', 'TRACE Intelligent Assistant'],
   ['AI 服务商', 'AI provider'],
   ['模型', 'Model'],
   ['自定义 OpenAI 兼容接口', 'Custom OpenAI-compatible endpoint'],
@@ -284,12 +288,12 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['AI 正在准备…', 'AI is preparing…'],
   ['正在恢复后台任务…', 'Restoring the background task…'],
   ['正在恢复流程进度…', 'Restoring workflow progress…'],
-  ['正在连接 HPClaw Agent…', 'Connecting to the HPClaw Agent…'],
+  ['正在连接 TRACE Agent…', 'Connecting to the TRACE Agent…'],
   ['流程执行器正在核对当前步骤…', 'The workflow runner is validating the current step…'],
   ['AI 正在推理和规划…', 'AI is reasoning and planning…'],
   ['AI 正在执行计算资源命令…', 'AI is running a command on the compute resource…'],
   ['AI 正在组织结果…', 'AI is preparing the result…'],
-  ['正在连接 HPClaw Agent…', 'Connecting to HPClaw Agent…'],
+  ['正在连接 TRACE Agent…', 'Connecting to TRACE Agent…'],
   ['正在整理对话、计算资源环境和相关技能…', 'Preparing conversation, compute resource context, and relevant skills…'],
   ['上下文已就绪，正在请求', 'Context ready; requesting'],
   ['正在请求', 'Requesting'],
@@ -729,6 +733,24 @@ const UI_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['选择计算资源上要处理的数据目录', 'Choose the data folder on the compute resource'],
   ['请先选择要处理的数据目录', 'Choose the data folder to process first'],
   ['配置并运行', 'Configure and run'],
+  // 启动前整体检查（preflight-run）集中解答卡
+  ['启动前整体检查', 'Pre-run check'],
+  ['正在整体检查…', 'Running pre-run checks…'],
+  ['必须解决', 'Must fix'],
+  ['建议处理', 'Recommended'],
+  ['让 AI 补齐', 'Ask AI to set up'],
+  ['输入集群上的实际路径', 'Enter the actual path on the compute resource'],
+  ['全部就绪', 'All ready'],
+  ['全部解决后重新检查', 'Re-check after resolving all'],
+  ['仍然开始运行', 'Run anyway'],
+  ['必须先解决所有标红问题', 'Resolve all blocking issues first'],
+  ['明确接受以上警告后继续', 'Continue after explicitly accepting the warnings above'],
+  ['输入数据', 'Input data'],
+  ['占位符', 'Placeholder'],
+  ['可由 AI 运行时处理；仍要现在指定时请回到参数区填写。', 'The AI can handle this at runtime; to set it now, go back to the parameter section.'],
+  ['必填参数未填写', 'Required parameter missing'],
+  ['输入数据路径在集群上不存在', 'Input data path does not exist on the compute resource'],
+  ['未能确认输入路径存在性', 'Could not confirm the input path exists'],
   // 计算资源导航与登录（“集群”改名“计算资源”后新增的界面短语）
   ['对话', 'Chat'],
   ['文件', 'Files'],
@@ -814,6 +836,12 @@ for (const [zh, en] of UI_PHRASES) {
   if (!ZH_TO_EN.has(zh)) ZH_TO_EN.set(zh, en);
   if (!EN_TO_ZH.has(en)) EN_TO_ZH.set(en, zh);
 }
+// Runtime metadata has one authoritative reviewed translation shared with
+// generated reports; legacy display-only aliases must not override it.
+for (const [zh, en] of WORKFLOW_RUNTIME_PHRASES) {
+  ZH_TO_EN.set(zh, en);
+  if (!EN_TO_ZH.has(en)) EN_TO_ZH.set(en, zh);
+}
 
 export function getStoredLocale(): AppLocale {
   if (typeof window === 'undefined') return 'zh-CN';
@@ -828,6 +856,7 @@ const TRANSLATE_CACHE_LIMIT = 10000;
 
 export function translateUiText(value: string, locale: AppLocale): string {
   if (!value || !value.trim()) return value;
+  value = currentProductText(value);
   const cacheKey = `${locale} ${value}`;
   const cached = TRANSLATE_CACHE.get(cacheKey);
   if (cached !== undefined) return cached;
@@ -850,6 +879,15 @@ function translateUiTextUncached(value: string, locale: AppLocale): string {
   // Chinese hybrid). Exact phrases and typed templates keep the boundary
   // between interface copy and domain/user content auditable.
   if (locale === 'en-US') {
+    const stepCount = core.match(/^(\d+) 步( · 默认按流程执行)?$/);
+    if (stepCount) return `${leading}${stepCount[1]} ${Number(stepCount[1]) === 1 ? 'step' : 'steps'}${stepCount[2] ? ' · Follow the workflow by default' : ''}${trailing}`;
+    const parameterCount = core.match(/^(\d+) 个参数$/);
+    if (parameterCount) return `${leading}${parameterCount[1]} parameters${trailing}`;
+    const numberError = core.match(/^(.+?)(必须是数字|不能小于 |不能大于 |格式不正确|的校验规则无效)(.*)$/);
+    if (numberError) {
+      const suffixes: Record<string, string> = { '必须是数字': ' must be numeric', '不能小于 ': ' must be at least ', '不能大于 ': ' must be at most ', '格式不正确': ' has an invalid format', '的校验规则无效': ' has an invalid validation rule' };
+      return `${leading}${translateUiText(numberError[1], locale)}${suffixes[numberError[2]]}${numberError[3]}${trailing}`;
+    }
     const workflowTemplate = translateWorkflowTemplate(core);
     if (workflowTemplate !== undefined) return `${leading}${workflowTemplate}${trailing}`;
     const submit = core.match(/^写成 ([\w.-]+\.lsf) 后 bsub 提交(；先看报告再决定后续|；单端数据只传 R1 一个文件)?$/);
@@ -958,7 +996,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const setLocale = useCallback((next: AppLocale) => {
     const valid = next === 'en-US' ? 'en-US' : 'zh-CN';
     setLocaleState(valid);
-    void window.hpclawDesktop?.locale?.set(valid).catch(() => console.warn('[i18n] desktop language preference could not be saved'));
+    void window.traceDesktop?.locale?.set(valid).catch(() => console.warn('[i18n] desktop language preference could not be saved'));
   }, []);
   const toggleLocale = useCallback(() => {
     setLocale(locale === 'zh-CN' ? 'en-US' : 'zh-CN');
@@ -1027,9 +1065,13 @@ export function useI18n(): LocaleContextValue {
 
 /** Display-only metadata translation; standalone component tests default to
  * the stored language. Controlled inputs retain their original backing value. */
-export function useWorkflowText(): (value: string) => string {
+export function useWorkflowLocale(): AppLocale {
   const context = useContext(LocaleContext);
-  const locale = context?.locale || getStoredLocale();
+  return context?.locale || getStoredLocale();
+}
+
+export function useWorkflowText(): (value: string) => string {
+  const locale = useWorkflowLocale();
   return useCallback((value: string) => translateUiText(value, locale), [locale]);
 }
 

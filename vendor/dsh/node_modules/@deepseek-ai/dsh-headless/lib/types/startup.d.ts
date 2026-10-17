@@ -1,7 +1,8 @@
 /**
- * The one-shot app's command-line provider: it parses the task positional and
- * `--help`, then publishes {@link HEADLESS_STARTUP_SERVICE}. The runner is an
- * ordinary consumer whose lazy config waits for that service.
+ * The one-shot app's command-line provider: it parses the task positional,
+ * `--session-id`, `--json`, and `--help`, then publishes
+ * {@link HEADLESS_STARTUP_SERVICE}. The runner is an ordinary consumer whose
+ * lazy config waits for that service.
  * @module @deepseek-ai/dsh-headless/startup
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -13,13 +14,17 @@ export declare const inject: string[];
 export declare const HEADLESS_STARTUP_SERVICE = "headlessStartup";
 /** What the runner row reads from {@link HEADLESS_STARTUP_SERVICE}. */
 export interface HeadlessStartupValues {
-    /** The task text this invocation asked for. */
-    task: string;
+    /** The task text this invocation asked for; absent when the runner reads stdin. */
+    task: string | undefined;
+    /** Exact Session identity to adopt; absent for a fresh random identity. */
+    sessionId: string | undefined;
+    /** Whether stdout carries the machine-readable event stream instead of final text. */
+    json: boolean;
 }
 /**
  * Parse and provide the one-shot task as an ordinary Cordis service. The
- * command's action publishes the task; a missing or whitespace-only task is a
- * usage error, so on rejection (and on `--help`) nothing is provided.
+ * command's action publishes the task; a missing task on an interactive stdin
+ * is a usage error, so on rejection (and on `--help`) nothing is provided.
  * @param ctx - plugin context carrying the command line.
  */
 export declare function apply(ctx: Context): void;

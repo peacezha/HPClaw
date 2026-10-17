@@ -7,7 +7,7 @@ import os from 'node:os';
 const tmpBase = os.tmpdir();
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(tmpBase, 'hpclaw-test-'));
+  return fs.mkdtempSync(path.join(tmpBase, 'trace-test-'));
 }
 
 describe('local-files', () => {

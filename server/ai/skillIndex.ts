@@ -371,7 +371,7 @@ export function skillFromContent(
       size,
       isSystem: false,
       source,
-      sourcePath: source === 'cluster' ? `cluster:~/hpclaw_skills/${relativePath}` : relativePath,
+      sourcePath: source === 'cluster' ? `cluster:~/trace_skills/${relativePath}` : relativePath,
       dependsOn: Array.isArray(parsed.data.depends_on) ? parsed.data.depends_on.map(String) : undefined,
       relatedTo: Array.isArray(parsed.data.related_to) ? parsed.data.related_to.map(String) : undefined,
       usedWith: Array.isArray(parsed.data.used_with) ? parsed.data.used_with.map(String) : undefined,

@@ -2,6 +2,7 @@ import type { TokenAllocation, TokenBudget } from './types';
 
 export const MODEL_WINDOWS: Record<string, number> = {
   'deepseek-v4-pro': 131072,
+  'deepseek-flash': 1000000,
   'deepseek-chat': 65536,
   'deepseek-reasoner': 65536,
   'gemini-3.1-pro-preview': 1048576,

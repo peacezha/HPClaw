@@ -25,12 +25,12 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 const runMessage = composeRunMessage(makeWorkflow(), {
   inputs: ['/data/fastq'],
   paramValues: {},
-  run: { runId: 'run-001', runDir: '/home/u/hpclaw_flows/x/03_workspace/runs/run-001' },
+  run: { runId: 'run-001', runDir: '/home/u/trace_flows/x/03_workspace/runs/run-001' },
 });
 
 const resumeMessage = composeResumeRunMessage(makeWorkflow(), {
   runId: 'run-001',
-  runDir: '/home/u/hpclaw_flows/x/03_workspace/runs/run-001',
+  runDir: '/home/u/trace_flows/x/03_workspace/runs/run-001',
   status: 'failed',
   currentStep: 1,
   totalSteps: 2,
@@ -68,7 +68,7 @@ describe('workflowRunConversationTitle 运行协议标题', () => {
   });
 
   it('协议里取不到流程名时返回 null（调用方回退常规派生）', () => {
-    const markerOnly = runMessage.split('\n')[0]; // 只有 [HPCLAW_WORKFLOW_RUN] 首行
+    const markerOnly = runMessage.split('\n')[0]; // 只有 [TRACE_WORKFLOW_RUN] 首行
     expect(workflowRunConversationTitle(markerOnly)).toBeNull();
   });
 });
@@ -77,7 +77,7 @@ describe('deriveConversationTitle 自动保存标题', () => {
   it('首条用户消息是运行协议 → 标题为「流程：<名>」，而不是协议文本', () => {
     const title = deriveConversationTitle([{ role: 'user', content: runMessage }], '新对话');
     expect(title).toBe('流程：RNA-seq 差异分析');
-    expect(title).not.toContain('[HPCLAW_WORKFLOW_RUN]');
+    expect(title).not.toContain('[TRACE_WORKFLOW_RUN]');
   });
 
   it('普通对话沿用首条用户消息前 40 字', () => {

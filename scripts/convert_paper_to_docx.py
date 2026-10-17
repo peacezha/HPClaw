@@ -13,8 +13,8 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "docs" / "papers" / "hpclaw_paper_draft.md"
-OUTPUT = ROOT / "docs" / "papers" / "hpclaw_paper_draft.docx"
+SOURCE = ROOT / "docs" / "papers" / "trace_paper_draft.md"
+OUTPUT = ROOT / "docs" / "papers" / "trace_paper_draft.docx"
 
 BODY_FONT = "Microsoft YaHei"
 LATIN_FONT = "Calibri"
@@ -241,7 +241,7 @@ def add_footer(doc: Document) -> None:
     footer = section.footer
     p = footer.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("HPClaw manuscript")
+    run = p.add_run("TRACE manuscript")
     set_run_font(run, size=9)
     run.font.color.rgb = MUTED
 
@@ -334,7 +334,7 @@ def build_docx(source: Path = SOURCE, output: Path = OUTPUT) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert an HPClaw markdown paper draft to DOCX.")
+    parser = argparse.ArgumentParser(description="Convert a TRACE markdown paper draft to DOCX.")
     parser.add_argument("source", nargs="?", type=Path, default=SOURCE)
     parser.add_argument("output", nargs="?", type=Path, default=OUTPUT)
     args = parser.parse_args()

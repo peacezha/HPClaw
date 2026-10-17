@@ -16,7 +16,7 @@ export const WEB_API_TIMEOUT_MS = 20_000;
 export const WEB_API_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const WEB_API_MAX_TEXT_CHARS = 200_000;
 
-const USER_AGENT = 'HPClaw/0.3 (public bioinformatics APIs)';
+const USER_AGENT = 'TRACE/0.3 (public bioinformatics APIs)';
 
 /**
  * 请求头 Accept 保持极简的 application/json：部分上游（UniProt 实测）对带

@@ -1,26 +1,26 @@
-# HPClaw —— HPC 集群智能工作台
+# TRACE —— HPC 集群智能工作台
 
 面向生物信息与高性能计算场景的桌面客户端：AI 智能体 + 集群作业管理 + 文件传输 + 生信分析流程库，开箱即用。
 
 ## 下载安装（推荐给绝大多数用户）
 
-**[⬇️ 点击下载 HPClaw 最新版（Windows x64 安装包）](https://github.com/peacezha/HPClaw/releases/latest)**
+**[⬇️ 点击下载 TRACE 最新版（Windows x64 安装包）](https://github.com/peacezha/TRACE/releases/latest)**
 
-下载 `HPClaw-Setup-x64.exe` 后双击安装即可，**无需安装 Node.js 或任何其他依赖**。
+下载 `TRACE-Setup-<版本>-x64.exe` 后双击安装即可，**无需安装 Node.js 或任何其他依赖**。
 
-> 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/HPClaw/releases)。
+> 历史版本与校验信息见 [Releases 页面](https://github.com/peacezha/TRACE/releases)。
 
-v0.4.46 本次仅更新 Windows：正式流程 QC 未通过时醒目提示“质量不佳，不建议继续下游分析”，暂停自动推进；用户明确确认风险后可继续，失败指标仍保留。警告与失败分别显示，中英文同步。保留 v0.4.45 报告预览和英文流程、v0.4.44 双语安装与 DSH 恢复修复，以及经典界面。详见 [Windows 更新说明](docs/WINDOWS_0.4.46.md) · [报告与英文修复](docs/WINDOWS_0.4.45.md)。
+当前本地 Windows 构建为 v0.4.56，完整统一 TRACE 名称、插件与新生成目录，并提供旧数据迁移；包含 v0.4.55 的问答防循环和有效执行计时修复。本地构建尚未发布到 GitHub，线上最新版本以 Releases 页面为准。[完整改名说明](docs/windows-v0.4.56-complete-trace.md) · [Agent 修复说明](docs/windows-v0.4.55-agent-continuity.md)。
 
-Mac（Apple 芯片 / Intel）和公共 Linux 网页包仍使用 [v0.4.43](https://github.com/peacezha/HPClaw/releases/tag/v0.4.43)。文献学习的数据下载和完整流程修复继续包含在 Windows 新版本中。[上一版说明](v0.4.43_更新说明.md) · [Mac 安装说明](docs/MAC_WEB_DEPLOYMENT.md)。
+Mac（Apple 芯片 / Intel）和公共 Linux 网页包仍使用 [v0.4.43](https://github.com/peacezha/TRACE/releases/tag/v0.4.43)。文献学习的数据下载和完整流程修复继续包含在 Windows 新版本中。[上一版说明](v0.4.43_更新说明.md) · [Mac 安装说明](docs/MAC_WEB_DEPLOYMENT.md)。
 
 面向大众的网页服务请选择 **public-web-linux-x64-node20** 包（Node.js 20.19.5+）：[npm 公共网页部署说明](docs/PUBLIC_WEB_DEPLOYMENT.md)。用户自带集群账号和 API Key，无统一网站口令，无部署服务器本地工作台；旧 `web-linux-x64` 包仍是单用户私有版。
 
 ## 快速上手
 
-1. 启动 HPClaw，输入集群地址、端口、用户名和密码（首次连接需确认主机指纹）；
+1. 启动 TRACE，输入集群地址、端口、用户名和密码（首次连接需确认主机指纹）；
 2. 登录后即可使用：AI 对话与任务执行、SSH 终端、集群与本地文件互传、流程库一键运行；
-3. 流程库内置 53 条精选流程（含 12 条 ENCODE 金标准流程），每条流程第 1 步自动做环境检查，分析代码为固定金脚本，只需在运行面板确认参数。
+3. 在流程库选择分析流程，先检查输入、软件和参考数据，再确认参数。来源分别标注 ENCODE 官方流程、参考扩展实现、BioSkills 和用户自建流程。
 
 ## 功能一览
 

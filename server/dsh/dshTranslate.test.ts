@@ -8,93 +8,101 @@ function setup(sessionId = 'sess-1') {
   return { sent, translator, state };
 }
 
-function envelope(method: string, payload: unknown, rpcId = 'rpc-1') {
-  return { type: 'server-request', rpcId, method, payload };
+/** sdk 通道的 SessionEvent 信封（session.event 通知里的 event 本体）。 */
+function sdkEvent(event: unknown) {
+  return { seq: 1, time: 0, ...(event as object) };
 }
 
-function sessionEvent(event: unknown, sessionId = 'sess-1', rpcId = 'rpc-1') {
-  return envelope('session/event', { type: 'session/event', sessionId, event: { seq: 1, time: 0, ...(event as object) } }, rpcId);
-}
-
-describe('dshTranslate', () => {
+describe('dshTranslate (sdk SessionEvent)', () => {
   it('pairs parallel run_command results with their own commands, not the last command issued', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { callId: 'submit', name: 'run_command', arguments: '{"command":"bsub < step-03.lsf"}' } }), state);
-    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { callId: 'read', name: 'run_command', arguments: '{"command":"cat logs/old.submit.txt"}' } }), state);
-    translator.translateFrame(sessionEvent({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'submit', content: [{ type: 'text', text: 'Job <12345> is submitted' }] }] } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/call', data: { callId: 'submit', name: 'run_command', arguments: '{"command":"bsub < step-03.lsf"}' } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/call', data: { callId: 'read', name: 'run_command', arguments: '{"command":"cat logs/old.submit.txt"}' } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'submit', content: [{ type: 'text', text: 'Job <12345> is submitted' }] } } }), state);
     expect(sent.at(-1)).toMatchObject({ type: 'tool_result', command: 'bsub < step-03.lsf' });
   });
+
   it('uses English for new engine errors and never presents an aborted partial turn as successful', () => {
     const sent: any[] = [];
     const translator = createTranslator({ send: e => sent.push(e), locale: 'en-US' });
     const state = createTranslateState('sess-1');
     state.accumulatedText = 'In progress…';
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { reason: { kind: 'aborted' } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { reason: { kind: 'aborted' } } }), state);
     expect(sent).toEqual([{ type: 'done', content: '__CANCELLED__' }]);
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'QUOTA', message: 'Insufficient Balance' } } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'QUOTA', message: 'Insufficient Balance' } } } }), state);
     expect(sent.at(-1)?.error).toBe('DSH execution failed (QUOTA): Insufficient Balance');
   });
-  it('translates text-delta chunks into content events and accumulates text', () => {
+
+  it('emits each assistant message snapshot as one content event and accumulates across steps', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: '你好' } } }), state);
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: '，世界' } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'assistant/message', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '你好' }] } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'assistant/message', data: { turn: 1, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: '，世界' }] } } }), state);
     expect(sent).toEqual([
       { type: 'content', content: '你好' },
       { type: 'content', content: '，世界' },
     ]);
     expect(state.accumulatedText).toBe('你好，世界');
+    expect(state.lastAssistantText).toBe('，世界');
   });
 
-  it('translates reasoning-delta chunks into reasoning events', () => {
+  it('emits reasoning blocks as reasoning events without touching accumulated text', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 1, text: '先想' } } }), state);
-    expect(sent).toEqual([{ type: 'reasoning', content: '先想' }]);
-    expect(state.accumulatedText).toBe('');
+    translator.translateEvent(sdkEvent({ type: 'assistant/message', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'reasoning', text: '先想' }, { type: 'text', text: '再说' }] } } }), state);
+    expect(sent).toEqual([
+      { type: 'content', content: '再说' },
+      { type: 'reasoning', content: '先想' },
+    ]);
+    expect(state.accumulatedText).toBe('再说');
   });
 
-  it('ignores block-start, tool-call-delta and block-end chunks', () => {
+  it('ignores audit and lifecycle events (approval pair, policy, titles, request headers)', () => {
     const { sent, translator, state } = setup();
-    const data = { turn: 1, step: 1 };
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { ...data, chunk: { type: 'block-start', index: 0, blockType: 'text' } } }), state);
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { ...data, chunk: { type: 'tool-call-delta', index: 1, id: 'c1', name: 'bash', argumentsDelta: '{"command":' } } }), state);
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { ...data, chunk: { type: 'block-end', index: 1, block: {} } } }), state);
-    expect(sent).toEqual([]);
-  });
-
-  it('ignores frames for other sessions and non-session/event methods', () => {
-    const { sent, translator, state } = setup('sess-1');
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { chunk: { type: 'text-delta', index: 0, text: 'x' } } }, 'sess-2'), state);
-    translator.translateFrame(envelope('session/subscribed', { type: 'session/subscribed', sessionId: 'sess-1', lastSeq: 3 }), state);
-    translator.translateFrame(envelope('session/queue', { type: 'session/queue', sessionId: 'sess-1' }), state);
-    translator.translateFrame(envelope('approval/resolved', { type: 'approval/resolved', sessionId: 'sess-1', approvalId: 'a1', outcome: 'allowed-once' }), state);
-    translator.translateFrame(null, state);
-    translator.translateFrame({}, state);
+    for (const event of [
+      { type: 'permission/preset', data: {} },
+      { type: 'sandbox/mode', data: {} },
+      { type: 'approval/policy', data: { policy: 'ask' } },
+      { type: 'approval/asked', data: { id: 'a1', toolName: 'bash', reason: 'HPClaw 命令确认\n风险级: write\n命令: ls' } },
+      { type: 'approval/decided', data: { id: 'a1', outcome: 'allowed-once' } },
+      { type: 'agent/inbox/spliced', data: {} },
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'system/message', data: { message: { content: [{ type: 'text', text: 'sys' }] } } },
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'request/header', data: {} },
+      { type: 'request/context', data: {} },
+      { type: 'session/title', data: { title: 't' } },
+      { type: 'session-log-deepseek/delivery-accepted', data: {} },
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+    ]) {
+      translator.translateEvent(sdkEvent(event), state);
+    }
+    translator.translateEvent(null, state);
+    translator.translateEvent({}, state);
     expect(sent).toEqual([]);
   });
 
   it('translates tool/call into tool_call with parsed args and remembers the callId', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"ls -la"}' } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"ls -la"}' } }), state);
     expect(sent).toEqual([{ type: 'tool_call', name: 'bash', args: { command: 'ls -la' } }]);
     expect(state.toolNames.get('call-1')).toBe('bash');
   });
 
   it('keeps raw arguments when the JSON does not parse', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'c2', name: 'bash', arguments: '{broken' } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'c2', name: 'bash', arguments: '{broken' } }), state);
     expect(sent).toEqual([{ type: 'tool_call', name: 'bash', args: '{broken' }]);
   });
 
   it('translates tool/result into tool_result using the remembered tool name', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'wheatomics_query', arguments: '{}' } }), state);
+    translator.translateEvent(sdkEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'wheatomics_query', arguments: '{}' } }), state);
     sent.length = 0;
-    translator.translateFrame(sessionEvent({
+    translator.translateEvent(sdkEvent({
       type: 'tool/result',
       data: {
         turn: 1,
         step: 1,
-        message: { content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'total: 17' }, { type: 'text', text: 'records: [...]' }] }] },
+        message: { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: 'total: 17' }, { type: 'text', text: 'records: [...]' }] },
       },
     }), state);
     expect(sent).toEqual([{ type: 'tool_result', name: 'wheatomics_query', result: 'total: 17\nrecords: [...]' }]);
@@ -102,9 +110,9 @@ describe('dshTranslate', () => {
 
   it('falls back to a generic name for unknown callIds', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({
+    translator.translateEvent(sdkEvent({
       type: 'tool/result',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'tool-result', toolCallId: 'nope', content: [{ type: 'text', text: 'x' }] }] } },
+      data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nope', content: [{ type: 'text', text: 'x' }] } },
     }), state);
     expect(sent).toEqual([{ type: 'tool_result', name: 'tool', result: 'x' }]);
   });
@@ -112,61 +120,41 @@ describe('dshTranslate', () => {
   it('preserves the complete received tool result and prefixes [error] on failure', () => {
     const { sent, translator, state } = setup();
     const long = 'START: ' + 'y'.repeat(5000) + ' END: fatal error';
-    translator.translateFrame(sessionEvent({
+    translator.translateEvent(sdkEvent({
       type: 'tool/result',
       data: {
         turn: 1,
         step: 1,
-        message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: long }], isError: true }] },
+        message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: long }], isError: true },
       },
     }), state);
     expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe('tool_result');
-    expect(sent[0].result.startsWith('[error] ')).toBe(true);
     expect(sent[0].result).toBe('[error] ' + long);
-    expect(sent[0].result).toContain('START:');
-    expect(sent[0].result).toContain('END: fatal error');
 
     sent.length = 0;
-    translator.translateFrame(sessionEvent({
+    translator.translateEvent(sdkEvent({
       type: 'tool/result',
-      data: {
-        turn: 1,
-        step: 1,
-        isError: true,
-        message: { content: [{ type: 'tool-result', toolCallId: 'c2', content: [{ type: 'text', text: 'outer' }] }] },
-      },
+      data: { turn: 1, step: 1, error: { name: 'ToolError', code: 'X' }, message: { role: 'tool', toolCallId: 'c2', isError: true, content: [{ type: 'text', text: 'outer' }] } },
     }), state);
     expect(sent[0].result).toBe('[error] outer');
   });
 
   it('translates step/start into a step event', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'step/start', data: { turn: 1, step: 3 } }), state);
+    translator.translateEvent(sdkEvent({ type: 'step/start', data: { turn: 1, step: 3 } }), state);
     expect(sent).toEqual([{ type: 'step', step: 3 }]);
   });
 
   it('translates turn/end into done with accumulated text', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'assistant/chunk', data: { chunk: { type: 'text-delta', index: 0, text: '答案' } } }), state);
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: '答案' }] } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }), state);
     expect(sent[1]).toEqual({ type: 'done', content: '答案' });
-  });
-
-  it('falls back to the assistant/message snapshot when no deltas streamed', () => {
-    const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({
-      type: 'assistant/message',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: '想' }, { type: 'text', text: '快照答案' }] } },
-    }), state);
-    expect(sent).toEqual([]);
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }), state);
-    expect(sent).toEqual([{ type: 'done', content: '快照答案' }]);
   });
 
   it('turn/end error becomes a visible error and redacts an API key used as the URL', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({
+    translator.translateEvent(sdkEvent({
       type: 'turn/end',
       data: {
         turn: 1,
@@ -187,7 +175,7 @@ describe('dshTranslate', () => {
     const { translator, state } = setup();
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      translator.translateFrame(sessionEvent({
+      translator.translateEvent(sdkEvent({
         type: 'turn/end',
         data: { turn: 1, reason: { kind: 'error', error: { code: 'QUOTA', message: 'Insufficient Balance' } } },
       }), state);
@@ -199,64 +187,21 @@ describe('dshTranslate', () => {
 
   it('does not report an empty completed turn as a successful answer', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }), state);
     expect(sent).toEqual([{ type: 'error', error: 'dsh 引擎已结束，但没有返回可显示的回答' }]);
   });
 
   it('maps aborted turns to the existing cancelled sentinel', () => {
     const { sent, translator, state } = setup();
-    translator.translateFrame(sessionEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }), state);
     expect(sent).toEqual([{ type: 'done', content: '__CANCELLED__' }]);
   });
 
-  it('parses HPClaw confirm reasons into confirm events and records pending approvals', () => {
+  it('treats blocked/max-tokens turn ends as errors, not success', () => {
     const { sent, translator, state } = setup();
-    const reason = 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 123 && echo done';
-    translator.translateFrame(
-      envelope('approval/requested', { type: 'approval/requested', sessionId: 'sess-1', approvalId: 'ap-1', toolName: 'bash', callId: 'c1', reason }, 'env-rpc-7'),
-      state,
-    );
-    expect(sent).toEqual([{ type: 'confirm', id: 'env-rpc-7', command: 'bkill 123 && echo done', risk: 'destructive', title: 'Agent 请求执行命令' }]);
-    expect(state.pendingApprovals).toEqual([{ rpcId: 'env-rpc-7', sessionId: 'sess-1', approvalId: 'ap-1' }]);
-  });
-
-  it('falls back to the raw reason when the confirm format does not parse', () => {
-    const { sent, translator, state } = setup();
-    translator.translateFrame(
-      envelope('approval/requested', { type: 'approval/requested', sessionId: 'sess-1', approvalId: 'ap-2', toolName: 'bash', reason: 'some other reason' }, 'rpc-8'),
-      state,
-    );
-    expect(sent).toEqual([{ type: 'confirm', id: 'rpc-8', command: 'some other reason', risk: 'unknown', title: 'Agent 请求执行命令' }]);
-
-    sent.length = 0;
-    translator.translateFrame(
-      envelope('approval/requested', { type: 'approval/requested', sessionId: 'sess-1', approvalId: 'ap-3', toolName: 'bash' }, 'rpc-9'),
-      state,
-    );
-    expect(sent[0]).toEqual({ type: 'confirm', id: 'rpc-9', command: '(未提供)', risk: 'unknown', title: 'Agent 请求执行命令' });
-  });
-
-  it('ignores approval requests for other sessions', () => {
-    const { sent, translator, state } = setup('sess-1');
-    translator.translateFrame(
-      envelope('approval/requested', { type: 'approval/requested', sessionId: 'sess-2', approvalId: 'ap-x', reason: 'HPClaw 命令确认\n风险级: write\n命令: ls' }),
-      state,
-    );
-    expect(sent).toEqual([]);
-    expect(state.pendingApprovals).toEqual([]);
-  });
-
-  it('translates stream/error into an error event', () => {
-    const { sent, translator, state } = setup();
-    translator.translateFrame(envelope('stream/error', { type: 'stream/error', error: { code: 'rate_limit', message: '限流了' } }), state);
-    expect(sent).toEqual([{ type: 'error', error: '限流了' }]);
-
-    sent.length = 0;
-    translator.translateFrame(envelope('stream/error', { type: 'stream/error', error: { code: 'boom' } }), state);
-    expect(sent).toEqual([{ type: 'error', error: 'boom' }]);
-
-    sent.length = 0;
-    translator.translateFrame(envelope('stream/error', { type: 'stream/error', error: { message: 'request sk-1234567890abcdef failed' } }), state);
-    expect(sent).toEqual([{ type: 'error', error: 'request sk-*** failed' }]);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }), state);
+    translator.translateEvent(sdkEvent({ type: 'turn/end', data: { turn: 1, reason: { kind: 'blocked' } } }), state);
+    expect(sent[0].type).toBe('error');
+    expect(sent[1].type).toBe('error');
   });
 });

@@ -151,7 +151,7 @@ export interface GatewayRequest {
 }
 
 export interface StreamEvent {
-  type: 'reasoning' | 'content' | 'done' | 'error' | 'tool_call' | 'tool_result' | 'step' | 'ask' | 'ask_done' | 'plan' | 'plan_update' | 'status';
+  type: 'reasoning' | 'content' | 'done' | 'error' | 'tool_call' | 'tool_result' | 'step' | 'ask' | 'ask_done' | 'plan' | 'plan_update' | 'status' | 'compacted';
   content?: string;
   error?: string;
   name?: string;

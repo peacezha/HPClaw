@@ -19,6 +19,19 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { z as zod } from 'zod';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        /** Location attribution; readers preserve the content without this producer.
+         * Its projection uses the kind to avoid repeated injection.
+         * @persistenceAttribution
+         */
+        'tmux-context': {
+            kind: 'tmux-context';
+        } & ContextFormed;
+    }
+}
 /** Cordis plugin name used by loader diagnostics. */
 export declare const name = "tmux-context";
 /** The agent registry that owns pre-step processing. */
@@ -30,11 +43,23 @@ export interface Config {
 }
 /** Schemastery validation for {@link Config}. */
 export declare const Config: z<Config>;
+declare const tmuxContextStateSchema: zod.ZodNullable<zod.ZodObject<{
+    state: zod.ZodString;
+    time: zod.ZodNumber;
+}, zod.core.$strip>>;
+type TmuxContextState = zod.infer<typeof tmuxContextStateSchema>;
 /**
  * Register a prepended pre-step listener for the lifetime of `ctx`.
  * @param ctx - plugin context; the listener is disposed with it.
  * @param config - durable refresh scheduling configuration.
  * @throws when the refresh interval is invalid.
  */
+declare module '@deepseek-ai/dsh-session-projection/types' {
+    interface SessionProjectionStateMap {
+        /** The stable state block of this plugin's latest durable injection, or null. */
+        tmuxContext: TmuxContextState;
+    }
+}
 export declare function apply(ctx: Context, config: Config): void;
+export {};
 //# sourceMappingURL=index.d.ts.map

@@ -16,25 +16,21 @@ function eventDelta(event) {
             return 0;
     }
 }
-/** Read and validate the event named by a surface sequence. */
-function eventForSeq(events, seq) {
-    const event = events[seq];
-    if (event === undefined || event.seq !== seq) {
-        throw new Error(`tool-pairing balance: surface seq ${seq} has no matching session event (corrupt surface)`);
-    }
-    return event;
-}
 /** Fold surface sequences not yet in the cache into its balance state. */
 function extendCache(session, cache, seqs) {
     const processed = cache.cutBalanced.length - 1;
     const tail = seqs.slice(processed);
     // Validate the unseen tail before mutating the live cache, so a corrupt
     // append cannot leave a partially advanced state behind.
-    const events = session.events;
     const pendingCuts = [];
     let inProgressToolCalls = cache.inProgressToolCalls;
     for (const seq of tail) {
-        inProgressToolCalls += eventDelta(eventForSeq(events, seq));
+        // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+        const event = session.eventAt(seq);
+        if (event === undefined || event.seq !== seq) {
+            throw new Error(`tool-pairing balance: surface seq ${seq} has no matching session event (corrupt surface)`);
+        }
+        inProgressToolCalls += eventDelta(event);
         if (inProgressToolCalls < 0) {
             throw new Error(`tool-pairing balance: tool/result at surface seq ${seq} has no matching tool-call (corrupt surface)`);
         }

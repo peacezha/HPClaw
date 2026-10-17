@@ -1,6 +1,6 @@
-# HPClaw 开发总说明
+# TRACE 开发总说明
 
-> 文档定位：这是 HPClaw 当前源码的长期维护入口，供开发者、测试人员和后续 AI 在新增、修改、排障与发布前共同使用。
+> 文档定位：这是 TRACE 当前源码的长期维护入口，供开发者、测试人员和后续 AI 在新增、修改、排障与发布前共同使用。
 >
 > 基线版本：0.2.17  
 > 核对日期：2026-08-29  
@@ -8,7 +8,7 @@
 
 ## 0. 先读结论
 
-HPClaw 不是一个单纯的 SSH 客户端，也不是一个只会聊天的 AI 界面。它当前是一个面向 HPC/生物信息场景的 Windows 桌面工作台，主要包含：
+TRACE 不是一个单纯的 SSH 客户端，也不是一个只会聊天的 AI 界面。它当前是一个面向 HPC/生物信息场景的 Windows 桌面工作台，主要包含：
 
 - 多集群 SSH 终端与主机指纹校验；
 - 本地和远程文件浏览、传输、预览、编辑与搜索；
@@ -77,7 +77,7 @@ HPClaw 不是一个单纯的 SSH 客户端，也不是一个只会聊天的 AI �
 | 正式流程定义 | 本地应用数据目录中的工作流 JSON；运行后以 workflow.snapshot.json 为冻结快照 |
 | 正式流程实际代码 | 该次运行目录的 code/step-NN.sh |
 | 普通内置 Agent 计划 | 当前会话消息中的隐藏计划检查点与前端恢复数据 |
-| dsh Agent 上下文 | dsh 自身会话，加 HPClaw 保存的会话映射 |
+| dsh Agent 上下文 | dsh 自身会话，加 TRACE 保存的会话映射 |
 | 聊天记录 | 按集群保存的对话文件与当前前端会话 |
 | 文件传输 | 本地 transfers.json；进程内任务为实时状态 |
 | 集群连接 | 服务端内存中的 SSH Session，重启后失效 |
@@ -104,7 +104,7 @@ HPClaw 不是一个单纯的 SSH 客户端，也不是一个只会聊天的 AI �
 
 ### 2.1 产品边界
 
-HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过 Electron 启动一个仅监听本机回环地址的 Node 服务，再由该服务连接远程 HPC 集群。
+TRACE 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过 Electron 启动一个仅监听本机回环地址的 Node 服务，再由该服务连接远程 HPC 集群。
 
 它不包含：
 
@@ -122,7 +122,7 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 - **普通对话**：只生成回答，不运行工具。
 - **Agent 模式**：允许模型计划、调用工具和执行命令。
 - **内置 Agent**：server/ai/agentRunner.ts 中基于 AI SDK 的执行器。
-- **dsh Agent**：随桌面应用启动的 dsh sidecar，以及 HPClaw dsh 插件和桥接工具。
+- **dsh Agent**：随桌面应用启动的 dsh sidecar，以及 TRACE dsh 插件和桥接工具。
 - **正式流程**：由工作流定义创建独立运行目录，并由 run.json 管理步骤状态的执行方式。
 - **流程定义**：可复用模板，包含参数、步骤、软件、参考数据、资产和 QC 条件。
 - **流程运行**：某次具体执行，拥有独立 runId、参数快照、代码、日志和结果。
@@ -228,7 +228,7 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 3. 通过 safeStorage 读取或创建服务端加密密钥；
 4. 选择从 3003 开始的可用回环端口；
 5. 以 ELECTRON_RUN_AS_NODE=1 启动打包后的 dist-electron/server.cjs；
-6. 注入 HPCLAW_DATA_ROOT、桌面访问令牌、加密密钥和父进程 PID；
+6. 注入 TRACE_DATA_ROOT、桌面访问令牌、加密密钥和父进程 PID；
 7. 等待本地服务健康；
 8. 建立 BrowserWindow，先显示启动页，再加载本地 Web UI；
 9. 前端在渲染前尝试恢复桌面密钥，等待上限约 4 秒；
@@ -246,7 +246,7 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 - NSIS 每用户安装，可选择目录；
 - 默认创建桌面和开始菜单入口；
 - 安装包包含应用服务端、dsh、插件与 Node 运行时；
-- 安装过程使用 nsProcess 关闭旧 HPClaw/随包 Node 进程；
+- 安装过程使用 nsProcess 关闭旧 TRACE/随包 Node 进程；
 - 构建脚本会对 NSIS/7zip 单线程兼容补丁和安装包 CRC 做检查；
 - 卸载默认保留用户运行数据；
 - 当前安装包没有代码签名。
@@ -276,17 +276,17 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 
 ### 6.1 本机数据
 
-桌面端把 HPCLAW_DATA_ROOT 指向 Electron userData 下的 runtime 目录。主要数据包括：
+桌面端把 TRACE_DATA_ROOT 指向 Electron userData 下的 runtime 目录。主要数据包括：
 
 | 数据 | 位置/机制 | 说明 |
 | --- | --- | --- |
-| 服务日志 | runtime/hpclaw-server.log | 后端启动、错误和退出信息 |
+| 服务日志 | runtime/trace-server.log | 后端启动、错误和退出信息 |
 | 工作流定义 | runtime 下的应用数据目录 | 首次运行写入内置与 BioSkills 种子 |
 | AI 服务端资料 | 本地 JSON + secretBox | 有桌面密钥时加密敏感字段 |
 | 通知/QQ Bot 密钥 | 本地 JSON + secretBox | 同上 |
 | 对话 | 本地对话存储 | 按集群与对话标识保存 |
 | 传输任务 | transfers.json | 仅恢复可继续的任务 |
-| dsh 会话映射 | dsh-sessions.json | 连接 HPClaw 对话与 dsh 会话 |
+| dsh 会话映射 | dsh-sessions.json | 连接 TRACE 对话与 dsh 会话 |
 | 作业-Agent 绑定 | 本地 JSON | 支持作业结束后续跑 |
 | 登录资料/API Key/TOTP | Electron safeStorage | 桌面模式受操作系统用户保护 |
 | 远程编辑缓存 | Electron userData 缓存 | 保留未同步修改，重启后可恢复 |
@@ -297,7 +297,7 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 
 正式流程默认位于：
 
-    <集群 home>/hpclaw_flows/<流程 slug>/03_workspace/runs/<runId>/
+    <集群 home>/trace_flows/<流程 slug>/03_workspace/runs/<runId>/
 
 典型结构：
 
@@ -321,7 +321,7 @@ HPClaw 当前的主要目标平台是 Windows 10/11 x64 桌面端。应用通过
 - run.json 是步骤和整次运行的权威状态；
 - logs 和 results 由脚本与工具产生。
 
-集群技能约定目录是 ~/hpclaw_skills。登录后及技能/AI 请求前会触发后台刷新；本地系统技能和用户技能也会共同进入索引。
+集群技能约定目录是 ~/trace_skills。登录后及技能/AI 请求前会触发后台刷新；本地系统技能和用户技能也会共同进入索引。
 
 ## 7. SSH、终端与多集群会话
 
@@ -501,7 +501,7 @@ Socket 收到传输完成事件后会合并短时间内的连续事件，并让�
 
 ### 10.1 三条执行链
 
-HPClaw 的 AI 相关功能必须区分为三条链：
+TRACE 的 AI 相关功能必须区分为三条链：
 
 | 链路 | 入口 | 执行器 | 权威状态 |
 | --- | --- | --- | --- |
@@ -663,13 +663,13 @@ dsh 链路由以下部分组成：
 
 - server/dsh/dshSidecar.ts：准备并启动 dsh Web sidecar；
 - server/dsh/dshClient.ts：连接 dsh；
-- server/dsh/dshAgentRunner.ts：把 HPClaw 请求转给 dsh；
-- server/dsh/dshTranslate.ts：把 dsh 流式事件转换成 HPClaw SSE；
+- server/dsh/dshAgentRunner.ts：把 TRACE 请求转给 dsh；
+- server/dsh/dshTranslate.ts：把 dsh 流式事件转换成 TRACE SSE；
 - server/dsh/conversationScope.ts：维护对话与 dsh Session 映射；
 - server/dsh/bridgeRoutes.ts：向 dsh 插件提供集群能力；
 - server/dsh/jobAgentBindings.ts：持久化作业与 Agent 会话绑定；
 - server/dsh/dshJobResumer.ts：作业结束后的续跑；
-- vendor/dsh-plugin：HPClaw 的 dsh 工具插件；
+- vendor/dsh-plugin：TRACE 的 dsh 工具插件；
 - vendor/dsh 与 vendor/node-runtime：随安装包分发的运行时。
 
 sidecar 只监听本机，并使用随机桥接令牌。启动失败时可退回内置 Agent；但 sidecar 已成功启动后发生的提供方配置或模型调用错误，目前不会自动切回内置 Agent。
@@ -684,16 +684,16 @@ sidecar 只监听本机，并使用随机桥接令牌。启动失败时可退回
 | cluster_fs | 远程列表、读取、写入、上传、下载 | 本地限定工作区；远程限定 SSH home；写入统一确认 |
 | wheatomics_query | WheatOmics 查询 | 网络工具，确认规则未与命令完全统一 |
 | github_mirror_scout | 镜像/仓库检索 | 网络工具 |
-| hpclaw_server_health | 检查 HPClaw 服务健康 | 只读 |
-| hpclaw_api_get | 调用白名单 API | 受白名单限制 |
+| trace_server_health | 检查 TRACE 服务健康 | 只读 |
+| trace_api_get | 调用白名单 API | 受白名单限制 |
 | browse_open/eval/click/type/screenshot/close | 独立浏览器自动化 | 使用独立配置，不继承用户日常浏览器登录 |
-| dsh 本地文件/命令工具 | 操作用户选择的本地工作区 | dsh 自身安全门 + HPClaw 桥边界 |
+| dsh 本地文件/命令工具 | 操作用户选择的本地工作区 | dsh 自身安全门 + TRACE 桥边界 |
 
-工具数量已经足以支持多工具任务。集群命令和 cluster_fs 已统一服从 HPClaw 对话确认策略；浏览器和纯 dsh 本地工具仍保留各自的安全门，因此新增工具时仍要显式说明授权层。
+工具数量已经足以支持多工具任务。集群命令和 cluster_fs 已统一服从 TRACE 对话确认策略；浏览器和纯 dsh 本地工具仍保留各自的安全门，因此新增工具时仍要显式说明授权层。
 
 ### 12.3 多集群身份绑定
 
-bridgeState 为每个 dsh Session 保存固定绑定，插件的每次桥请求都携带 X-HPClaw-Dsh-Session。服务端按下面的映射解析，不接受全局最近 Session：
+bridgeState 为每个 dsh Session 保存固定绑定，插件的每次桥请求都携带 X-TRACE-Dsh-Session。服务端按下面的映射解析，不接受全局最近 Session：
 
     dshSessionId -> conversationContextId -> sshSessionId -> active ClusterSession
 
@@ -817,15 +817,15 @@ Token 估算是启发式算法，模型窗口也是配置表，不是提供方�
 
 ### 13.5 技能索引接线
 
-技能索引会同时扫描安装包内系统技能和 HPCLAW_DATA_ROOT/skills 用户技能；save_skill、技能安装器和技能 API 写入用户目录，不再修改安装目录。集群技能在登录后及技能/AI 请求前后台刷新，并按 SSH Session 缓存。
+技能索引会同时扫描安装包内系统技能和 TRACE_DATA_ROOT/skills 用户技能；save_skill、技能安装器和技能 API 写入用户目录，不再修改安装目录。集群技能在登录后及技能/AI 请求前后台刷新，并按 SSH Session 缓存。
 
 三层技能来源：
 
 | 层级 | 建议位置 | 更新方式 | 信任级别 |
 | --- | --- | --- | --- |
 | 系统技能 | 安装包内只读目录 | 随版本发布 | 受信策略 |
-| 用户技能 | HPCLAW_DATA_ROOT/skills | UI/Agent 安装 | 参考内容，需审核执行 |
-| 集群技能 | ~/hpclaw_skills | 集群扫描 | 参考内容，按集群隔离 |
+| 用户技能 | TRACE_DATA_ROOT/skills | UI/Agent 安装 | 参考内容，需审核执行 |
+| 集群技能 | ~/trace_skills | 集群扫描 | 参考内容，按集群隔离 |
 
 后续仍应让全部索引项统一带 source、clusterId、version、hash、mtime 和 trustLevel；当前来源隔离已经接线，但完整信任分级尚未完成。
 
@@ -896,7 +896,7 @@ Token 估算是启发式算法，模型窗口也是配置表，不是提供方�
 - 后续步骤完成前，前置步骤必须 done/skipped；
 - 整次运行只有全部步骤结束后才能 done。
 
-run.json 使用临时文件加移动的方式更新，并带单调 revision。服务端对同一 run 使用进程内串行锁，调用者可传 expectedRevision 做乐观并发校验。跨多个 HPClaw 服务进程同时写同一集群 run 的分布式锁仍未实现。
+run.json 使用临时文件加移动的方式更新，并带单调 revision。服务端对同一 run 使用进程内串行锁，调用者可传 expectedRevision 做乐观并发校验。跨多个 TRACE 服务进程同时写同一集群 run 的分布式锁仍未实现。
 
 整次运行进入 done 且流程没有显式 reportPath 时，服务端会从 run.json 已验证的步骤摘要、输出和 QC 证据确定性生成 `results/run-summary.md`。这一步不调用模型、不增加 Token；若报告落盘失败，不会反向抹掉已验证完成状态。
 
@@ -1002,7 +1002,7 @@ Electron 会记录：
 
 排查白屏时优先收集：
 
-- runtime/hpclaw-server.log；
+- runtime/trace-server.log；
 - Electron 主进程日志；
 - renderer 崩溃原因和退出码；
 - 加载 URL 与本地服务健康；
@@ -1019,7 +1019,7 @@ Electron 会记录：
 - 未同步的远程编辑；
 - 需要保存的状态。
 
-Windows 上结束后端会关闭整个进程树，解决打包 Node 残留导致安装器提示 HPClaw 仍在运行的问题。安装器也使用进程枚举清理旧版本残留，而不是依赖用户是否已经登录应用。
+Windows 上结束后端会关闭整个进程树，解决打包 Node 残留导致安装器提示 TRACE 仍在运行的问题。安装器也使用进程枚举清理旧版本残留，而不是依赖用户是否已经登录应用。
 
 ### 16.4 更新
 
@@ -1175,7 +1175,7 @@ npm test 主要是单元、组件和模拟集成测试，它没有默认证明�
 - Windows 不同显卡和权限环境；
 - 科学流程结果正确。
 
-tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Python 测试入口或统一测试脚本。tests/__pycache__ 不应进入源码分发。
+tests/test_hidog_trace_helpers.py 不在 npm test 默认范围。应增加 Python 测试入口或统一测试脚本。tests/__pycache__ 不应进入源码分发。
 
 ### 19.3 类型检查边界
 
@@ -1269,7 +1269,7 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 - 不读取全局最近 Session；
 - 本地路径限制在对话工作区；
 - 远程路径限制在授权根；
-- 使用 HPClaw 统一 Policy；
+- 使用 TRACE 统一 Policy；
 - 对浏览器/网络工具记录外部目标；
 - 提供 sidecar 真集成测试。
 
@@ -1562,7 +1562,7 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 - 自动保存键是否包含正确 SSH Session？
 - dsh Session 映射是否按 Context 分开？
 - 实际问题是共享集群摘要，还是共享历史消息？
-- 桥请求的 X-HPClaw-Dsh-Session 是否存在并能解析到预期 SSH Session？
+- 桥请求的 X-TRACE-Dsh-Session 是否存在并能解析到预期 SSH Session？
 
 ### 文件打不开或编辑不同步
 
@@ -1575,9 +1575,9 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 - 上传时原 SSH Session 是否仍在线？
 - 是否有未同步恢复项？
 
-### 安装器提示 HPClaw 未关闭
+### 安装器提示 TRACE 未关闭
 
-- 任务管理器是否仍有 HPClaw.exe？
+- 任务管理器是否仍有 TRACE.exe？
 - 是否有安装包内 Node 后端残留？
 - 主进程日志是否显示进程树清理？
 - 是全新安装，还是旧版本卸载记录或后台自启动残留？
@@ -1586,7 +1586,7 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 
 ### 白屏或崩溃
 
-- runtime/hpclaw-server.log；
+- runtime/trace-server.log；
 - Electron/renderer 退出原因；
 - 是否本地服务未就绪；
 - 是否大文件或大对话导致内存压力；
@@ -1664,18 +1664,18 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 
 - 现场捕获到安装器真实错误 `Failed to uninstall old application files: 2`；外层安装器等待确认导致用户看到长期无法安装；
 - 确认 electron-builder 的 `--updated` 旧卸载器依赖跨目录原子 Rename，安装目录与系统临时目录跨盘时必然失败；
-- 升级统一改为“精确清理 HPClaw 自有进程后原地覆盖”，不再调用任何版本的旧卸载器；显式卸载功能保持不变；
+- 升级统一改为“精确清理 TRACE 自有进程后原地覆盖”，不再调用任何版本的旧卸载器；显式卸载功能保持不变；
 - 保留 0.2.16 的 dsh 完整进程树、Electron 退出日志和 vendor 子树清理修复；
 - 发布验证必须覆盖跨盘安装目录、运行中覆盖、dsh Node 残留覆盖、同版本重装和显式卸载。
-- 发布 `HPClaw-Setup-0.2.17-x64.exe`，大小 240,673,319 字节，SHA-256 为 `469372D7D0FB90AD2245F04991DEA7F01B92DEF62033281AE0502DC5CE8AFD48`；
+- 发布 `TRACE-Setup-0.2.17-x64.exe`，大小 240,673,319 字节，SHA-256 为 `469372D7D0FB90AD2245F04991DEA7F01B92DEF62033281AE0502DC5CE8AFD48`；
 - 真实对照验证确认旧策略稳定返回错误 2，而 0.2.17 在跨盘、运行中、dsh Node 残留和同版本重装组合场景下完成安装，无错误窗口；显式卸载通过；
-- 完整验证记录见 `release/HPClaw-Setup-0.2.17-x64.verification.md`。
+- 完整验证记录见 `release/TRACE-Setup-0.2.17-x64.verification.md`。
 
 ### 2026-08-29 / 0.2.16 退出与安装闭环修复
 
 - dsh 停止时在 Windows 使用 `taskkill /T /F` 结束 shell、内置 Node 与终端完整子树，避免只关闭外层 shell 后留下锁文件进程；
 - Electron 退出补充原因日志、8 秒进程树清理超时和 `will-quit` 幂等兜底，渲染崩溃退出也会先清理后台；
-- 安装器同时读取当前用户、所有用户和目标安装目录，只终止各安装目录内 `app.asar.unpacked\\vendor` 下的 HPClaw 自有进程；
+- 安装器同时读取当前用户、所有用户和目标安装目录，只终止各安装目录内 `app.asar.unpacked\\vendor` 下的 TRACE 自有进程；
 - 0.2.13 至 0.2.15 作为已知退出不完整版本跳过旧卸载入口，由新安装器释放文件锁后覆盖修复；
 - 新增 Windows 子进程树终止测试，并要求执行“启动、退出、零残留、覆盖安装、卸载”发布验证。
 - 当前回归基线：106 个 Vitest 文件、765 项测试，TypeScript 检查通过。
@@ -1685,10 +1685,10 @@ tests/test_hidog_hpclaw_helpers.py 不在 npm test 默认范围。应增加 Pyth
 - 汇总发布 0.2.14 源码阶段完成的文件传输、流程断点续跑、双 Agent 引擎、思考折叠、流程习惯学习、公共资源查询和免 Token 运行报告改进；
 - 保持安装器原生进程检测、后台残留关闭、内嵌 Node 清理和内置 CRC 验证；
 - 发布前基线为 105 个 Vitest 文件、762 项测试，TypeScript 检查、前端生产构建和 Electron 服务端构建通过；
-- 发布 `HPClaw-Setup-0.2.15-x64.exe`，大小 240,672,802 字节，SHA-256 为 `60F4B18538D8E4F336FC5896449078D72375EE705B9FE6A6A2438E3BB9DFCFB0`；
-- 安装器 CRC、当前用户安装、隔离启动、HTTP 页面响应、优雅退出和静默卸载均通过；安装时确认旧版 5 个后台 HPClaw 进程可被自动关闭；
+- 发布 `TRACE-Setup-0.2.15-x64.exe`，大小 240,672,802 字节，SHA-256 为 `60F4B18538D8E4F336FC5896449078D72375EE705B9FE6A6A2438E3BB9DFCFB0`；
+- 安装器 CRC、当前用户安装、隔离启动、HTTP 页面响应、优雅退出和静默卸载均通过；安装时确认旧版 5 个后台 TRACE 进程可被自动关闭；
 - 安装包尚未进行 Authenticode 代码签名；机器级覆盖升级和 UAC 路径仍需在管理员测试机人工回归；
-- 完整验证记录见 `release/HPClaw-Setup-0.2.15-x64.verification.md`。
+- 完整验证记录见 `release/TRACE-Setup-0.2.15-x64.verification.md`。
 
 ### 2026-08-29 / 0.2.14
 

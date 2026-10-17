@@ -25,7 +25,7 @@ describe('runBelongsToWorkflow 三级归属', () => {
   const w = makeWorkflow();
 
   it('workflowId 匹配', () => {
-    expect(runBelongsToWorkflow(makeRun({ workflowId: 'wf-1', runDir: '/x/hpclaw_runs/r1' }), w)).toBe(true);
+    expect(runBelongsToWorkflow(makeRun({ workflowId: 'wf-1', runDir: '/x/trace_runs/r1' }), w)).toBe(true);
     expect(runBelongsToWorkflow(makeRun({ workflowId: 'wf-other', runDir: '/x/r1' }), w)).toBe(false);
   });
 
@@ -37,17 +37,17 @@ describe('runBelongsToWorkflow 三级归属', () => {
   it('名称也缺失时按 runDir 所在的流程家目录归属（最可靠）', () => {
     expect(runBelongsToWorkflow(makeRun({
       workflowId: 'ai-乱写的-id',
-      runDir: '~/hpclaw_flows/RNA-seq_差异表达全流程/03_workspace/runs/r1',
+      runDir: '~/trace_flows/RNA-seq_差异表达全流程/03_workspace/runs/r1',
     }), w)).toBe(true);
     expect(runBelongsToWorkflow(makeRun({
-      runDir: '~/hpclaw_flows/其他流程/03_workspace/runs/r1',
+      runDir: '~/trace_flows/其他流程/03_workspace/runs/r1',
     }), w)).toBe(false);
   });
 
   it('目录 slug 需完整匹配，避免前缀误归属', () => {
     const short = makeWorkflow({ id: 'wf-2', name: 'RNA' });
     expect(runBelongsToWorkflow(makeRun({
-      runDir: '~/hpclaw_flows/RNA-seq_差异表达全流程/03_workspace/runs/r1',
+      runDir: '~/trace_flows/RNA-seq_差异表达全流程/03_workspace/runs/r1',
     }), short)).toBe(false);
   });
 });
@@ -90,14 +90,14 @@ describe('workflowSlug 集群路径 ASCII 化', () => {
     expect(runBelongsToWorkflow(makeRun({
       workflowId: '',
       workflowName: 'ENCODE-DCC ATAC-seq v2.2.3 (official WDL)',
-      runDir: `/home/u/hpclaw_flows/${paren}/03_workspace/runs/run-1`,
+      runDir: `/home/u/trace_flows/${paren}/03_workspace/runs/run-1`,
     }), makeWorkflow({ name: 'ENCODE-DCC ATAC-seq v2.2.3 (official WDL)' }))).toBe(true);
   });
 
   it('旧中文目录仍可通过 legacy slug 归属', () => {
     // slug ASCII 化之前生成的目录名含中文，归属不能丢
     expect(runBelongsToWorkflow(makeRun({
-      runDir: '/public/home/u/hpclaw_flows/RNA-seq_差异表达全流程/03_workspace/runs/old1',
+      runDir: '/public/home/u/trace_flows/RNA-seq_差异表达全流程/03_workspace/runs/old1',
     }), makeWorkflow())).toBe(true);
   });
 });

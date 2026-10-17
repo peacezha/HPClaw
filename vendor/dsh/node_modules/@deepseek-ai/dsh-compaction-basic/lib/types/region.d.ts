@@ -7,12 +7,13 @@
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { TokenMeasurement, TokenMeter } from '@deepseek-ai/dsh-token-meter';
-import type { Session } from '@deepseek-ai/dsh-session';
+import { SessionSeq, type Session } from '@deepseek-ai/dsh-session';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SummarizationInput, SummaryResult } from './summarizer.ts';
 interface RegionDependencies {
     readonly meter: TokenMeter;
     summarize(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult>;
+    recover(error: unknown, agent: Agent, sourceEventSeqs: readonly SessionSeq[], signal?: AbortSignal): boolean;
 }
 interface CompactionTransactionOptions {
     /** `current-turn` derives a numbered owner; `null` writes a standalone bracket. */
@@ -25,16 +26,18 @@ interface CompactionTransactionOptions {
     readonly sourceCommandId?: CommandId;
 }
 /**
- * Resolve the next head-anchored range while retaining a priced recent tail
- * and never splitting an assistant tool-call/result pair.
+ * Resolve the next range starting at the first non-system surface node while
+ * retaining a priced recent tail and never splitting an assistant
+ * tool-call/result pair. A `system/message` at surface node 0 is never inside
+ * the range; without one the range starts at node 0.
  * @param session - session supplying authoritative current surface positions.
  * @param measurement - unified pressure and surface measurement from the conversation meter.
  * @param retainTokens - minimum recent tail budget retained verbatim.
  * @returns the inclusive positional seq range to compact, or `null`.
  */
 export declare function selectCompactableRange(session: Session, measurement: TokenMeasurement, retainTokens: number): {
-    start: number;
-    end: number;
+    start: SessionSeq;
+    end: SessionSeq;
 } | null;
 /**
  * Run the single compaction transaction over one selected positional span.
@@ -52,7 +55,7 @@ export declare function selectCompactableRange(session: Session, measurement: To
  * @param signal - optional summarization cancellation signal.
  * @returns the successful durable compaction result.
  */
-export declare function compactSurfaceRegion(dependencies: RegionDependencies, session: Session, start: number, end: number, agent: Agent, options: CompactionTransactionOptions, signal?: AbortSignal): Promise<CompactionResult>;
+export declare function compactSurfaceRegion(dependencies: RegionDependencies, session: Session, start: SessionSeq, end: SessionSeq, agent: Agent, options: CompactionTransactionOptions, signal?: AbortSignal): Promise<CompactionResult>;
 /**
  * Recheck the durable compaction lock after an asynchronous policy decision.
  * @param session - session whose latest marker state is inspected.

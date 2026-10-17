@@ -1,4 +1,4 @@
-import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-runtime/client';
+import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { ToolWorkflowAgentStartData } from '@deepseek-ai/dsh-tool-workflow/types';
 import type { WorkflowAgentOutcome, WorkflowStopReason } from '@deepseek-ai/dsh-workflow/types';
@@ -24,7 +24,7 @@ export interface WorkflowRunChatData {
     readonly status: WorkflowRunStatus;
     readonly phases: readonly WorkflowRunPhaseData[];
 }
-declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
+declare module '@deepseek-ai/dsh-client-ui-chat/client' {
     interface ChatNodeDataMap {
         /** Durable top-level workflow run and all members that actually started. */
         'workflow-run': WorkflowRunChatData;

@@ -12,7 +12,7 @@ import {
 const roots: string[] = [];
 
 function createGuard(): JobSubmissionGuard {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-submit-guard-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-submit-guard-'));
   roots.push(root);
   return new JobSubmissionGuard(root);
 }
@@ -40,7 +40,7 @@ describe('job submission guard', () => {
   });
 
   it('checks script syntax and exact module loads before submission', async () => {
-    const exec = vi.fn(async () => '[HPCLAW_PREFLIGHT] OK');
+    const exec = vi.fn(async () => '[TRACE_PREFLIGHT] OK');
     const result = await preflightJobSubmission(
       'cd /home/u/run && bsub < code/step-04.sh',
       {},
@@ -58,7 +58,7 @@ describe('job submission guard', () => {
     const result = await preflightJobSubmission(
       'bsub < /home/u/run/code/step-04.sh',
       {},
-      async () => { throw new Error('[HPCLAW_PREFLIGHT] unavailable module: Picard/2.23.9'); },
+      async () => { throw new Error('[TRACE_PREFLIGHT] unavailable module: Picard/2.23.9'); },
     );
     expect(result).toMatchObject({ checked: true, ok: false });
     expect(result.output).toContain('unavailable module: Picard/2.23.9');

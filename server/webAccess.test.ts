@@ -9,8 +9,8 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
 });
 const password = 'test-password-at-least-16';
-const authorization = 'Basic ' + Buffer.from('hpclaw:' + password).toString('base64');
-const config: WebAccessConfig = { enabled: true, host: '127.0.0.1', username: 'hpclaw', password, origin: 'https://hpclaw.example.org' };
+const authorization = 'Basic ' + Buffer.from('trace:' + password).toString('base64');
+const config: WebAccessConfig = { enabled: true, host: '127.0.0.1', username: 'trace', password, origin: 'https://trace.example.org' };
 async function start() {
   const app = express();
   const access = createWebAccess(config, () => 'trusted-random-bridge-token');
@@ -26,16 +26,16 @@ async function start() {
 
 describe('single-user web access', () => {
   it('keeps desktop mode on loopback without introducing browser login', () => {
-    expect(readWebAccessConfig({ HPCLAW_HOST: '0.0.0.0' })).toMatchObject({ enabled: false, host: '127.0.0.1' });
+    expect(readWebAccessConfig({ TRACE_HOST: '0.0.0.0' })).toMatchObject({ enabled: false, host: '127.0.0.1' });
   });
   it('rejects missing/weak credentials, weak sessions and unconfigured public origins', () => {
-    expect(() => readWebAccessConfig({ HPCLAW_WEB_MODE: '1' })).toThrow('PASSWORD');
-    const env = { HPCLAW_WEB_MODE: '1', HPCLAW_WEB_PASSWORD: password, SESSION_SECRET: 'x'.repeat(32), HPCLAW_HOST: '0.0.0.0' };
+    expect(() => readWebAccessConfig({ TRACE_WEB_MODE: '1' })).toThrow('PASSWORD');
+    const env = { TRACE_WEB_MODE: '1', TRACE_WEB_PASSWORD: password, SESSION_SECRET: 'x'.repeat(32), TRACE_HOST: '0.0.0.0' };
     expect(() => readWebAccessConfig(env)).toThrow('ORIGIN');
-    expect(() => readWebAccessConfig({ ...env, HPCLAW_WEB_ORIGIN: 'https://u:p@example.org' })).toThrow('origin');
-    expect(() => readWebAccessConfig({ ...env, HPCLAW_WEB_ORIGIN: 'https://example.org/path' })).toThrow('origin');
+    expect(() => readWebAccessConfig({ ...env, TRACE_WEB_ORIGIN: 'https://u:p@example.org' })).toThrow('origin');
+    expect(() => readWebAccessConfig({ ...env, TRACE_WEB_ORIGIN: 'https://example.org/path' })).toThrow('origin');
     expect(() => readWebAccessConfig({ ...env, SESSION_SECRET: 'short' })).toThrow('SESSION_SECRET');
-    expect(readWebAccessConfig({ ...env, HPCLAW_WEB_ORIGIN: 'https://example.org/' }).origin).toBe('https://example.org');
+    expect(readWebAccessConfig({ ...env, TRACE_WEB_ORIGIN: 'https://example.org/' }).origin).toBe('https://example.org');
   });
   it('guards both static pages and application endpoints before authentication', async () => {
     const { base } = await start();
@@ -64,8 +64,8 @@ describe('single-user web access', () => {
   });
   it('only exempts token-authenticated loopback bridge routes, not other APIs', async () => {
     const { base } = await start();
-    expect((await fetch(base + '/api/bridge/exec', { method: 'POST', headers: { 'X-HPClaw-Bridge': 'wrong' } })).status).toBe(401);
-    const headers = { 'X-HPClaw-Bridge': 'trusted-random-bridge-token' };
+    expect((await fetch(base + '/api/bridge/exec', { method: 'POST', headers: { 'X-TRACE-Bridge': 'wrong' } })).status).toBe(401);
+    const headers = { 'X-TRACE-Bridge': 'trusted-random-bridge-token' };
     expect((await fetch(base + '/api/bridge/exec', { method: 'POST', headers })).status).toBe(200);
     expect((await fetch(base + '/api/local/files/read', { method: 'POST', headers })).status).toBe(401);
   });
@@ -73,9 +73,9 @@ describe('single-user web access', () => {
     const access = createWebAccess(config, () => 'token');
     expect(access.authorized({ headers: {} })).toBe(false);
     expect(access.authorized({ headers: { authorization } })).toBe(true);
-    expect(access.authorized({ headers: {}, session: { hpclawWebAccess: 'forged' } })).toBe(false);
+    expect(access.authorized({ headers: {}, session: { traceWebAccess: 'forged' } })).toBe(false);
     expect(access.originAllowed(config.origin)).toBe(true);
-    expect(access.originAllowed('https://hpclaw.example.org.attacker.example')).toBe(false);
+    expect(access.originAllowed('https://trace.example.org.attacker.example')).toBe(false);
     expect(access.originAllowed('null')).toBe(false);
   });
 });

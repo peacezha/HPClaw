@@ -78,6 +78,10 @@ function rotate (angle, options) {
  * Auto-orient based on the EXIF `Orientation` tag, then remove the tag.
  * Mirroring is supported and may infer the use of a flip operation.
  *
+ * Only the EXIF `Orientation` tag is considered; orientation carried in other
+ * places, such as an XMP `tiff:Orientation` element, is left untouched and
+ * remains the responsibility of the consumer.
+ *
  * Previous or subsequent use of `rotate(angle)` and either `flip()` or `flop()`
  * will logically occur after auto-orientation, regardless of call order.
  *
@@ -820,7 +824,7 @@ function linear (a, b) {
     this.options.linearA = [];
   } else if (is.number(a)) {
     this.options.linearA = [a];
-  } else if (Array.isArray(a) && a.length && a.every(is.number)) {
+  } else if (Array.isArray(a) && is.inRange(a.length, 1, 1000000) && a.every(is.number)) {
     this.options.linearA = a;
   } else {
     throw is.invalidParameterError('a', 'number or array of numbers', a);
@@ -829,7 +833,7 @@ function linear (a, b) {
     this.options.linearB = [];
   } else if (is.number(b)) {
     this.options.linearB = [b];
-  } else if (Array.isArray(b) && b.length && b.every(is.number)) {
+  } else if (Array.isArray(b) && is.inRange(b.length, 1, 1000000) && b.every(is.number)) {
     this.options.linearB = b;
   } else {
     throw is.invalidParameterError('b', 'number or array of numbers', b);

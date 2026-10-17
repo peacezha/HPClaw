@@ -1,5 +1,6 @@
 import type { Express, Response } from 'express';
 import { resolveRequestSessionId } from '../cluster/sessionRequest';
+import type { JobEntry } from '../ai/types';
 import { loadJobEvents } from './jobWatcher';
 import {
   loadSchedulerType, saveSchedulerType, jobsCommand, parseJobsOutput,
@@ -17,13 +18,116 @@ interface NotifyRouteSession {
 
 type ResolveSession = (sessionId: string | undefined) => NotifyRouteSession | undefined;
 
+/** 聚合接口（/api/jobs/summary/all）需要的会话视图：由 server.ts 遍历 sessions Map 注入 */
+export interface ListedClusterSession {
+  sessionId: string;
+  host: string;
+  username: string;
+  /** 连接状态（ConnectionState）；只采集 connected */
+  state: string;
+  cluster: NotifyRouteSession['cluster'];
+}
+
+export type ListClusterSessions = () => ListedClusterSession[];
+
+/** 聚合接口的单集群条目：字段命名对齐 /api/jobs/summary 响应（jobs/scheduler/updatedAt） */
+export interface ClusterJobsSummaryEntry {
+  sessionId: string;
+  host: string;
+  username: string;
+  /** 采集成功时为实际使用的调度器；失败时退回登录探测标签（可能为 null） */
+  scheduler: SchedulerType | null;
+  running: number;
+  pending: number;
+  jobs: JobEntry[];
+  updatedAt: number;
+  /** 单集群采集失败/超时时降级到条目级 error，不影响其他集群 */
+  error?: string;
+}
+
+// 本地工作台哨兵不是 SSH 会话，聚合时跳过（与 sessionRequest 的哨兵表保持一致）
+const LOCAL_WORKBENCH_SENTINELS = new Set(['local-workbench', 'local', 'none']);
+
+// 聚合接口整体 15s 上限：各集群并发采集，单条 exec 自带 15s 超时，这里再兜一层
+const ALL_SUMMARY_TIMEOUT_MS = 15_000;
+
+/** 单会话作业采集：/api/jobs/summary 与 /api/jobs/summary/all 共用，
+ *  会话登录探测打标签的调度器优先，旧会话回退全局配置。 */
+async function collectJobsSummary(
+  cluster: NotifyRouteSession['cluster'],
+): Promise<{ scheduler: SchedulerType; jobs: JobEntry[] }> {
+  const scheduler = cluster.scheduler ?? await loadSchedulerType();
+  const jobsRaw = await cluster.exec(jobsCommand(scheduler), 15_000);
+  return { scheduler, jobs: parseJobsOutput(scheduler, jobsRaw) };
+}
+
+function countByStatus(jobs: JobEntry[], status: JobEntry['status']): number {
+  return jobs.filter(job => job.status === status).length;
+}
+
+async function collectClusterSummary(listed: ListedClusterSession): Promise<ClusterJobsSummaryEntry> {
+  try {
+    const { scheduler, jobs } = await collectJobsSummary(listed.cluster);
+    return {
+      sessionId: listed.sessionId,
+      host: listed.host,
+      username: listed.username,
+      scheduler,
+      running: countByStatus(jobs, 'RUN'),
+      pending: countByStatus(jobs, 'PEND'),
+      jobs,
+      updatedAt: Date.now(),
+    };
+  } catch (err: any) {
+    return {
+      sessionId: listed.sessionId,
+      host: listed.host,
+      username: listed.username,
+      scheduler: listed.cluster.scheduler ?? null,
+      running: 0,
+      pending: 0,
+      jobs: [],
+      updatedAt: Date.now(),
+      error: err?.message || String(err),
+    };
+  }
+}
+
+/** 单集群采集加 15s 上限：超时降级为该条目 error，Promise.all 整体因此也在 15s 内返回 */
+function collectClusterSummaryWithTimeout(listed: ListedClusterSession): Promise<ClusterJobsSummaryEntry> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<ClusterJobsSummaryEntry>(resolve => {
+    timer = setTimeout(() => {
+      resolve({
+        sessionId: listed.sessionId,
+        host: listed.host,
+        username: listed.username,
+        scheduler: listed.cluster.scheduler ?? null,
+        running: 0,
+        pending: 0,
+        jobs: [],
+        updatedAt: Date.now(),
+        error: `查询超时（${ALL_SUMMARY_TIMEOUT_MS / 1000} 秒无响应）`,
+      });
+    }, ALL_SUMMARY_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([collectClusterSummary(listed), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function sendError(res: Response, status: number, message: string): void {
   res.status(status).json({ success: false, error: message });
 }
 
 const CHANNELS = ['serverchan', 'pushplus', 'wecom', 'feishu', 'email'];
 
-export function registerNotificationRoutes(app: Express, resolveSession: ResolveSession): void {
+export function registerNotificationRoutes(
+  app: Express,
+  resolveSession: ResolveSession,
+  listSessions?: ListClusterSessions,
+): void {
   const withSession = (req: any, res: Response): NotifyRouteSession | undefined => {
     const sessionId = resolveRequestSessionId({
       cookie: req.session?.sshSessionId,
@@ -43,15 +147,27 @@ export function registerNotificationRoutes(app: Express, resolveSession: Resolve
     const session = withSession(req, res);
     if (!session) return;
     try {
-      // 会话登录时已探测打标签的调度器优先；旧会话回退全局配置
-      const scheduler = session.cluster.scheduler ?? await loadSchedulerType();
-      const jobsRaw = await session.cluster.exec(jobsCommand(scheduler), 15_000);
+      const { scheduler, jobs } = await collectJobsSummary(session.cluster);
       res.json({
         success: true,
-        jobs: parseJobsOutput(scheduler, jobsRaw),
+        jobs,
         scheduler,
         updatedAt: Date.now(),
       });
+    } catch (err: any) {
+      sendError(res, 500, err.message || String(err));
+    }
+  });
+
+  // 全部已连接集群的作业概况（左侧边栏多集群状态行）：无需会话头，遍历注入的会话表；
+  // 单集群失败/超时降级为该条目 error，本地工作台哨兵与未连接会话跳过。
+  app.get('/api/jobs/summary/all', async (_req, res) => {
+    try {
+      const listed = (listSessions?.() ?? []).filter(
+        session => session.state === 'connected' && !LOCAL_WORKBENCH_SENTINELS.has(session.sessionId),
+      );
+      const clusters = await Promise.all(listed.map(collectClusterSummaryWithTimeout));
+      res.json({ success: true, clusters });
     } catch (err: any) {
       sendError(res, 500, err.message || String(err));
     }
@@ -163,8 +279,8 @@ export function registerNotificationRoutes(app: Express, resolveSession: Resolve
       const config = await loadNotifyConfig();
       const result = await sendNotification(
         config,
-        '🔔 HPClaw 通知测试',
-        `这是一条来自 HPClaw 的测试消息。\n如果你看到它，说明作业完成提醒已经可以正常工作。\n时间：${new Date().toLocaleString('zh-CN')}`,
+        '🔔 TRACE 通知测试',
+        `这是一条来自 TRACE 的测试消息。\n如果你看到它，说明作业完成提醒已经可以正常工作。\n时间：${new Date().toLocaleString('zh-CN')}`,
       );
       if (result.ok) res.json({ success: true });
       else sendError(res, 400, result.error || '发送失败');

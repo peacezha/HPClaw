@@ -56,8 +56,8 @@ describe('public data metadata and downloader', () => {
     if (spawnSync(binary, ['--version']).status !== 0) return;
     const workflow: any = { steps: [], params: [] };
     attachPublicDataDownload(workflow, { records: parseEnaReport(report, 'GSE123456', 'source'), projects: ['GSE123456'], warnings: [] });
-    const body = workflow.steps[0].command.split("<<'HPCLAW_RAW_DATA'\n")[1].split('\nHPCLAW_RAW_DATA')[0];
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-download-test-'));
+    const body = workflow.steps[0].command.split("<<'TRACE_RAW_DATA'\n")[1].split('\nTRACE_RAW_DATA')[0];
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-download-test-'));
     try {
       const script = "import io, urllib.request; urllib.request.urlopen=lambda *a,**k: io.BytesIO(b'fixture reads'); exec(" + JSON.stringify(body) + ')';
       const result = spawnSync(binary, ['-c', script, directory, 'GSE123456', 'SRR123456'], { encoding: 'utf8', timeout: 30000 });

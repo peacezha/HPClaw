@@ -1,5 +1,5 @@
 /** One-shot session-lineage and event-relationship tracing helpers. */
-import type { SessionEvent, SessionId, SurfaceEvent } from '@deepseek-ai/dsh-session';
+import type { SessionEvent, SessionId, SessionSeq, SurfaceEvent } from '@deepseek-ai/dsh-session';
 import type { SessionEventRecord, SessionEventTrace, SessionLineageTrace, SessionRecord } from './types.ts';
 /**
  * Classify a raw event log with one canonical surface fold.
@@ -22,7 +22,7 @@ export declare function currentSurfaceEvents(sessionId: SessionId, events: reado
  * @param seq - target event seq.
  * @returns direct surface replacements and relationships to cited source events.
  */
-export declare function traceEvent(sessionId: SessionId, events: readonly SessionEvent[], seq: number): SessionEventTrace;
+export declare function traceEvent(sessionId: SessionId, events: readonly SessionEvent[], seq: SessionSeq): SessionEventTrace;
 /**
  * Trace one target's known ancestry and recursively known descendants.
  * @param records - complete logical corpus from one observation.

@@ -41,7 +41,7 @@ export function parseEnaReport(text: string, project: string, sourceUrl: string)
 }
 
 async function metadataText(url: string, signal: AbortSignal): Promise<string> {
-  const response = await fetch(url, { signal, redirect: 'error', headers: { 'User-Agent': 'HPClaw-PaperData/1.0' } });
+  const response = await fetch(url, { signal, redirect: 'error', headers: { 'User-Agent': 'TRACE-PaperData/1.0' } });
   if (!response.ok) throw new Error('HTTP ' + response.status);
   if (Number(response.headers.get('content-length')) > 4_000_000) throw new Error('Metadata too large');
   const reader = response.body?.getReader();
@@ -121,7 +121,7 @@ export function attachPublicDataDownload(workflow: any, resolution: PublicDataRe
     run: row.runAccessions[0], layout: row.layout || '', urls: row.urls, checksums: row.checksums,
   })))).toString('base64');
   const command = `set -euo pipefail
-python3 - '{{OUTPUT_DIR}}' '{{DATA_PROJECT}}' '{{DOWNLOAD_RUNS}}' <<'HPCLAW_RAW_DATA'
+python3 - '{{OUTPUT_DIR}}' '{{DATA_PROJECT}}' '{{DOWNLOAD_RUNS}}' <<'TRACE_RAW_DATA'
 import base64, csv, hashlib, json, pathlib, sys, time, urllib.request
 records = json.loads(base64.b64decode("${payload}"))
 root = pathlib.Path(sys.argv[1]).expanduser().resolve()
@@ -160,7 +160,7 @@ for r in rows:
             if md5(target) != expected:
                 raise SystemExit("Existing file checksum mismatch; refusing overwrite: " + str(target))
             continue
-        part = target.with_name(target.name + ".hpclaw.part")
+        part = target.with_name(target.name + ".trace.part")
         for attempt in range(3):
             try:
                 with urllib.request.urlopen(url, timeout=120) as response, part.open("wb") as out:
@@ -175,7 +175,7 @@ for r in rows:
                 time.sleep(2 ** attempt)
         part.replace(target)
 print("Verified downloads and manifest:", manifest)
-HPCLAW_RAW_DATA`;
+TRACE_RAW_DATA`;
   const projects = [...new Set(resolution.records.map(row => row.projectAccession!))];
   const params = [
     { name: 'OUTPUT_DIR', label: english ? 'Output directory' : '输出目录', type: 'path', required: true, defaultValue: '' },

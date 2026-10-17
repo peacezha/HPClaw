@@ -4,7 +4,7 @@
  * surface order rather than step markers.
  * @module @deepseek-ai/dsh-compaction/tool-pairing
  */
-import type { Session } from '@deepseek-ai/dsh-session';
+import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 /**
  * Whether the cut immediately before a current surface sequence is tool-pairing balanced.
  * @param session - session whose surface is checked.
@@ -13,7 +13,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
  * @throws when the seq is absent from the current surface, a surface sequence has no
  * matching log event, or a tool result has no preceding open call.
  */
-export declare function toolPairingBalancedBefore(session: Session, seq: number): boolean;
+export declare function toolPairingBalancedBefore(session: Session, seq: SessionSeq): boolean;
 /**
  * Whether the cut immediately after a current surface sequence is tool-pairing balanced.
  * @param session - session whose surface is checked.
@@ -22,5 +22,5 @@ export declare function toolPairingBalancedBefore(session: Session, seq: number)
  * @throws when the seq is absent from the current surface, a surface sequence has no
  * matching log event, or a tool result has no preceding open call.
  */
-export declare function toolPairingBalancedAfter(session: Session, seq: number): boolean;
+export declare function toolPairingBalancedAfter(session: Session, seq: SessionSeq): boolean;
 //# sourceMappingURL=tool-pairing.d.ts.map

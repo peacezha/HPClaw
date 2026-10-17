@@ -12,26 +12,10 @@ import { requestAutocomplete, cancelAutocomplete, Suggestion } from '../services
 import { isCommandComplete } from '../services/commandIndex';
 import { recordCommand } from '../services/commandHistory';
 import '../features/file-transfer/fileTransfer.css';
+import { writeClipboardText, readClipboardText } from '../services/clipboard';
 
 /** AI 辅助开关的持久化键（划词即弹出辅助小窗） */
-const ASSIST_STORAGE_KEY = 'hpclaw_terminal_assist';
-
-// 剪贴板通道与 Terminal.tsx 的 Ctrl+C/Ctrl+V 保持一致：桌面端走 hpclawDesktop，浏览器走 navigator
-function writeClipboardText(text: string): void {
-  const desktop = (window as any).hpclawDesktop;
-  if (desktop?.clipboard) {
-    desktop.clipboard.writeText(text).catch(() => {});
-  } else {
-    navigator.clipboard.writeText(text).catch(() => {
-      document.execCommand('copy');
-    });
-  }
-}
-
-function readClipboardText(): Promise<string> {
-  const desktop = (window as any).hpclawDesktop;
-  return desktop?.clipboard ? desktop.clipboard.readText() : navigator.clipboard.readText();
-}
+const ASSIST_STORAGE_KEY = 'trace_terminal_assist';
 
 interface TerminalAIProps {
   isSidebarOpen: boolean;
@@ -274,7 +258,7 @@ export default function TerminalAI({
   }, [contextMenu]);
 
   const handleCopySelection = useCallback(() => {
-    if (selectedText) writeClipboardText(selectedText);
+    if (selectedText) void writeClipboardText(selectedText).catch(() => {});
     setContextMenu(null);
   }, [selectedText]);
 

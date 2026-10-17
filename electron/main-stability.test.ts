@@ -8,7 +8,7 @@ describe('desktop renderer stability guards', () => {
   it('uses the Windows software-rendering fallback before app readiness', () => {
     expect(mainSource).toContain("if (process.platform === 'win32') app.disableHardwareAcceleration()");
     expect(mainSource.indexOf('app.disableHardwareAcceleration()'))
-      .toBeLessThan(mainSource.indexOf('app.whenReady().then(boot)'));
+      .toBeLessThan(mainSource.indexOf('app.whenReady().then('));
   });
 
   it('recovers a crashed renderer and detects crash loops', () => {

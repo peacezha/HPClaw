@@ -52,7 +52,7 @@ await new Promise((resolve, reject) => {
     void rpc('session.prompt', {
       sessionId,
       mode: 'queue',
-      content: [{ type: 'text', text: '只回复 HPCLAW_DSH_OK，不要调用任何工具。' }],
+      content: [{ type: 'text', text: '只回复 TRACE_DSH_OK，不要调用任何工具。' }],
       clientTimeZone: 'Asia/Shanghai',
     }).catch(reject);
   });

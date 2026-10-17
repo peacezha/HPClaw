@@ -41,7 +41,7 @@ python scripts/wheatomics.py gene TraesCS5A02G391700 -o wheatomics_results/gene_
 ```
 
 - 保存内容为接口返回的**完整 JSON 原始结果**（写盘后 CLI 会打印一行 `已保存: <绝对路径>`）；如需 Markdown 报告，可在 JSON 落地后另行整理生成；
-- 输出目录约定：对话中的临时查询 → 当前工作目录下 `wheatomics_results/`；在 HPClaw 流程运行目录（RUN 目录）内执行 → 该 RUN 目录下的 `results/`；
+- 输出目录约定：对话中的临时查询 → 当前工作目录下 `wheatomics_results/`；在 TRACE 流程运行目录（RUN 目录）内执行 → 该 RUN 目录下的 `results/`；
 - 写盘后把文件路径一并告知用户，便于后续引用与复现。
 
 ---

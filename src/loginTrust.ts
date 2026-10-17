@@ -28,7 +28,7 @@ interface LoginTrustOptions {
   confirmFingerprint: (fingerprint: string) => boolean | Promise<boolean>;
 }
 
-const TRUSTED_FINGERPRINT_PREFIX = 'hpclaw_trusted_host_fingerprint:';
+const TRUSTED_FINGERPRINT_PREFIX = 'trace_trusted_host_fingerprint:';
 
 function fingerprintStorageKey(credentials: Pick<LoginCredentials, 'host' | 'port' | 'username'>): string {
   return TRUSTED_FINGERPRINT_PREFIX + [

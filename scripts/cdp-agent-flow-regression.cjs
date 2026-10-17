@@ -1,11 +1,11 @@
-// HPClaw desktop regression: a formal workflow must not end early or mistake
+// TRACE desktop regression: a formal workflow must not end early or mistake
 // `Job <id> is not found` for a newly submitted LSF job.
 const http = require('http');
 const fs = require('fs');
 
 const port = process.argv[2] || '9225';
 const loginOnly = process.argv.includes('--login-only');
-const screenshotPath = loginOnly ? 'hpclaw-login-only.png' : (process.argv[3] || 'hpclaw-agent-flow-regression.png');
+const screenshotPath = loginOnly ? 'trace-login-only.png' : (process.argv[3] || 'trace-agent-flow-regression.png');
 const jobId = loginOnly ? '12345' : (process.argv[4] || '12345');
 const mode = loginOnly ? 'login-only' : (process.argv[5] || 'workflow');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -25,7 +25,7 @@ function getJson(path) {
 (async () => {
   const targets = await getJson('/json');
   const target = targets.find(item => item.type === 'page' && !item.url.startsWith('devtools'));
-  if (!target) throw new Error('没有找到 HPClaw 页面');
+  if (!target) throw new Error('没有找到 TRACE 页面');
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let requestId = 0;

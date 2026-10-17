@@ -7,8 +7,8 @@
 import { desktopSecrets } from "./desktopSecrets";
 import { isPublicWeb } from './publicWeb';
 
-const TOTP_SECRET_STORAGE_KEY = "hpclaw_totp_secret";
-const TOTP_REMEMBER_KEY = "hpclaw_remember_me";
+const TOTP_SECRET_STORAGE_KEY = "trace_totp_secret";
+const TOTP_REMEMBER_KEY = "trace_remember_me";
 
 // Default embedded secret — replace with your own
 
@@ -201,7 +201,7 @@ export function setRememberMe(remember: boolean): void {
 // ——— Saved credentials (only when remember-me is active) ———
 // 记住的集群密码：桌面端走 safeStorage 加密存储（白名单 key: clusterPassword），
 // 内存缓存 + 启动时水合；浏览器开发模式回退 localStorage。
-const SAVED_PASSWORD_KEY = "hpclaw_saved_password";
+const SAVED_PASSWORD_KEY = "trace_saved_password";
 let savedPasswordCache: string | null = null;
 
 export function getSavedPassword(): string {

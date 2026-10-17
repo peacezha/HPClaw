@@ -2,19 +2,25 @@
  * Compaction Service Definition (`ctx.compaction`): providers decide when to
  * compact and replace a history range with one summary node by subclassing
  * {@link CompactionEngine}. This interface necessarily depends on session and LLM
- * vocabulary; the rationale is in the
- * [compaction Agent Note](../../../../.agents/notes/implemented/feature/2026-06-18-compaction-capability-seam.md).
+ * vocabulary; the dependency rule is documented in the
+ * [compaction reference](../README.md#understand-the-implementation).
  * @module @deepseek-ai/dsh-compaction
  */
 import { Context, Service } from '@deepseek-ai/cordis';
-import type { Session } from '@deepseek-ai/dsh-session';
+import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { CompactionResult } from './types.ts';
+import type { CompactionCheckpointSource } from './checkpoint.ts';
 export type { CompactionResult } from './types.ts';
 export { CompactionId } from './brand.ts';
 export { toolPairingBalancedAfter, toolPairingBalancedBefore } from './tool-pairing.ts';
 export { compactCheckpointSource, isCompactCheckpointSource } from './checkpoint.ts';
 export type { CompactionCheckpointSource } from './checkpoint.ts';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'compact-checkpoint': CompactionCheckpointSource;
+    }
+}
 /** Why automatic policy is asking a backend to consider compaction. */
 export type CompactionTrigger = 'pressure' | 'context-overflow';
 /** Expected failure classes for an explicit idle-session compaction request. */
@@ -61,6 +67,27 @@ export interface ManualCompactAgentContext extends CompactionAgentContext {
 declare module '@deepseek-ai/cordis' {
     interface Context {
         compaction: CompactionEngine;
+    }
+    interface Events {
+        /**
+         * Recover a failed summary request by synchronously recording a durable
+         * change to its selected input. Return true only after making progress;
+         * the provider re-derives and re-prices the selection before retrying.
+         * Call next() when the failure cannot be recovered. Decisions survive a
+         * later summary failure or cancellation.
+         * @param payload.session - session containing the selected input.
+         * @param payload.sourceEventSeqs - selected message events in request order.
+         * @param payload.error - failure thrown by the summarizer.
+         * @param payload.signal - optional compaction cancellation signal.
+         * @param next - delegate to the next recovery listener.
+         * @mode waterfall
+         */
+        'compaction/summary-error'(payload: {
+            session: Session;
+            sourceEventSeqs: readonly SessionSeq[];
+            error: unknown;
+            signal?: AbortSignal;
+        }, next: () => boolean): boolean;
     }
 }
 /**
@@ -127,7 +154,7 @@ export declare abstract class CompactionEngine extends Service {
      * @throws when compaction is active or the range is missing, reversed, or unbalanced.
      * @returns the appended event seqs, summary, replaced range, and token accounting.
      */
-    abstract compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
+    abstract compactRegion(start: SessionSeq, end: SessionSeq, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
 }
 export default CompactionEngine;
 //# sourceMappingURL=index.d.ts.map

@@ -8,7 +8,7 @@ const directory = path.resolve(process.argv[2]);
 const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 const sourceCommit = process.env.GITHUB_SHA;
 assert(/^[a-f0-9]{40}$/.test(sourceCommit || ''), 'Exact build source required');
-const names = [`HPClaw-Setup-${version}-x64.exe`, `HPClaw-Setup-${version}-x64.exe.blockmap`, 'latest.yml'];
+const names = [`TRACE-Setup-${version}-x64.exe`, `TRACE-Setup-${version}-x64.exe.blockmap`, 'latest.yml'];
 const assets = [];
 for (const name of names) {
   const file = path.join(directory, name);
@@ -36,5 +36,5 @@ if (process.argv.includes('--verify')) {
   assert.equal(process.arch, 'x64');
   fs.writeFileSync(recordPath, JSON.stringify(record, null, 2) + '\n');
   console.log('Windows build source and artifact checksums recorded.');
-  console.log('HPCLAW_WINDOWS_BUILD_RECORD=' + JSON.stringify(record));
+  console.log('TRACE_WINDOWS_BUILD_RECORD=' + JSON.stringify(record));
 }

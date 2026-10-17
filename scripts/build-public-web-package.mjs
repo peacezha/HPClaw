@@ -9,7 +9,7 @@ if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Bui
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const output = path.join(root, 'release-public-web');
-const name = `HPClaw-${version}-public-web-linux-x64-node20`;
+const name = `TRACE-${version}-public-web-linux-x64-node20`;
 const stage = path.join(output, name);
 if (fs.existsSync(stage)) throw new Error('Use a fresh checkout: staging directory already exists');
 fs.mkdirSync(stage, { recursive: true });
@@ -21,7 +21,7 @@ for (const script of ['start-public-web.mjs', 'public-web-runtime.mjs']) {
   fs.copyFileSync(path.join(root, 'scripts', script), path.join(stage, 'scripts', script));
 }
 fs.copyFileSync(path.join(root, 'docs/PUBLIC_WEB_DEPLOYMENT.md'), path.join(stage, 'README.md'));
-fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ name: 'hpclaw-public-web', version,
+fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ name: 'trace-public-web', version,
   private: true, type: 'module', engines: { node: '>=' + minimumNodeVersion },
   scripts: { start: 'node scripts/start-public-web.mjs', 'web:start': 'node scripts/start-public-web.mjs' },
   dependencies: { ssh2: '1.17.0' },

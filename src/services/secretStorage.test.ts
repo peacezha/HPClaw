@@ -27,20 +27,20 @@ describe('桌面端加密存储：水合与迁移', () => {
 
   afterEach(() => {
     localStorage.clear();
-    delete (window as any).hpclawDesktop;
+    delete (window as any).traceDesktop;
   });
 
   it('aiProfile：localStorage 历史明文在水合时迁入加密存储并删除明文', async () => {
-    localStorage.setItem('hpclaw_ai_profile', JSON.stringify({ provider: 'deepseek', model: 'deepseek-chat', apiKey: 'sk-plain' }));
+    localStorage.setItem('trace_ai_profile', JSON.stringify({ provider: 'deepseek', model: 'deepseek-chat', apiKey: 'sk-plain' }));
     localStorage.setItem('ai_api_key', 'sk-plain');
     const secrets = createDesktopSecrets();
-    (window as any).hpclawDesktop = { secrets };
+    (window as any).traceDesktop = { secrets };
     const { aiProfile } = await loadModules();
 
     await aiProfile.hydrateAIProfile();
 
     expect(secrets.set).toHaveBeenCalledWith('aiProfile', expect.stringContaining('sk-plain'));
-    expect(localStorage.getItem('hpclaw_ai_profile')).toBeNull();
+    expect(localStorage.getItem('trace_ai_profile')).toBeNull();
     expect(localStorage.getItem('ai_api_key')).toBeNull();
     expect(aiProfile.loadAIProfile().apiKey).toBe('sk-plain');
   });
@@ -48,7 +48,7 @@ describe('桌面端加密存储：水合与迁移', () => {
   it('aiProfile：加密存储已有值时优先使用，保存走加密存储不写 localStorage', async () => {
     const stored = JSON.stringify({ provider: 'openai', model: 'gpt-4o', apiKey: 'sk-enc' });
     const secrets = createDesktopSecrets({ aiProfile: stored });
-    (window as any).hpclawDesktop = { secrets };
+    (window as any).traceDesktop = { secrets };
     const { aiProfile } = await loadModules();
 
     await aiProfile.hydrateAIProfile();
@@ -61,32 +61,32 @@ describe('桌面端加密存储：水合与迁移', () => {
   });
 
   it('totpStorage：TOTP 种子与记住密码在水合时迁入加密存储', async () => {
-    localStorage.setItem('hpclaw_totp_secret', 'JBSWY3DPEHPK3PXP');
-    localStorage.setItem('hpclaw_saved_password', 'pw-123');
+    localStorage.setItem('trace_totp_secret', 'JBSWY3DPEHPK3PXP');
+    localStorage.setItem('trace_saved_password', 'pw-123');
     const secrets = createDesktopSecrets();
-    (window as any).hpclawDesktop = { secrets };
+    (window as any).traceDesktop = { secrets };
     const { totpStorage } = await loadModules();
 
     await totpStorage.hydrateTotpStorage();
 
     expect(secrets.value('totpSecret')).toBe('JBSWY3DPEHPK3PXP');
     expect(secrets.value('clusterPassword')).toBe('pw-123');
-    expect(localStorage.getItem('hpclaw_totp_secret')).toBeNull();
-    expect(localStorage.getItem('hpclaw_saved_password')).toBeNull();
+    expect(localStorage.getItem('trace_totp_secret')).toBeNull();
+    expect(localStorage.getItem('trace_saved_password')).toBeNull();
     expect(totpStorage.getStoredSecret()).toBe('JBSWY3DPEHPK3PXP');
     expect(totpStorage.getSavedPassword()).toBe('pw-123');
   });
 
   it('totpStorage：桌面端写入走加密存储，清除凭据走 delete', async () => {
     const secrets = createDesktopSecrets({ totpSecret: 'AAA', clusterPassword: 'pw' });
-    (window as any).hpclawDesktop = { secrets };
+    (window as any).traceDesktop = { secrets };
     const { totpStorage } = await loadModules();
     await totpStorage.hydrateTotpStorage();
 
     totpStorage.storeSecret('BBB');
     expect(secrets.value('totpSecret')).toBe('BBB');
     expect(totpStorage.getStoredSecret()).toBe('BBB');
-    expect(localStorage.getItem('hpclaw_totp_secret')).toBeNull();
+    expect(localStorage.getItem('trace_totp_secret')).toBeNull();
 
     totpStorage.clearSavedCredentials();
     expect(totpStorage.getSavedPassword()).toBe('');
@@ -106,7 +106,7 @@ describe('桌面端加密存储：水合与迁移', () => {
 
     totpStorage.storeSecret('DEVSECRET');
     totpStorage.savePassword('dev-pw');
-    expect(localStorage.getItem('hpclaw_totp_secret')).toBe('DEVSECRET');
-    expect(localStorage.getItem('hpclaw_saved_password')).toBe('dev-pw');
+    expect(localStorage.getItem('trace_totp_secret')).toBe('DEVSECRET');
+    expect(localStorage.getItem('trace_saved_password')).toBe('dev-pw');
   });
 });

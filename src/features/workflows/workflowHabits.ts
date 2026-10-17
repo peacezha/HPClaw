@@ -14,7 +14,7 @@ interface StoredHabits {
   samples: WorkflowHabitSample[];
 }
 
-const PREFIX = 'hpclaw_workflow_habits_v1:';
+const PREFIX = 'trace_workflow_habits_v1:';
 const MAX_SAMPLES = 12;
 
 function safeScalar(value: unknown): string {

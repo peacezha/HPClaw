@@ -35,7 +35,7 @@ describe('source-grounded paper recovery', () => {
     expect(hasUsablePaperSteps(result.value)).toBe(true);
     for (const step of result.value.workflow.steps) {
       expect(step.agent.requiresReview).toBe(true);
-      expect(step.command).toContain('HPCLAW_REVIEW_REQUIRED');
+      expect(step.command).toContain('TRACE_REVIEW_REQUIRED');
       expect(step.command).toContain('exit 2');
       expect(paperQuoteExists(step.agent.evidence, paper)).toBe(true);
     }

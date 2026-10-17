@@ -17,6 +17,23 @@ function preflightLines(preflight: PreflightResult | null | undefined): string[]
   ];
 }
 
+/** 启动前整体检查（preflight-run）结果摘要：passed=全部就绪；否则列出用户强制运行时接受的警告 */
+export interface PreRunCheckSummary {
+  passed: boolean;
+  acceptedWarnings?: string[];
+}
+
+function preRunCheckLines(info: PreRunCheckSummary): string[] {
+  if (info.passed) {
+    return ['已完成启动前整体检查（软件/参考数据/输入数据/参数/步骤脚本），本次配置全部就绪；执行中遇到本次扫描未覆盖的新问题时再暂停询问用户。'];
+  }
+  return [
+    '启动前整体检查未全部通过，用户已明确接受以下问题并选择仍然开始运行：',
+    ...(info.acceptedWarnings ?? []).map(item => `- ${item}`),
+    '已接受的问题不要重复询问；执行中遇到以上列表之外的新问题时再暂停询问用户。',
+  ];
+}
+
 function executionProtocol(workflow: Workflow, run: { runId: string; runDir: string } | undefined): string[] {
   if (!run) {
     return [
@@ -43,6 +60,8 @@ export function composeRunMessage(
   workflow: Workflow,
   opts: {
     preflight?: PreflightResult | null;
+    /** 启动前整体检查结论；提供时取代 preflight 摘要行（整体检查已覆盖环境核查） */
+    preRunCheck?: PreRunCheckSummary;
     inputs: string[];
     paramValues: Record<string, string>;
     stepValues?: Record<number, Record<string, string>>;
@@ -54,7 +73,7 @@ export function composeRunMessage(
 ): string {
   const lines = executionProtocol(workflow, opts.run);
   lines.push('');
-  lines.push(...preflightLines(opts.preflight));
+  lines.push(...(opts.preRunCheck ? preRunCheckLines(opts.preRunCheck) : preflightLines(opts.preflight)));
   return lines.join('\n');
 }
 

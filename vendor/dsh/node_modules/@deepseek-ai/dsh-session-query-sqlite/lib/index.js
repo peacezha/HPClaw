@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { SESSION_FORMAT_VERSION, SessionSeq } from "@deepseek-ai/dsh-session";
 import { Service } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
-import SessionQueryEngine, { SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY, SESSION_QUERY_READ_WINDOW_MAX, SessionQueryError, SessionSearchCursor, assertSessionHeadersCompatible, buildSessionEventSearchDocuments, materializeSessionEventResultFilters, materializeSessionResultFilters } from "@deepseek-ai/dsh-session-query";
+import SessionQueryEngine, { SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY, SESSION_QUERY_DEFAULT_PREPARED_SESSION_CACHE_SIZE, SESSION_QUERY_READ_WINDOW_MAX, SessionQueryError, SessionSearchCursor, assertSessionHeadersCompatible, buildSessionEventSearchDocuments, materializeSessionEventResultFilters, materializeSessionResultFilters, readColdSessionLog } from "@deepseek-ai/dsh-session-query";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 //#region lib/types/schema.js
@@ -491,7 +492,8 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
 		maxLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(100),
 		snippetChars: z.number().step(1).min(1).default(240),
 		readWindowMax: z.number().step(1).min(0).default(SESSION_QUERY_READ_WINDOW_MAX),
-		persistedInspectConcurrency: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY)
+		persistedReadConcurrency: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY),
+		preparedSessionCacheSize: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(SESSION_QUERY_DEFAULT_PREPARED_SESSION_CACHE_SIZE)
 	});
 	/** Validated and defaulted backend configuration. */
 	config;
@@ -711,20 +713,21 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
 			let persisted = /* @__PURE__ */ new Map();
 			if (persistence !== void 0) try {
 				const canReuseIndexed = this._lastPersistenceIdentity === void 0 || this._lastPersistenceIdentity === persistenceBinding.identity;
-				const before = await persistence.listSnapshots(signal);
+				const listOptions = signal === void 0 ? void 0 : { signal };
+				const before = await persistence.list(listOptions);
 				assertNotAborted(signal);
 				persisted = materializePersistenceSnapshots(before);
 				for (const entry of persisted.values()) {
 					if (canReuseIndexed && indexed.get(entry.header.id)?.revision === entry.revision) continue;
 					if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== void 0) continue;
 					assertNotAborted(signal);
-					const loaded = await persistence.inspect(entry.header.id, signal);
+					const loaded = await readColdSessionLog(persistence, entry.header.id, signal);
 					assertNotAborted(signal);
-					assertSessionHeadersCompatible(entry.header, loaded.meta);
-					entry.loaded = observeSession(loaded.meta, loaded.events);
+					assertSessionHeadersCompatible(entry.header, loaded.header);
+					entry.loaded = observeSession(loaded.header, loaded.inheritedEventCount, loaded.events);
 				}
 				assertNotAborted(signal);
-				const afterSnapshots = await persistence.listSnapshots(signal);
+				const afterSnapshots = await persistence.list(listOptions);
 				assertNotAborted(signal);
 				const after = materializePersistenceSnapshots(afterSnapshots);
 				if (!samePersistenceSnapshots(persisted, after)) continue;
@@ -771,7 +774,7 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
       INSERT INTO persisted_sessions
         (id, version, created_at, cwd, parent_session, seed_length, delegation_depth, agent_preset, revision, generation)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(...headerBindings(entry.header), revision, generation);
+    `).run(...headerBindings(entry.header, entry.inheritedEventCount), revision, generation);
 		const insert = db.prepare(`
       INSERT INTO persisted_docs (text, session_id, seq, type, time, surface, codepoint_length)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -788,7 +791,7 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
       INSERT INTO temp.live_sessions
         (id, version, created_at, cwd, parent_session, seed_length, delegation_depth, agent_preset, fingerprint, persisted, generation)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(...headerBindings(entry.header), entry.fingerprint, persisted ? 1 : 0, generation);
+    `).run(...headerBindings(entry.header, entry.inheritedEventCount), entry.fingerprint, persisted ? 1 : 0, generation);
 		const insert = db.prepare(`
       INSERT INTO temp.live_docs (text, session_id, seq, type, time, surface, codepoint_length)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -884,7 +887,7 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
 	_eventHit(row) {
 		return {
 			sessionId: row.session_id,
-			seq: row.seq,
+			seq: SessionSeq(row.seq),
 			type: row.type,
 			time: row.time,
 			surface: row.surface,
@@ -906,14 +909,14 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
 * @param header - the session header being written.
 * @returns one bound value per header column.
 */
-function headerBindings(header) {
+function headerBindings(header, inheritedEventCount) {
 	return [
 		header.id,
 		header.version,
 		header.createdAt,
 		header.cwd ?? null,
 		header.parentSession ?? null,
-		header.seedLength ?? null,
+		header.isSeeded ? inheritedEventCount : null,
 		header.delegationDepth ?? null,
 		header.agentPreset ?? null
 	];
@@ -989,16 +992,18 @@ function selectedDocumentsParams(query, persistenceVisible) {
 	];
 }
 function observeLive(session) {
-	return observeSession(session.header, session.events);
+	return observeSession(session.header, session.inheritedEventCount, session.snapshotEvents());
 }
-function observeSession(header, events) {
+function observeSession(header, inheritedEventCount, events) {
 	const detachedHeader = structuredClone(header);
 	const detachedEvents = events.map((event) => structuredClone(event));
 	return {
 		header: detachedHeader,
+		inheritedEventCount,
 		documents: buildSessionEventSearchDocuments(detachedHeader.id, detachedEvents),
 		fingerprint: createHash("sha256").update(JSON.stringify({
 			header: detachedHeader,
+			inheritedEventCount,
 			events: detachedEvents
 		})).digest("base64url")
 	};
@@ -1031,16 +1036,16 @@ function sameSessionIds(before, after) {
 	return true;
 }
 function sameHeader(a, b) {
-	return a.version === b.version && a.id === b.id && a.createdAt === b.createdAt && a.cwd === b.cwd && a.parentSession === b.parentSession && a.seedLength === b.seedLength && (a.delegationDepth ?? 0) === (b.delegationDepth ?? 0) && a.agentPreset === b.agentPreset;
+	return a.id === b.id && a.createdAt === b.createdAt && a.cwd === b.cwd && a.parentSession === b.parentSession && a.isSeeded === b.isSeeded && (a.delegationDepth ?? 0) === (b.delegationDepth ?? 0) && a.agentPreset === b.agentPreset;
 }
 function rowHeader(row) {
 	return {
-		version: row.version,
+		version: SESSION_FORMAT_VERSION,
 		id: row.session_id,
 		createdAt: row.created_at,
 		...row.cwd === null ? {} : { cwd: row.cwd },
 		...row.parent_session === null ? {} : { parentSession: row.parent_session },
-		...row.seed_length === null ? {} : { seedLength: row.seed_length },
+		isSeeded: row.seed_length !== null,
 		...row.delegation_depth === null ? {} : { delegationDepth: row.delegation_depth },
 		...row.agent_preset === null ? {} : { agentPreset: row.agent_preset }
 	};
@@ -1078,7 +1083,8 @@ function resolveConfig(config) {
 		maxLimit: config.maxLimit ?? 100,
 		snippetChars: config.snippetChars ?? 240,
 		readWindowMax: config.readWindowMax ?? SESSION_QUERY_READ_WINDOW_MAX,
-		persistedInspectConcurrency: config.persistedInspectConcurrency ?? SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY
+		persistedReadConcurrency: config.persistedReadConcurrency ?? SESSION_QUERY_DEFAULT_PERSISTED_INSPECT_CONCURRENCY,
+		preparedSessionCacheSize: config.preparedSessionCacheSize ?? SESSION_QUERY_DEFAULT_PREPARED_SESSION_CACHE_SIZE
 	};
 	if (typeof resolved.path !== "string" || resolved.path.trim().length === 0) throw invalidConfig("path must not be blank");
 	if (![
@@ -1090,7 +1096,8 @@ function resolveConfig(config) {
 	assertPageLimit("maxLimit", resolved.maxLimit);
 	assertPositiveInteger("snippetChars", resolved.snippetChars);
 	if (!Number.isInteger(resolved.readWindowMax) || resolved.readWindowMax < 0) throw invalidConfig("readWindowMax must be a non-negative integer");
-	if (!Number.isSafeInteger(resolved.persistedInspectConcurrency) || resolved.persistedInspectConcurrency < 1) throw invalidConfig("persistedInspectConcurrency must be a positive safe integer");
+	if (!Number.isSafeInteger(resolved.persistedReadConcurrency) || resolved.persistedReadConcurrency < 1) throw invalidConfig("persistedReadConcurrency must be a positive safe integer");
+	if (!Number.isSafeInteger(resolved.preparedSessionCacheSize) || resolved.preparedSessionCacheSize < 1) throw invalidConfig("preparedSessionCacheSize must be a positive safe integer");
 	if (resolved.defaultLimit > resolved.maxLimit) throw invalidConfig("defaultLimit must be less than or equal to maxLimit");
 	if (![
 		"wal",

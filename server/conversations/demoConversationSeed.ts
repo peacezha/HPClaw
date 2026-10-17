@@ -7,7 +7,7 @@ import { appPath, dataPath } from '../paths';
 import { LocalConversationStore } from './localConversations';
 import type { ConversationRecordLike } from './clusterConversations';
 
-export const DEMO_CONVERSATION_ID = 'hpclaw-demo-rich-content';
+export const DEMO_CONVERSATION_ID = 'trace-demo-rich-content';
 export const DEMO_CONVERSATION_TITLE = '示例：富文本结果展示';
 /** 种子版本：示例内容变化时递增标记文件名，触发老库重新播种 */
 const SEED_MARKER_FILE = '.demo-seed-v1';

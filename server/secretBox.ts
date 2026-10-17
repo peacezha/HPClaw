@@ -1,5 +1,5 @@
 // 服务端落盘密钥的对称加密封装：AES-256-GCM，密文格式 enc:v1:<iv>:<tag>:<data>（base64）。
-// 密钥由 Electron 主进程生成并经 HPCLAW_ENCRYPTION_KEY（hex，32 字节）注入；
+// 密钥由 Electron 主进程生成并经 TRACE_ENCRYPTION_KEY（hex，32 字节）注入；
 // 未注入时（纯 tsx 开发模式）加解密均透传明文，保证 dev 模式无需密钥即可运行。
 // 向后兼容：decryptSecret 对非 enc:v1: 前缀的历史明文原样返回，下次保存时自动加密。
 import crypto from 'node:crypto';
@@ -9,7 +9,7 @@ let warnedNoKey = false;
 let warnedDecryptFailure = false;
 
 function loadKey(): Buffer | null {
-  const hex = (process.env.HPCLAW_ENCRYPTION_KEY || '').trim();
+  const hex = (process.env.TRACE_ENCRYPTION_KEY || '').trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
   return Buffer.from(hex, 'hex');
 }
@@ -17,7 +17,7 @@ function loadKey(): Buffer | null {
 function warnNoKeyOnce(): void {
   if (warnedNoKey) return;
   warnedNoKey = true;
-  console.warn('[secretBox] 未设置 HPCLAW_ENCRYPTION_KEY，落盘密钥按明文透传存储（开发模式行为）');
+  console.warn('[secretBox] 未设置 TRACE_ENCRYPTION_KEY，落盘密钥按明文透传存储（开发模式行为）');
 }
 
 /** 加密落盘密钥；无密钥时透传明文（开发模式）。已是 enc:v1: 密文的值原样返回，避免二次加密。 */

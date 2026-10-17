@@ -8,7 +8,7 @@
 import type { Context, Events } from '@deepseek-ai/cordis';
 import type { Scoped } from '@deepseek-ai/dsh-scope';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
-import type { Agent } from './runtime-types.ts';
+import type { Agent } from './types.ts';
 /** Extract the parameter tuple from an event handler type (its `this` is not part of the tuple). */
 type Params<F> = F extends (...args: infer P) => unknown ? P : never;
 /** Extract the return type from an event handler type. */

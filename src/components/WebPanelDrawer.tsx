@@ -40,26 +40,45 @@ export default function WebPanelDrawer({ panels, activeIndex, onSelectTab, onClo
   const active = panels[activeIndex] ?? panels[panels.length - 1];
   const [maximized, setMaximized] = useState(false);
   const resizeCleanup = useRef<(() => void) | null>(null);
+  // 本组件把 body.userSelect 置为 'none' 前记住的原值；null 表示当前值不是我们设置的
+  const bodySelectionRestore = useRef<string | null>(null);
   useEffect(() => () => resizeCleanup.current?.(), []);
+  // 兜底：拖拽中在窗口外松开鼠标时 pointerup 可能到不了 document，body 上残留的
+  // userSelect:'none' 会让全应用无法选中文字。后续任何 pointerup 到达时，若拖拽已结束
+  // 而残留值确实是本组件设置的，写回记住的原值（不清别人设置的值）。
+  useEffect(() => {
+    const restoreBodySelection = () => {
+      if (resizeCleanup.current) return;
+      if (bodySelectionRestore.current === null) return;
+      document.body.style.userSelect = bodySelectionRestore.current;
+      bodySelectionRestore.current = null;
+    };
+    window.addEventListener('pointerup', restoreBodySelection);
+    return () => window.removeEventListener('pointerup', restoreBodySelection);
+  }, []);
   const [panelWidth, setPanelWidth] = useState(() => {
     // Classic layout starts at v0.4.39's 600px; do not inherit the redesigned width.
-    const stored = Number(window.localStorage.getItem('hpclaw_web_panel_width_classic'));
+    const stored = Number(window.localStorage.getItem('trace_web_panel_width_classic'));
     return Number.isFinite(stored) && stored >= 440 ? stored : 600;
   });
   useEffect(() => {
-    window.localStorage.setItem('hpclaw_web_panel_width_classic', String(Math.round(panelWidth)));
+    window.localStorage.setItem('trace_web_panel_width_classic', String(Math.round(panelWidth)));
   }, [panelWidth]);
 
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (maximized) return;
     resizeCleanup.current?.();
     event.preventDefault();
+    // 指针捕获到拖拽柄：鼠标在窗口外松开时 pointerup/pointercancel 仍会派发到本组件
+    // 并冒泡到 document，避免恢复逻辑丢失导致 body.userSelect='none' 永久残留
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* 测试环境等不支持指针捕获时忽略 */ }
     const startX = event.clientX;
     const startWidth = panelWidth;
     const previousCursor = document.body.style.cursor;
     const previousSelection = document.body.style.userSelect;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    bodySelectionRestore.current = previousSelection;
     const move = (moveEvent: PointerEvent) => {
       const next = Math.max(440, Math.min(window.innerWidth - 32, startWidth + startX - moveEvent.clientX));
       setPanelWidth(next);
@@ -69,7 +88,10 @@ export default function WebPanelDrawer({ panels, activeIndex, onSelectTab, onClo
       document.removeEventListener('pointerup', finish);
       document.removeEventListener('pointercancel', finish);
       document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelection;
+      if (bodySelectionRestore.current !== null) {
+        document.body.style.userSelect = bodySelectionRestore.current;
+        bodySelectionRestore.current = null;
+      }
       resizeCleanup.current = null;
     };
     document.addEventListener('pointermove', move);
@@ -209,7 +231,7 @@ function WebPanelContent({ panel }: { panel: WebPanelRequest }) {
 
 /** http(s) 外链：Electron <webview> 内嵌（partition 隔离会话，不影响主窗口登录态） */
 function WebViewContent({ url }: { url: string }) {
-  return window.hpclawDesktop
+  return window.traceDesktop
     ? <DesktopWebViewContent url={url} />
     : <BrowserWebContent url={url} />;
 }
@@ -264,7 +286,7 @@ function DesktopWebViewContent({ url }: { url: string }) {
       <webview
         ref={webviewRef}
         src={url}
-        partition="hpclaw-webpanel"
+        partition="trace-webpanel"
         // Electron 只需属性存在即允许弹窗（弹窗再由主进程转系统浏览器）；
         // 写字符串形式避免 React 对非布尔属性传 true 的开发告警
         {...{ allowpopups: 'true' as unknown as boolean }}

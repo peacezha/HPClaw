@@ -1,4 +1,4 @@
-﻿import type { AIMessage, AIProfile, GatewayRequest, LegacyAIProvider, StreamEvent } from './types';
+import type { AIMessage, AIProfile, GatewayRequest, LegacyAIProvider, StreamEvent } from './types';
 
 const DEFAULT_MODELS: Record<AIProfile['provider'], string> = {
   gemini: 'gemini-3.1-pro-preview',
@@ -92,7 +92,7 @@ function buildOpenAIBody(request: GatewayRequest, stream: boolean) {
 
   if (request.maxTokens) body.max_tokens = request.maxTokens;
   if (request.isFastMode && request.profile.provider === 'deepseek' && (body.model === 'deepseek-reasoner' || body.model === 'deepseek-v4-pro')) {
-    body.model = 'deepseek-chat';
+    body.model = 'deepseek-flash';
   }
   if (body.model === 'deepseek-reasoner' || body.model === 'deepseek-v4-pro') delete body.temperature;
   if (!stream) delete body.stream;

@@ -9,7 +9,7 @@ async function loadStorage() {
 describe('totpStorage remember-me credentials', () => {
   beforeEach(() => {
     localStorage.clear();
-    Object.defineProperty(window, 'hpclawDesktop', {
+    Object.defineProperty(window, 'traceDesktop', {
       configurable: true,
       value: {},
     });
@@ -17,7 +17,7 @@ describe('totpStorage remember-me credentials', () => {
 
   afterEach(() => {
     localStorage.clear();
-    delete (window as any).hpclawDesktop;
+    delete (window as any).traceDesktop;
   });
 
   it('remembers credentials in the desktop renderer when the user opts in', async () => {

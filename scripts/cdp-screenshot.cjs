@@ -1,4 +1,4 @@
-// One-off smoke test: capture a screenshot of the running HPClaw window via CDP.
+// One-off smoke test: capture a screenshot of the running TRACE window via CDP.
 // Usage: node scripts/cdp-screenshot.cjs <debug-port> <out.png> [waitMs]
 const http = require('http');
 const fs = require('fs');

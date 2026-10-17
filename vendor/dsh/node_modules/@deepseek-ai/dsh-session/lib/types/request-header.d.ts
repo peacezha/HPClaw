@@ -8,9 +8,9 @@
  */
 import type { EpochHeader, SessionEvent } from './types.ts';
 /**
- * Normalize a header to canonical form: an empty system prompt and empty tool
- * list become absent fields, matching how requests are built. Logging, folding,
- * and comparison use this one representation.
+ * Normalize a header to canonical form: an empty tool list becomes an absent
+ * field, matching how requests are built. Logging, folding, and comparison use
+ * this one representation.
  * @param header - the header to normalize (not mutated).
  * @returns the canonical header.
  */
@@ -19,7 +19,7 @@ export declare function canonicalHeader(header: EpochHeader): EpochHeader;
  * Field-wise equality over canonical headers. Tool schemas compare in order.
  * @param a - one canonical header.
  * @param b - the other.
- * @returns whether config, system, and tools all match.
+ * @returns whether config, adapter defaults, and tools all match.
  */
 export declare function headerEquals(a: EpochHeader, b: EpochHeader): boolean;
 /**

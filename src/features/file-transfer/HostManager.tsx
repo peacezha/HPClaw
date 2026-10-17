@@ -7,7 +7,7 @@ interface HostManagerProps {
 }
 
 const isDesktop =
-  typeof window !== 'undefined' && window.hpclawDesktop !== undefined;
+  typeof window !== 'undefined' && window.traceDesktop !== undefined;
 
 export default function HostManager({
   onConnect,
@@ -17,7 +17,7 @@ export default function HostManager({
 
   useEffect(() => {
     if (isDesktop) {
-      window.hpclawDesktop!.profiles.list().then(setProfiles);
+      window.traceDesktop!.profiles.list().then(setProfiles);
     }
   }, []);
 

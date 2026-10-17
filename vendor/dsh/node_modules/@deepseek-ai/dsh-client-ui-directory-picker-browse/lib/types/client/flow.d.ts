@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import type { DirectoryListing } from '@deepseek-ai/dsh-client-runtime/client';
+import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client';
 import type { Translate } from '@deepseek-ai/dsh-client-locale/client';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
 /** Injected face: the browse wire calls and copy the dialog drives (bound in apply's closure). */

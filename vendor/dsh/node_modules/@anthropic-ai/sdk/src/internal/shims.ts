@@ -1,5 +1,3 @@
-// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-
 /**
  * This module provides internal shims and utility functions for environments where certain Node.js or global types may not be available.
  *
@@ -8,7 +6,7 @@
  */
 
 import type { Fetch } from './builtin-types';
-import type { ReadableStream } from './shim-types';
+import type { ReadableStream as ReadableStreamType } from './shim-types';
 
 export function getDefaultFetch(): Fetch {
   if (typeof fetch !== 'undefined') {
@@ -20,9 +18,10 @@ export function getDefaultFetch(): Fetch {
   );
 }
 
+// The runtime's global ReadableStream constructor, not the type imported above as ReadableStreamType.
 type ReadableStreamArgs = ConstructorParameters<typeof ReadableStream>;
 
-export function makeReadableStream(...args: ReadableStreamArgs): ReadableStream {
+export function makeReadableStream(...args: ReadableStreamArgs): ReadableStreamType {
   const ReadableStream = (globalThis as any).ReadableStream;
   if (typeof ReadableStream === 'undefined') {
     // Note: All of the platforms / runtimes we officially support already define
@@ -35,7 +34,7 @@ export function makeReadableStream(...args: ReadableStreamArgs): ReadableStream 
   return new ReadableStream(...args);
 }
 
-export function ReadableStreamFrom<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T> {
+export function ReadableStreamFrom<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStreamType<T> {
   let iter: AsyncIterator<T> | Iterator<T> =
     Symbol.asyncIterator in iterable ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 

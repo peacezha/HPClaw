@@ -1,15 +1,19 @@
 // 作业完成自动唤醒 AI 会话：jobWatcher 发现作业 DONE/EXIT 后调用 maybeResumeAgent。
 // 经 dsh sidecar 冷恢复绑定会话、投递唤醒 prompt、收集 assistant 文本并回显到
 // 对话与 UI。全流程不 throw——任何一步失败仅 log 并 return（作业监控路径不能被打断）。
+//
+// sdk 通道差异：无 mux/history/cancel——事件经 session.event 订阅收集；审批一律回
+// 'rejected'（后台无人批准）；反问回 null（交还瀑布，工具以"无人应答"收尾，不留挂起）。
 
-import { DshClient } from './dshClient';
 import {
   ensureSidecar as defaultEnsureSidecar,
+  getSidecarClient,
   type EnsureSidecarOptions,
   type EnsureSidecarResult,
 } from './dshSidecar';
+import type { DshSdkClient } from './dshSdkClient';
 import type { JobAgentBinding } from './jobAgentBindings';
-import { bindDshSession } from './bridgeState';
+import { bindDshSession, registerDshInteractionHandler } from './bridgeState';
 import { normalizeDeepSeekBaseUrl, redactDshSensitiveText } from './dshConfigSafety';
 import { createTranslateState, createTranslator } from './dshTranslate';
 import { extractSubmittedJobIds, isSubmissionCommand } from './jobAgentBindings';
@@ -26,15 +30,14 @@ export interface ResumeConversationMessage {
   content: string;
 }
 
-/** 便于测试注入的 DshClient 结构子集。 */
-export interface DshClientLike {
-  createSession(opts: { cwd: string; sessionId?: string }): Promise<string>;
-  selectModel(opts: { sessionId: string; provider: string; model: string }): Promise<void>;
-  prompt(opts: { sessionId: string; text: string }): Promise<{ accepted?: boolean }>;
-  connectMux(hooks: { onOpened?: () => void; onFrame: (frame: any) => void; onClosed: () => void }): { close: () => void };
-  cancel?: (sessionId: string) => Promise<void>;
-  respondApproval?: (opts: { rpcId: string; sessionId: string; approvalId: string; outcome: 'rejected' }) => Promise<boolean>;
-  sessionStatus?: (sessionId: string) => Promise<{ running: boolean } | undefined>;
+/** 便于测试注入的 sdk 客户端结构子集。 */
+export interface DshSdkClientLike {
+  resume(sessionId: string): Promise<void>;
+  setWorkingDirectory(sessionId: string, path: string): Promise<string>;
+  prompt(opts: { sessionId: string; text: string }): Promise<{ messageId: string }>;
+  probeSession(sessionId: string, timeoutMs?: number): Promise<'idle' | 'running' | 'unknown'>;
+  onSessionEvent(cb: (n: { sessionId: string; event: any }) => void): () => void;
+  sessionStatusOf?(sessionId: string): 'idle' | 'running' | undefined;
 }
 
 export interface ResumeAgentDeps {
@@ -51,13 +54,13 @@ export interface ResumeAgentDeps {
   now?: () => number;
   /** 测试覆盖用；缺省走 dshSidecar 的真实 ensureSidecar */
   ensureSidecar?: (opts: EnsureSidecarOptions) => Promise<EnsureSidecarResult>;
-  /** 测试覆盖用；缺省 new DshClient(baseUrl) */
-  createClient?: (baseUrl: string) => DshClientLike;
+  /** 测试覆盖用；缺省 getSidecarClient() */
+  createClient?: () => DshSdkClientLike | undefined;
 }
 
 const MAX_RESUME_PER_JOB = 3;
-const MUX_IDLE_TIMEOUT_MS = 90_000;
-const MUX_HARD_TIMEOUT_MS = 10 * 60_000;
+const IDLE_TIMEOUT_MS = 90_000;
+const HARD_TIMEOUT_MS = 10 * 60_000;
 const OUTPUT_EXCERPT_MAX = 3 * 1024;
 
 // 同一 dshSessionId 的并发唤醒互斥（避免作业批量结束时重复投递 prompt）。
@@ -83,15 +86,15 @@ function buildSysMessage(binding: JobAgentBinding, jobId: string, status: string
     : `【系统】作业 ${jobId} 已结束（${status}），已自动继续处理。`;
 }
 
-/** 先订阅 mux 再投递 prompt，收集 assistant 文本并避免快速回答丢帧。 */
-async function promptAndCollectAssistantText(client: DshClientLike, sessionId: string, promptText: string, onJobs: (ids: string[]) => void, locale: 'zh-CN' | 'en-US'): Promise<{ text: string; completed: boolean }> {
+/** 先确认会话空闲再投递 prompt，收集 assistant 文本；交互（审批/反问）按后台策略自动处理。 */
+async function promptAndCollectAssistantText(client: DshSdkClientLike, sessionId: string, promptText: string, onJobs: (ids: string[]) => void, locale: 'zh-CN' | 'en-US'): Promise<{ text: string; completed: boolean }> {
   const zh = locale !== 'en-US';
   // Do not mistake the foreground turn's end for the queued wake's answer.
   // Let the existing worker finish; never cancel someone else's active task.
   const waitStarted = Date.now();
   try {
-    while ((await client.sessionStatus?.(sessionId))?.running) {
-      if (Date.now() - waitStarted >= MUX_HARD_TIMEOUT_MS) return { text: zh ? '原对话仍在执行，未重复投递续跑指令。' : 'The existing conversation is still running; no duplicate resume prompt was submitted.', completed: false };
+    while ((await client.probeSession(sessionId, 5_000)) === 'running') {
+      if (Date.now() - waitStarted >= HARD_TIMEOUT_MS) return { text: zh ? '原对话仍在执行，未重复投递续跑指令。' : 'The existing conversation is still running; no duplicate resume prompt was submitted.', completed: false };
       await new Promise(resolve => setTimeout(resolve, 5_000));
     }
   } catch {
@@ -101,14 +104,13 @@ async function promptAndCollectAssistantText(client: DshClientLike, sessionId: s
     let text = '';
     let completed = false;
     let finished = false;
-    let promptStarted = false;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const onIdle = async () => {
       if (finished) return;
       try {
-        if ((await client.sessionStatus?.(sessionId))?.running) {
+        if ((await client.probeSession(sessionId, 5_000)) === 'running') {
           // Long tools and reasoning are not a completed turn.
-          idleTimer = setTimeout(() => void onIdle(), MUX_IDLE_TIMEOUT_MS);
+          idleTimer = setTimeout(() => void onIdle(), IDLE_TIMEOUT_MS);
           idleTimer.unref?.();
           return;
         }
@@ -131,61 +133,45 @@ async function promptAndCollectAssistantText(client: DshClientLike, sessionId: s
       } else if (event.type === 'error') {
         text += (zh ? '\n自动续跑未完成：' : '\nAuto-resume did not complete: ') + event.error;
         finish();
-      } else if (event.type === 'confirm') {
-        void client.respondApproval?.({ ...event, outcome: 'rejected' });
-        text += zh ? '\n需要用户审批后继续；后台未批准该命令。' : '\nUser approval is required to continue; the background worker did not approve this command.';
-        completed = true; // A real approval pause, not a successful task.
-        finish();
       }
     } });
-    const mux = client.connectMux({
-      onOpened: () => {
-        if (finished || promptStarted) return;
-        promptStarted = true;
-        void client.prompt({ sessionId, text: promptText }).then(accepted => {
-          if (accepted?.accepted === false) { text += zh ? '\n唤醒指令未被引擎接受，尚未继续执行。' : '\nThe engine did not accept the resume prompt; execution has not continued.'; finish(); }
-        }).catch(err => {
-          console.warn('[dsh-resume] 唤醒 prompt 提交失败: %s', redactDshSensitiveText(err instanceof Error ? err.message : String(err)));
-          finish();
-        });
-      },
-      onFrame: frame => {
-        if (finished || !promptStarted) return;
-        if (frame.payload?.sessionId !== sessionId) return;
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => void onIdle(), MUX_IDLE_TIMEOUT_MS);
-        idleTimer.unref?.();
-        if (frame.method === 'question/requested') {
-          const questions = frame.payload.questions || frame.payload.question?.questions || [];
-          text += (zh ? '\n需要补充关键输入后继续：' : '\nEssential input is required to continue: ') + questions.map((q: any) => q.question || q.title || '').join('\n');
-          // Leave no invisible blocked DSH worker; user can resume from the saved conversation.
-          void client.cancel?.(sessionId).catch(() => {});
-          completed = true;
-          finish();
-          return;
-        }
-        translator.translateFrame(frame, state);
-      },
-      onClosed: () => finish(),
+    // 后台唤醒没有人盯屏幕：审批一律拒绝，反问交还瀑布（插件 next() → NO_PROVIDER，
+    // 工具以"无人应答"结束等待）。回合继续跑到自然 turn/end，由模型如实总结，
+    // 不留隐形挂起（旧实现靠 session.cancel，sdk 协议无此方法）。
+    const unregisterInteraction = registerDshInteractionHandler(sessionId, {
+      onApproval: async () => 'rejected' as const,
+      onQuestions: async () => null,
+    });
+    const unsubscribe = client.onSessionEvent(({ sessionId: target, event }) => {
+      if (finished || target !== sessionId) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => void onIdle(), IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+      translator.translateEvent(event, state);
     });
     const finish = (): void => {
       if (finished) return;
       finished = true;
       if (idleTimer) clearTimeout(idleTimer);
       clearTimeout(hardTimer);
-      try { mux.close(); } catch { /* 已关闭 */ }
+      unsubscribe();
+      unregisterInteraction();
       resolve({ text, completed });
     };
-    idleTimer = setTimeout(() => void onIdle(), MUX_IDLE_TIMEOUT_MS);
+    void client.prompt({ sessionId, text: promptText }).catch(err => {
+      console.warn('[dsh-resume] 唤醒 prompt 提交失败: %s', redactDshSensitiveText(err instanceof Error ? err.message : String(err)));
+      finish();
+    });
+    idleTimer = setTimeout(() => void onIdle(), IDLE_TIMEOUT_MS);
     idleTimer.unref?.();
-    const hardTimer = setTimeout(finish, MUX_HARD_TIMEOUT_MS);
+    const hardTimer = setTimeout(finish, HARD_TIMEOUT_MS);
     hardTimer.unref?.();
   });
 }
 
 export async function maybeResumeAgent(evt: ResumeJobEvent, deps: ResumeAgentDeps): Promise<void> {
   try {
-    if (process.env.HPCLAW_JOB_RESUME === 'off') return;
+    if (process.env.TRACE_JOB_RESUME === 'off') return;
     const binding = deps.getBinding(evt.jobId, evt.sessionId);
     if (!binding) return;
     // legacy(内置)引擎的绑定没有 dsh 会话，由 legacyJobResumer 接管，这里不重复唤醒。
@@ -226,28 +212,40 @@ async function runResume(evt: ResumeJobEvent, binding: JobAgentBinding, deps: Re
     pluginSourceDir: deps.pluginSourceDir,
     skillDirs: deps.skillDirs,
     extraEnv,
+    provider: 'deepseek-official',
+    model: binding.profile?.model || 'deepseek-v4-pro',
   });
-  if (!sidecar.ok || !sidecar.baseUrl) {
+  if (!sidecar.ok) {
     console.warn('[dsh-resume] sidecar 不可用，跳过作业 %s 唤醒: %s', evt.jobId, sidecar.reason || 'unknown');
     return;
   }
 
-  const client = (deps.createClient ?? (baseUrl => new DshClient(baseUrl)))(sidecar.baseUrl);
-  const sessionId = await client.createSession({
-    cwd: binding.workspace || deps.dataRoot,
-    sessionId: binding.dshSessionId,
-  }) || binding.dshSessionId;
+  const client = (deps.createClient ?? getSidecarClient)();
+  if (!client) {
+    console.warn('[dsh-resume] sidecar 客户端不可用，跳过作业 %s 唤醒', evt.jobId);
+    return;
+  }
+  // 冷恢复绑定会话；失败（不存在/不可读）则按原 id 继续（prompt 会惰性创建同名新会话）。
+  try {
+    await client.resume(binding.dshSessionId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/already (open|owned|opening)/i.test(message)) {
+      console.warn('[dsh-resume] 会话冷恢复失败（按同名会话继续）: %s', redactDshSensitiveText(message));
+    }
+  }
+  const sessionId = binding.dshSessionId;
+  try {
+    await client.setWorkingDirectory(sessionId, binding.workspace || deps.dataRoot);
+  } catch (err) {
+    console.warn('[dsh-resume] 会话工作目录设置失败（继续）: %s', redactDshSensitiveText(err instanceof Error ? err.message : String(err)));
+  }
   bindDshSession({
     dshSessionId: sessionId,
     sshSessionId: evt.sessionId,
     workspaceRoot: binding.workspace || deps.dataRoot,
     conversationKey: binding.conversationKey,
     confirmationPolicy: binding.confirmationPolicy || 'dangerous',
-  });
-  await client.selectModel({
-    sessionId,
-    provider: 'deepseek-official',
-    model: binding.profile?.model || 'deepseek-v4-pro',
   });
 
   const wakeText = buildWakeText(binding, evt.jobId, evt.status, tail);

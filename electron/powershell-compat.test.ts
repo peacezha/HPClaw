@@ -19,7 +19,7 @@ describe('Windows PowerShell compatibility', () => {
     expect(installerInclude).toContain('ExecutablePath like');
     expect(installerInclude).toContain('HKEY_CURRENT_USER');
     expect(installerInclude).toContain('InstallLocation');
-    expect(installerInclude).toContain('hpclawDisableUpgradeUninstaller');
+    expect(installerInclude).toContain('traceDisableUpgradeUninstaller');
     expect(installerInclude).toContain('DeleteRegValue');
     expect(installerInclude).toContain('QuietUninstallString');
     expect(installerInclude).not.toContain('DisplayVersion');
@@ -47,7 +47,7 @@ describe('Windows PowerShell compatibility', () => {
     expect(desktopMain).not.toContain("spawn('powershell.exe'");
   });
 
-  it('stops the complete HPClaw backend tree so sidecars cannot lock an update', () => {
+  it('stops the complete TRACE backend tree so sidecars cannot lock an update', () => {
     const desktopMain = fs.readFileSync(path.join(projectRoot, 'electron', 'main.cjs'), 'utf8');
     expect(desktopMain).toContain('spawnSync');
     expect(desktopMain).toContain("'taskkill.exe'");

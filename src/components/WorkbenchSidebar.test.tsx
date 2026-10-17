@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render as renderWithoutLocale, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render as renderWithoutLocale, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { LocaleProvider } from '../i18n';
 import type { ReactNode } from 'react';
 const render = (node: ReactNode) => renderWithoutLocale(node, { wrapper: LocaleProvider });
@@ -16,9 +16,20 @@ vi.mock('../features/workflows/api', () => ({
 vi.mock('./ConversationList', () => ({ default: () => <div data-testid="conversation-list" /> }));
 vi.mock('./ClusterFileTree', () => ({ default: () => <div data-testid="cluster-file-tree" /> }));
 
+beforeEach(() => {
+  // 默认桩掉计算资源页签的聚合轮询（/api/jobs/summary/all）；
+  // “计算资源二级区”describe 内会用自己的可控 mock 覆盖
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ success: true, clusters: [] }),
+  })));
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const COMPUTE_TARGETS: ComputeBackendTarget[] = [
@@ -80,7 +91,7 @@ describe('WorkbenchSidebar 主导航', () => {
 
   it('渲染品牌与横排四个主导航（数据资源在底部工具行），当前项高亮，计算资源带已连接数徽标', () => {
     render(<WorkbenchSidebar {...makeProps()} />);
-    expect(screen.getByText('HPClaw')).toBeInTheDocument();
+    expect(screen.getByText('TRACE')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '对话' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /计算资源/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '文件' })).toBeInTheDocument();
@@ -152,6 +163,22 @@ describe('WorkbenchSidebar 二级区布局', () => {
 });
 
 describe('WorkbenchSidebar 计算资源二级区', () => {
+  // 集群条目的作业状态行来自聚合接口 /api/jobs/summary/all；桩掉 fetch 让轮询可预期
+  let clustersPayload: unknown;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    clustersPayload = [
+      { sessionId: 'sess-1', host: 'hpc.example.edu', username: 'user', scheduler: 'slurm', running: 2, pending: 1, updatedAt: 1_700_000_000_000 },
+    ];
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, clusters: clustersPayload }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
   it('计算目标清单摆到明面：本地工作台 + 已连接资源 + 添加入口 + 资源管理', () => {
     const props = makeProps({ activeTab: 'compute' });
     render(<WorkbenchSidebar {...props} />);
@@ -170,6 +197,44 @@ describe('WorkbenchSidebar 计算资源二级区', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '资源管理' }));
     expect(props.onOpenComputeBackend).toHaveBeenCalled();
+  });
+
+  it('集群条目按 sessionId 匹配聚合数据，显示"运行 X · 排队 Y"；本地工作台没有状态行', async () => {
+    const { container } = render(<WorkbenchSidebar {...makeProps({ activeTab: 'compute' })} />);
+
+    const statusLine = await screen.findByText('运行 2 · 排队 1');
+    expect(statusLine).toBeInTheDocument();
+    // 状态行挂在对应集群条目上（data 属性 = sessionId），并标注所属集群
+    expect(container.querySelector('[data-cluster-jobs-status="sess-1"]')).toBe(statusLine);
+    expect(statusLine).toHaveAttribute('title', 'user@hpc.example.edu 的调度器作业');
+    // 本地 AI 工作台不是 SSH 会话，不渲染状态行
+    expect(screen.queryByText('查询中…')).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/jobs/summary/all');
+  });
+
+  it('运行与排队都为 0 时显示"无作业"', async () => {
+    clustersPayload = [
+      { sessionId: 'sess-1', host: 'hpc.example.edu', username: 'user', scheduler: 'lsf', running: 0, pending: 0, updatedAt: 1 },
+    ];
+    render(<WorkbenchSidebar {...makeProps({ activeTab: 'compute' })} />);
+    expect(await screen.findByText('无作业')).toBeInTheDocument();
+  });
+
+  it('该集群采集失败（条目级 error）时显示"状态未知"', async () => {
+    clustersPayload = [
+      { sessionId: 'sess-1', host: 'hpc.example.edu', username: 'user', scheduler: null, running: 0, pending: 0, updatedAt: 1, error: '查询超时' },
+    ];
+    render(<WorkbenchSidebar {...makeProps({ activeTab: 'compute' })} />);
+    expect(await screen.findByText('状态未知')).toBeInTheDocument();
+  });
+
+  it('无已连接集群时不发聚合请求', async () => {
+    render(<WorkbenchSidebar {...makeProps({
+      activeTab: 'compute',
+      computeTargets: [{ id: 'local-workbench', label: '本地 AI 工作台', detail: '无需服务器，可本地分析', kind: 'local' }],
+    })} />);
+    await act(async () => undefined);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -278,6 +278,8 @@ export function defineTool(options) {
     // oxlint-disable-next-line typescript/unbound-method
     const userFinalizeContent = options.finalizeContent;
     // oxlint-disable-next-line typescript/unbound-method
+    const userProjectContent = options.projectContent;
+    // oxlint-disable-next-line typescript/unbound-method
     const userRender = options.output.render;
     // oxlint-disable-next-line typescript/unbound-method
     const userPresentationMeta = options.output.presentationMeta;
@@ -308,6 +310,7 @@ export function defineTool(options) {
                 },
             } : {},
         },
+        ...(options.deferLoading === true ? { deferLoading: options.deferLoading } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         async execute(args, exec) {
             const violations = validate(args);
@@ -316,6 +319,9 @@ export function defineTool(options) {
             return userExecute(args, exec);
         },
     };
+    if (userProjectContent) {
+        tool.projectContent = (exec, result) => userProjectContent(exec, result);
+    }
     if (userFinalizeContent) {
         tool.finalizeContent = (exec, result) => userFinalizeContent(exec, result);
     }

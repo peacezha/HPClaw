@@ -6,9 +6,9 @@
     <script>
       // 在任何 CSS/JS 前同步恢复保存的主题，避免深色用户启动时先白闪再变黑
       // key 与 src/main.tsx 保持一致
-      document.documentElement.dataset.theme = localStorage.getItem('hpclaw_theme') === 'light' ? '' : 'dark';
+      document.documentElement.dataset.theme = localStorage.getItem('trace_theme') === 'light' ? '' : 'dark';
     </script>
-    <title>HPClaw</title>
+    <title>TRACE</title>
   </head>
   <body>
     <div id="root"></div>

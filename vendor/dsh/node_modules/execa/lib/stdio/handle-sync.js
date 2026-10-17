@@ -1,0 +1,78 @@
+import {readFileSync} from 'node:fs';
+import {bufferToUint8Array} from '../utils/uint-array.js';
+import {handleStdio} from './handle.js';
+import {TYPE_TO_MESSAGE} from './type.js';
+
+// Normalize `input`, `inputFile`, `stdin`, `stdout` and `stderr` options, before spawning, in sync mode
+export const handleStdioSync = (options, verboseInfo) => handleStdio(addPropertiesSync, options, verboseInfo, true);
+
+const forbiddenIfSync = ({type, optionName}) => {
+	throwInvalidSyncValue(optionName, TYPE_TO_MESSAGE[type]);
+};
+
+const forbiddenNativeIfSync = ({optionName, value}) => {
+	if (value === 'overlapped') {
+		throwInvalidSyncValue(optionName, `"${value}"`);
+	}
+
+	return {};
+};
+
+// A native input pipe on an additional file descriptor cannot be fed in sync mode, since there is no way to write to it after spawning, so it would hang.
+const forbiddenNativeInputIfSync = stdioItem => {
+	const {optionName, value} = stdioItem;
+	if (value === 'pipe' && optionName !== 'stdin') {
+		throw new TypeError(`Only the \`stdin\` option, not \`${optionName}\`, can be an input pipe with synchronous methods.`);
+	}
+
+	return forbiddenNativeIfSync(stdioItem);
+};
+
+// For the same reason, an input transform can only be used with `stdin`, which is fed with the `input` option
+const forbiddenInputTransformIfSync = ({optionName}) => {
+	if (optionName !== 'stdin') {
+		throw new TypeError(`Only the \`stdin\` option, not \`${optionName}\`, can be an input transform with synchronous methods.`);
+	}
+};
+
+const throwInvalidSyncValue = (optionName, value) => {
+	throw new TypeError(`The \`${optionName}\` option cannot be ${value} with synchronous methods.`);
+};
+
+// Create streams used internally for redirecting when using specific values for the `std*` options, in sync mode.
+// For example, `stdin: {file}` reads the file synchronously, then passes it as the `input` option.
+const addProperties = {
+	generator() {},
+	asyncGenerator: forbiddenIfSync,
+	webStream: forbiddenIfSync,
+	nodeStream: forbiddenIfSync,
+	webTransform: forbiddenIfSync,
+	duplex: forbiddenIfSync,
+	asyncIterable: forbiddenIfSync,
+	native: forbiddenNativeIfSync,
+};
+
+const addPropertiesSync = {
+	input: {
+		...addProperties,
+		generator: forbiddenInputTransformIfSync,
+		native: forbiddenNativeInputIfSync,
+		// Files and iterables are read lazily, so that a file which cannot be read, or an iterable which throws, is reported like any other early error, instead of being thrown as a raw error
+		fileUrl: ({value}) => ({contents: () => [bufferToUint8Array(readFileSync(value))]}),
+		filePath: ({value: {file}}) => ({contents: () => [bufferToUint8Array(readFileSync(file))]}),
+		fileNumber: forbiddenIfSync,
+		iterable: ({value}) => ({contents: () => [...value]}),
+		string: ({value}) => ({contents: [value]}),
+		// `contents` is already set when reading from a file descriptor
+		uint8Array: ({value, contents = [value]}) => ({contents}),
+	},
+	output: {
+		...addProperties,
+		fileUrl: ({value}) => ({path: value}),
+		filePath: ({value: {file, append}}) => ({path: file, append}),
+		fileNumber: ({value}) => ({path: value}),
+		iterable: forbiddenIfSync,
+		string: forbiddenIfSync,
+		uint8Array: forbiddenIfSync,
+	},
+};

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseSqueueOutput } from '../ai/clusterContext';
 import {
-  parseProcessesOutput, parseJobsOutput, lsfOutputTailCommand, slurmOutputTailCommand,
+  jobsCommand, lsfFinalStateCommand, lsfJobsByIdsCommand, parseJobsOutput, parseLsfJobsByIdsOutput,
+  parseProcessesOutput, pbsFinalStateCommand, slurmFinalStateCommand, lsfOutputTailCommand, slurmOutputTailCommand,
 } from './scheduler';
 
 describe('parseSqueueOutput', () => {
@@ -95,5 +96,37 @@ describe('输出尾部摘要命令', () => {
   it('slurm 读默认输出文件尾部 30 行，非法作业号降级为 false', () => {
     expect(slurmOutputTailCommand('7890')).toBe('tail -q -n 30 "slurm-7890.out" "$HOME/slurm-7890.out" 2>/dev/null');
     expect(slurmOutputTailCommand('abc')).toBe('false');
+  });
+});
+
+describe('远端自杀包装与 LSF 定点查询', () => {
+  it('轮询与终态补查命令都带远端 timeout，本地放弃后远端进程也会退出', () => {
+    expect(jobsCommand('lsf')).toBe('timeout 50 bjobs -w 2>/dev/null');
+    expect(jobsCommand('slurm')).toContain('timeout 50 squeue');
+    expect(jobsCommand('pbs')).toContain('timeout 50 qstat');
+    expect(jobsCommand('none')).toBe('true');
+    expect(lsfFinalStateCommand('123')).toBe('timeout 25 bjobs -a -noheader -o stat 123 2>/dev/null | head -1');
+    expect(slurmFinalStateCommand('123')).toContain('timeout 25 sacct -j 123');
+    expect(pbsFinalStateCommand('123')).toContain('timeout 25 qstat -x -f 123');
+    expect(lsfFinalStateCommand('1;id')).toBe('false');
+  });
+
+  it('lsfJobsByIdsCommand 一条命令查全部 ID，非法 ID 被过滤', () => {
+    expect(lsfJobsByIdsCommand(['111', '222'])).toBe('timeout 50 bjobs -noheader -o "jobid stat" 111 222 2>/dev/null; true');
+    expect(lsfJobsByIdsCommand(['111', '1;rm -rf /', 'abc'])).toBe('timeout 50 bjobs -noheader -o "jobid stat" 111 2>/dev/null; true');
+    expect(lsfJobsByIdsCommand([])).toBe('true');
+    expect(lsfJobsByIdsCommand(['bad;id'])).toBe('true');
+  });
+
+  it('parseLsfJobsByIdsOutput 解析 jobid/stat 行并归一化状态', () => {
+    expect(parseLsfJobsByIdsOutput('111 RUN\n222 PEND\n333 DONE\n444 EXIT\n555 ZZZ\n')).toEqual([
+      { jobId: '111', status: 'RUN' },
+      { jobId: '222', status: 'PEND' },
+      { jobId: '333', status: 'DONE' },
+      { jobId: '444', status: 'EXIT' },
+      { jobId: '555', status: 'UNKNOWN' },
+    ]);
+    expect(parseLsfJobsByIdsOutput('')).toEqual([]);
+    expect(parseLsfJobsByIdsOutput('noise\n\n')).toEqual([]);
   });
 });

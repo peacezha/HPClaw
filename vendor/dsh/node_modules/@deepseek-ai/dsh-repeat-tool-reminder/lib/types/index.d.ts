@@ -7,6 +7,14 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'repeat-tool-reminder': {
+            kind: 'repeat-tool-reminder';
+        } & ContextFormed;
+    }
+}
 export declare const name = "repeat-tool-reminder";
 /**
  * Plugin config, validated by the same-named schemastery schema plus the

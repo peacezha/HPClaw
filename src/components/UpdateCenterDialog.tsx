@@ -38,7 +38,7 @@ function formatBytes(value: number): string {
 }
 
 export default function UpdateCenterDialog({ onClose }: UpdateCenterDialogProps) {
-  const updater = window.hpclawDesktop?.updates;
+  const updater = window.traceDesktop?.updates;
   const [state, setState] = useState<UpdateState>(initialState);
   const [settings, setSettings] = useState<UpdateSettings>({ updateUrl: '', autoCheck: true });
   const [busy, setBusy] = useState(false);
@@ -47,7 +47,7 @@ export default function UpdateCenterDialog({ onClose }: UpdateCenterDialogProps)
 
   useEffect(() => {
     if (!updater) {
-      setState(previous => ({ ...previous, message: '更新中心仅在 HPClaw 桌面版中可用' }));
+      setState(previous => ({ ...previous, message: '更新中心仅在 TRACE 桌面版中可用' }));
       return;
     }
     let active = true;
@@ -182,7 +182,7 @@ export default function UpdateCenterDialog({ onClose }: UpdateCenterDialogProps)
                 className="w-full bg-scholar-950 border border-scholar-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
               />
               <p className="mt-1 text-[10px] text-scholar-500 leading-relaxed">
-                默认自动从 GitHub Releases（github.com/peacezha/HPClaw）检查并下载更新，无需任何配置。
+                默认自动从 GitHub Releases（github.com/peacezha/TRACE）检查并下载更新，无需任何配置。
                 填写自建地址后会改用该服务器（需放置 latest.yml、安装包和 blockmap）；也可用上方“选择本地安装包”手动升级。
               </p>
             </div>

@@ -1,4 +1,6 @@
-# HPClaw v0.4.51：Mac 安装与 Linux 网页部署
+# TRACE v0.4.51：Mac 安装与 Linux 网页部署
+
+> v0.4.56 本次交付为 Windows 安装包。以下历史 Mac/Linux 包的文件名保留其发布时原名；不能通过替换文件名前缀获得新版包。当前 TRACE 源码和新构建命名已统一，历史资产以 Release 页列出的名称为准。
 
 保留经典主界面，同步完整聊天、连续执行、断点恢复单卡片及流程管理修复。Windows、Mac 和公共 Linux 网页包均使用 v0.4.51 源码；历史安装包不覆盖。面向大众的 Linux 服务请使用 [公共网页 npm 部署说明](PUBLIC_WEB_DEPLOYMENT.md)，无需统一网站口令。下文 Docker 部分仅用于历史 v0.4.41 单用户私有服务，不是本次公共网页包的部署方式。
 
@@ -6,7 +8,7 @@
 
 - Apple 芯片：下载 `HPClaw-0.4.51-mac-arm64.dmg`。
 - Intel Mac：下载 `HPClaw-0.4.51-mac-x64.dmg`。
-- 打开 DMG，将 HPClaw 拖到 Applications，再从 Applications 启动。无需另装 Node.js。
+- 打开 DMG，将 TRACE 拖到 Applications，再从 Applications 启动。无需另装 Node.js。
 - 这批安装包没有 Apple Developer ID 签名和公证。首次打开可能被 Gatekeeper 阻止；核对来源与 SHA-256 后，按 [Apple 官方说明](https://support.apple.com/102445) 在“系统设置 → 隐私与安全”中允许打开此应用。不要全局关闭 Gatekeeper。
 - 当前 Mac 版手动下载更新，不能承诺未签名包可正常自动更新。后续配置 Apple 签名证书与公证凭据后再启用 Mac 自动更新。
 - Mac 与 Windows 的配置/密钥保存在各自系统用户目录，不会自动跨设备同步。
@@ -18,8 +20,8 @@
 在服务器的普通工作目录执行：
 
 ```bash
-curl -fLO https://github.com/peacezha/HPClaw/releases/download/v0.4.41/HPClaw-0.4.41-web-linux-x64.tar.gz
-curl -fLO https://github.com/peacezha/HPClaw/releases/download/v0.4.41/HPClaw-0.4.41-web-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/peacezha/TRACE/releases/download/v0.4.41/HPClaw-0.4.41-web-linux-x64.tar.gz
+curl -fLO https://github.com/peacezha/TRACE/releases/download/v0.4.41/HPClaw-0.4.41-web-linux-x64.tar.gz.sha256
 sha256sum -c HPClaw-0.4.41-web-linux-x64.tar.gz.sha256
 tar -xzf HPClaw-0.4.41-web-linux-x64.tar.gz
 cd HPClaw-0.4.41-web-linux-x64
@@ -45,11 +47,11 @@ ssh -L 3003:127.0.0.1:3003 用户名@服务器地址
 先配置域名、证书和反向代理（这些需要你自己的服务器信息）。`.env` 中设置：
 
 ```dotenv
-HPCLAW_WEB_ORIGIN=https://hpclaw.example.org
-HPCLAW_BIND_IP=127.0.0.1
-HPCLAW_PORT=3003
-HPCLAW_WEB_COOKIE_SECURE=1
-HPCLAW_TRUST_PROXY=1
+TRACE_WEB_ORIGIN=https://trace.example.org
+TRACE_BIND_IP=127.0.0.1
+TRACE_PORT=3003
+TRACE_WEB_COOKIE_SECURE=1
+TRACE_TRUST_PROXY=1
 ```
 
 代理必须转发全部路径，包括 `/socket.io/`、HTML 文档和报告资源；转发 `Host`、`X-Forwarded-Proto`、`Upgrade` / `Connection`，关闭 AI SSE 路径的响应缓冲，延长读取超时并按数据大小设置上传限额。只允许受信任反向代理到达后端。
@@ -64,7 +66,7 @@ HPCLAW_TRUST_PROXY=1
 ./deploy.sh
 ```
 
-停止与重建容器不删除数据。固定 Compose 项目名为 `hpclaw-web`，命名数据卷为 `hpclaw-web_hpclaw-data`；请备份完整数据卷，包含加密主密钥。不要执行 `docker compose down -v`，否则会删除数据卷。
+停止与重建容器不删除数据。固定 Compose 项目名为 `trace-web`，命名数据卷为 `trace-web_trace-data`；请备份完整数据卷，包含加密主密钥。不要执行 `docker compose down -v`，否则会删除数据卷。
 启动会拉取 Docker 基础镜像和少量 npm 后端依赖，需要服务器能访问相关镜像与 npm 注册源。
 
 ## 网页与桌面的差异、安全边界

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Code2, Copy, Check, Download } from 'lucide-react';
 import type { CardProps } from './RendererRegistry';
+import { writeClipboardText } from '../../services/clipboard';
+import { useWorkflowLocale } from '../../i18n';
 
 const LANGUAGE_LABELS: Record<string, string> = {
   py: 'Python', R: 'R', r: 'R', sh: 'Bash', bash: 'Bash',
@@ -15,6 +17,8 @@ function detectLanguage(fileName: string): string {
 
 export default function CodeCard({ content }: CardProps) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const english = useWorkflowLocale() === 'en-US';
 
   const lang = detectLanguage(content.fileName);
   const codeText = content.content.startsWith('data:')
@@ -22,9 +26,12 @@ export default function CodeCard({ content }: CardProps) {
     : content.content;
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(codeText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await writeClipboardText(codeText);
+      setCopyError(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { setCopyError(true); }
   };
 
   return (
@@ -57,6 +64,7 @@ export default function CodeCard({ content }: CardProps) {
           </button>
         </div>
       </div>
+      {copyError && <p role="alert" className="px-3 py-1 text-xs text-red-400">{english ? 'Copy failed. Select the code and press Ctrl+C.' : '复制失败，请选择代码并使用 Ctrl+C。'}</p>}
       <pre className="p-3 text-xs font-mono bg-[#09090b] overflow-x-auto max-h-80 overflow-y-auto leading-relaxed">
         <code className="text-zinc-300">{codeText.slice(0, 50000)}{codeText.length > 50000 && '\n\n... (文件过大，仅显示前 50000 字符)'}</code>
       </pre>

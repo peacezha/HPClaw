@@ -1,6 +1,7 @@
 import { Service } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
-import { deepFreeze, freezeMessage } from "@deepseek-ai/dsh-llm";
+import { freezeMessage } from "@deepseek-ai/dsh-llm";
+import { deepFreeze } from "@deepseek-ai/dsh-util-values";
 //#region lib/types/config.js
 /** Configuration resolution for deterministic tool-result pruning. */
 /** Fixed marker substituted for every removed middle span. */
@@ -136,7 +137,7 @@ var ToolResultPruner = class extends Service {
 	pruneSession(session) {
 		const candidates = [];
 		for (const seq of [...session.surface.nodes]) {
-			const event = session.events[seq];
+			const event = session.eventAt(seq);
 			/* v8 ignore next -- surface seqs are validated contiguous log references. */
 			if (event?.type === "tool/result") candidates.push({
 				seq,
@@ -146,17 +147,14 @@ var ToolResultPruner = class extends Service {
 		const pruned = [];
 		let charsRemoved = 0;
 		for (const { seq, event } of candidates) {
-			const result = event.data.message.content[0];
-			const content = this.pruneContent(result.content);
+			const original = session.deriveEventMessage(event);
+			const content = this.pruneContent(original.content);
 			if (content === null) continue;
-			const charsBefore = this.measureContent(result.content);
+			const charsBefore = this.measureContent(original.content);
 			const charsAfter = this.measureContent(content);
 			const message = freezeMessage({
-				...event.data.message,
-				content: [{
-					...result,
-					content
-				}]
+				...original,
+				content
 			});
 			session.append("compaction/prune", {
 				shadowedRange: {
@@ -164,7 +162,7 @@ var ToolResultPruner = class extends Service {
 					end: seq
 				},
 				shadowedSeqs: [seq],
-				shadowedTokenCount: this.ctx.tokenMeter.estimateMessage(event.data.message)
+				shadowedTokenCount: this.ctx.tokenMeter.estimateMessage(original)
 			});
 			const replacement = session.append("tool/result", {
 				...event.data,
@@ -172,8 +170,8 @@ var ToolResultPruner = class extends Service {
 			}, {
 				surfaceOp: {
 					op: "replace",
-					start: seq,
-					end: seq
+					startSeq: seq,
+					endSeq: seq
 				},
 				sourceEventSeqs: [seq]
 			});

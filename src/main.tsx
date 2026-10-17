@@ -1,3 +1,4 @@
+import './services/legacyBrandStorage';
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
@@ -7,11 +8,13 @@ import { hydrateAIProfile } from './services/aiProfile';
 import { hydrateTotpStorage } from './services/totpStorage';
 import './index.css';
 import { initializePublicWeb } from './services/publicWeb';
+import { installEditingFocusRouting } from './services/editingShortcuts';
 
 // 启动时先应用保存的主题，避免闪烁
-document.documentElement.dataset.theme = localStorage.getItem('hpclaw_theme') === 'light' ? '' : 'dark';
+document.documentElement.dataset.theme = localStorage.getItem('trace_theme') === 'light' ? '' : 'dark';
 
 function renderApp() {
+  installEditingFocusRouting();
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <AppErrorBoundary>

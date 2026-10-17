@@ -15,10 +15,7 @@ export declare abstract class EntryTree {
     entries(): Generator<Entry, void, void>;
     /** Return pending import and lifecycle tasks owned by this tree. */
     getTasks(): Promise<void>[];
-    /**
-     * Wait until this tree has no active import or lifecycle tasks.
-     * @throws a settled fiber failure, or an aggregate when several fibers failed.
-     */
+    /** Wait until this tree has no pending import or lifecycle tasks. */
     await(): Promise<void>;
     ensureId(options: Partial<EntryOptions>): string;
     /** Resolve an entry by id, including nested ids separated by `EntryTree.sep`. */
@@ -27,7 +24,7 @@ export declare abstract class EntryTree {
     /** Create an entry in the root group or a nested group. */
     create(options: Omit<EntryOptions, 'id'>, parent?: string | null, position?: number): Promise<string>;
     /** Stop and remove an entry from its parent group. */
-    remove(id: string): Promise<void>;
+    remove(id: string): void;
     /** Update an entry and optionally move it to another group. */
     update(id: string, options: Omit<EntryOptions, 'id' | 'name'>, parent?: string | null, position?: number): Promise<void>;
     /** Import a plugin module from a specifier or `cordis:` builtin. */

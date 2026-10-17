@@ -3,13 +3,13 @@ import { appendWorkflowRunIndexCommand, importLegacyWorkflowRunIndex, readIndexe
 
 describe('workflow run index', () => {
   const home = '/public/home/u';
-  const d1 = `${home}/hpclaw_flows/rna/03_workspace/runs/run-1`;
+  const d1 = `${home}/trace_flows/rna/03_workspace/runs/run-1`;
 
   it('正常刷新只读索引列出的 run.json，不使用目录 glob', async () => {
     const commands: string[] = [];
     const exec = vi.fn(async (command: string) => {
       commands.push(command);
-      if (command.startsWith('tail -n')) return `${d1}\n${d1}\n`;
+      if (command.startsWith('tail ')) return `${d1}\n${d1}\n`;
       return `===RUN:${d1}===\n${JSON.stringify({ runId: 'run-1', workflowId: 'wf', runDir: d1, steps: [], status: 'running' })}\n`;
     });
     const runs = await readIndexedWorkflowRuns(exec, home, 20);

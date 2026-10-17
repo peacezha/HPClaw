@@ -46,7 +46,7 @@ export interface DshSettingsRepairResult {
 
 /**
  * Older/manual DSH settings may contain an API key in llm-deepseek.baseURL.
- * User settings take precedence over HPClaw's launch environment, so remove
+ * User settings take precedence over TRACE's launch environment, so remove
  * only an invalid baseURL while preserving every unrelated DSH preference.
  */
 export function repairInvalidDeepSeekBaseUrlSetting(settingsFile: string): DshSettingsRepairResult {

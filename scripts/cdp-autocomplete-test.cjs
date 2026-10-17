@@ -77,7 +77,7 @@ function getJson(path) {
   const p2c = (p2.data.suggestions || []).map(s => s.completion);
   ok('路径补全 cat ./mini → ./ 前缀文件', p2c.some(c => c.includes('minimap')), JSON.stringify(p2c));
 
-  // 3. 目录补全：cd hp → hpclaw_skills/ 等目录
+  // 3. 目录补全：cd hp → trace_skills/ 等目录
   const p3 = await api({ command: 'cd hp' });
   const p3c = (p3.data.suggestions || []).map(s => s.completion);
   ok('目录补全 cd hp → 目录建议', p3c.some(c => c.startsWith('hp')), JSON.stringify(p3c.slice(0, 4)));
@@ -93,7 +93,7 @@ function getJson(path) {
     return 'skip';
   })()`);
   // 退化方案：直接操作 localStorage 模拟历史，然后验证 UI 输入提示
-  await evalJs(`localStorage.setItem('hpclaw_cmd_history', JSON.stringify([
+  await evalJs(`localStorage.setItem('trace_cmd_history', JSON.stringify([
     { cmd: 'fastqc reads_1.fq.gz', count: 5, lastUsed: Date.now() },
     { cmd: 'bjobs -w', count: 2, lastUsed: Date.now() - 1000 }
   ]))`);

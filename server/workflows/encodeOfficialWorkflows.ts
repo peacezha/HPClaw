@@ -85,14 +85,14 @@ function chipWorkflow(now: number): Workflow {
       'python3 -m json.tool <RUN>/config/encode-chip.json >/dev/null',
     ), 'The sample sheet is grouped by biological replicate; multiple rows of the same replicate are handed to the official pipeline as technical replicates for merging.', ['<RUN>/config/encode-chip.json']),
     repositoryStep('align-filter', 'Run official WDL: ChIP alignment, filtering, dedup', ['source', 'input-json'], 'Alignment', command(
-      '#BSUB -J hpclaw_encode_chip -n 1 -q {{QUEUE}}',
+      '#BSUB -J trace_encode_chip -n 1 -q {{QUEUE}}',
       'mkdir -p <RUN>/results/caper',
       'CAPER_CONF="{{CAPER_CONFIG}}"',
       'if [ "$CAPER_CONF" = "~/.caper/default.conf" ]; then CAPER_CONF="$HOME/.caper/default.conf"; fi',
       'case "{{EXECUTION_ENV}}" in singularity) ENV_FLAG=--singularity ;; conda) ENV_FLAG=--conda ;; *) exit 2 ;; esac',
       'cd <RUN>/results/caper',
       'caper -c "$CAPER_CONF" run <RUN>/code/chip-seq-pipeline2/chip.wdl -i <RUN>/config/encode-chip.json "$ENV_FLAG" --lsf-queue "{{QUEUE}}" --local-out-dir <RUN>/results/caper --metadata-output <RUN>/results/caper/metadata.json | tee <RUN>/results/caper/run.log',
-    ), 'HPClaw submits this script as the LSF leader job; caper run blocks inside the leader until the official WDL reaches a terminal state, avoiding false completion after an async submit returns. Later nodes only verify official task outputs.', ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
+    ), 'TRACE submits this script as the LSF leader job; caper run blocks inside the leader until the official WDL reaches a terminal state, avoiding false completion after an async submit returns. Later nodes only verify official task outputs.', ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
     repositoryStep('control-filter', 'Control alignment, filtering and depth matching', ['input-json', 'align-filter'], 'Alignment', findManifest('control-filter', "\\( -path '*call-align_ctl*' -o -path '*call-filter_ctl*' -o -name '*ctl*.nodup.bam' \\)"), 'The official pipeline picks the same-index or pooled control for each replicate and subsamples it per depth rules.', ['<RUN>/results/manifests/control-filter.txt']),
     repositoryStep('xcor', 'Cross-correlation and fragment length (NSC/RSC)', ['align-filter'], 'QC', findManifest('xcor', "\\( -path '*call-xcor*' -o -name '*.cc.qc' -o -name '*.cc.plot.pdf' \\)"), 'Official xcor results feed the TF peak-calling fragment length and NSC/RSC metrics.', ['<RUN>/results/manifests/xcor.txt']),
     repositoryStep('signals', 'p-value / fold-change signal tracks', ['align-filter', 'control-filter'], 'Signal', findManifest('signal-tracks', "\\( -name '*.pval.signal.bigwig' -o -name '*.fc.signal.bigwig' -o -name '*.bw' \\)"), 'The official WDL generates signal tracks for each replicate and the pooled replicate.', ['<RUN>/results/manifests/signal-tracks.txt']),
@@ -114,13 +114,13 @@ function chipWorkflow(now: number): Workflow {
   return {
     id: 'encode-chipseq-tf',
     name: 'ENCODE-DCC TF ChIP-seq v2.2.2 (official WDL)',
-    description: 'Directly wraps ENCODE-DCC chip-seq-pipeline2 v2.2.2. The official WDL performs alignment/filtering, xcor, SPP, three-way IDR across true/self-pseudoreplicate/pooled-pseudoreplicate branches, rescue/self-consistency assessment, and optimal/conservative peaks; HPClaw only generates the official input JSON, submits via Caper, and verifies the outputs.',
+    description: 'Directly wraps ENCODE-DCC chip-seq-pipeline2 v2.2.2. The official WDL performs alignment/filtering, xcor, SPP, three-way IDR across true/self-pseudoreplicate/pooled-pseudoreplicate branches, rescue/self-consistency assessment, and optimal/conservative peaks; TRACE only generates the official input JSON, submits via Caper, and verifies the outputs.',
     keywords: ['encode', 'chipseq', 'chip-seq', '转录因子', 'tf', 'spp', 'idr', 'pseudoreplicate', 'optimal peaks', 'conservative peaks'],
     params: [
       { name: 'SAMPLE_SHEET', label: 'Sample sheet TSV (type, replicate, read1, read2)', type: 'path', help: 'type=chip/control; multiple rows of the same replicate are technical replicate lanes; use absolute FASTQ paths.' },
       { name: 'GENOME_TSV', label: 'Official ENCODE genome TSV', type: 'path', help: 'Includes ref_fa, indices, chrom sizes, blacklist and other official references.' },
       { name: 'GENOME_NAME', label: 'Genome name in the genome TSV', defaultValue: 'GRCh38', type: 'text' },
-      { name: 'TITLE', label: 'Experiment title', defaultValue: 'HPClaw ENCODE TF ChIP-seq', type: 'text' },
+      { name: 'TITLE', label: 'Experiment title', defaultValue: 'TRACE ENCODE TF ChIP-seq', type: 'text' },
       { name: 'CAPER_CONFIG', label: 'Caper LSF config', defaultValue: '~/.caper/default.conf', type: 'path' },
       { name: 'EXECUTION_ENV', label: 'Official task runtime', defaultValue: 'singularity', type: 'select', options: ['singularity', 'conda'] },
       { name: 'QUEUE', label: 'LSF queue', defaultValue: 'normal', type: 'text' },
@@ -167,14 +167,14 @@ function rnaWorkflow(now: number): Workflow {
       'python3 -m json.tool <RUN>/config/encode-rna.json >/dev/null',
     ), 'Generates nested FASTQ arrays; multiple lanes of the same biological replicate are merged automatically by the official pipeline.', ['<RUN>/config/encode-rna.json']),
     repositoryStep('star', 'Run official WDL: STAR genomic/transcriptomic alignment', ['source', 'input-json'], 'RNA-seq', command(
-      '#BSUB -J hpclaw_encode_rna -n 1 -q {{QUEUE}}',
+      '#BSUB -J trace_encode_rna -n 1 -q {{QUEUE}}',
       'mkdir -p <RUN>/results/caper',
       'CAPER_CONF="{{CAPER_CONFIG}}"',
       'if [ "$CAPER_CONF" = "~/.caper/default.conf" ]; then CAPER_CONF="$HOME/.caper/default.conf"; fi',
       'case "{{EXECUTION_ENV}}" in singularity) ENV_FLAG=--singularity ;; conda) ENV_FLAG=--conda ;; *) exit 2 ;; esac',
       'cd <RUN>/results/caper',
       'caper -c "$CAPER_CONF" run <RUN>/code/rna-seq-pipeline/rna-seq-pipeline.wdl -i <RUN>/config/encode-rna.json "$ENV_FLAG" --lsf-queue "{{QUEUE}}" --local-out-dir <RUN>/results/caper --metadata-output <RUN>/results/caper/metadata.json | tee <RUN>/results/caper/run.log',
-    ), 'HPClaw submits this script as the LSF leader job; caper run blocks inside the leader until the official WDL terminates. This node corresponds to the STAR main branch; later nodes verify the real outputs of the parallel tasks.', ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
+    ), 'TRACE submits this script as the LSF leader job; caper run blocks inside the leader until the official WDL terminates. This node corresponds to the STAR main branch; later nodes verify the real outputs of the parallel tasks.', ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
     repositoryStep('kallisto', 'Kallisto transcript quantification in parallel', ['input-json', 'star'], 'RNA-seq', findManifest('kallisto', "\\( -name 'abundance.tsv' -o -name 'abundance.h5' -o -path '*call-kallisto*' \\)"), 'Kallisto is the default branch of the official long RNA-seq pipeline and is not omitted.', ['<RUN>/results/manifests/kallisto.txt']),
     repositoryStep('signals', 'unique/all × plus/minus bigWig signals (4 tracks)', ['star'], 'RNA-seq', findManifest('signal-tracks', "\\( -name '*.bw' -o -name '*.bigWig' -o -name '*.bigwig' \\)"), 'Stranded data should contain unique/all-mapped plus/minus signal tracks.', ['<RUN>/results/manifests/signal-tracks.txt']),
     repositoryStep('rsem', 'RSEM gene/isoform quantification and detected genes', ['star'], 'RNA-seq', findManifest('rsem', "\\( -name '*.genes.results' -o -name '*.isoforms.results' -o -name '*detected*gene*' -o -path '*call-rsem*' \\)"), 'The official RSEM branch outputs gene/isoform tables and counts detected genes with TPM>1.', ['<RUN>/results/manifests/rsem.txt']),
@@ -293,7 +293,7 @@ function officialJsonPreflight(job: string): string {
 function buildOfficialWdlWorkflow(spec: OfficialWdlSpec, now: number): Workflow {
   const sourcePath = `<RUN>/code/${spec.checkoutDir}`;
   const steps: WorkflowStep[] = [
-    repositoryStep('preflight', 'Preflight: official runtime and input JSON', [], 'Prepare', officialJsonPreflight(spec.id.replace(/^encode-/, '')), 'Only a complete input JSON following the upstream official schema is accepted; HPClaw no longer guesses missing parameters.', []),
+    repositoryStep('preflight', 'Preflight: official runtime and input JSON', [], 'Prepare', officialJsonPreflight(spec.id.replace(/^encode-/, '')), 'Only a complete input JSON following the upstream official schema is accepted; TRACE no longer guesses missing parameters.', []),
     repositoryStep('source', `Fetch and pin ${spec.refLabel}`, ['preflight'], 'Prepare', command(
       'mkdir -p <RUN>/code',
       `if [ ! -d ${sourcePath}/.git ]; then git clone --filter=blob:none --no-checkout ${spec.repo} ${sourcePath}; fi`,
@@ -309,14 +309,14 @@ function buildOfficialWdlWorkflow(spec: OfficialWdlSpec, now: number): Workflow 
       ...(spec.inputAssertion ? [spec.inputAssertion] : []),
     ), 'Keeps a copy of the original official input JSON; a wrong assay/pipeline_type is blocked before submission.', ['<RUN>/config/official-input.json']),
     repositoryStep(spec.launch.id, spec.launch.title, ['source', 'input-json'], spec.launch.phase, command(
-      `#BSUB -J hpclaw_${spec.id.replace(/[^A-Za-z0-9]+/g, '_')} -n 1 -q {{QUEUE}}`,
+      `#BSUB -J trace_${spec.id.replace(/[^A-Za-z0-9]+/g, '_')} -n 1 -q {{QUEUE}}`,
       'mkdir -p <RUN>/results/caper',
       'CAPER_CONF="{{CAPER_CONFIG}}"',
       'if [ "$CAPER_CONF" = "~/.caper/default.conf" ]; then CAPER_CONF="$HOME/.caper/default.conf"; fi',
       'case "{{EXECUTION_ENV}}" in singularity) ENV_FLAG=--singularity ;; conda) ENV_FLAG=--conda ;; *) exit 2 ;; esac',
       'cd <RUN>/results/caper',
       `caper -c "$CAPER_CONF" run ${sourcePath}/${spec.wdl} -i <RUN>/config/official-input.json "$ENV_FLAG" --lsf-queue "{{QUEUE}}" --local-out-dir <RUN>/results/caper --metadata-output <RUN>/results/caper/metadata.json | tee <RUN>/results/caper/run.log`,
-    ), `${spec.launch.evidence} HPClaw submits this script as the LSF leader job; caper run blocks until the WDL terminal state before output verification is allowed.`, ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
+    ), `${spec.launch.evidence} TRACE submits this script as the LSF leader job; caper run blocks until the WDL terminal state before output verification is allowed.`, ['<RUN>/results/caper/run.log', '<RUN>/results/caper/metadata.json']),
     ...spec.stages.map(stage => repositoryStep(
       stage.id,
       stage.title,
@@ -511,7 +511,7 @@ function chipPetPartnerWorkflow(now: number): Workflow {
   ];
   return {
     id: 'encode-chiapet', name: 'ENCODE partner protocol · ChIA-PET (ChIA-PIPE v1.0)',
-    description: 'Runs Jackson Laboratory ChIA-PIPE v1.0 as specified by the ENCODE ChIA-PET protocol. This upstream is not an ENCODE-DCC/Caper WDL; HPClaw explicitly wraps it as the partner shell pipeline instead of relabeling self-written simplified commands as an official ENCODE pipeline.',
+    description: 'Runs Jackson Laboratory ChIA-PIPE v1.0 as specified by the ENCODE ChIA-PET protocol. This upstream is not an ENCODE-DCC/Caper WDL; TRACE explicitly wraps it as the partner shell pipeline instead of relabeling self-written simplified commands as an official ENCODE pipeline.',
     keywords: ['encode', 'chia-pet', 'ChIA-PIPE', 'chromatin interaction', 'loops'],
     params: [
       { name: 'CONFIG_FILE', label: 'ChIA-PIPE official config file', type: 'path', help: 'Copy from the upstream example_config_file.sh and fill it in; the config uses shell syntax.' },
@@ -668,7 +668,7 @@ function rampageLegacyWorkflow(now: number): Workflow {
 /**
  * 官方 WDL 包装器（8 条）：dnase/wgbs/hic/chiapet/mirna/eclip/longread/rampage。
  * chip-tf/chip-histone/atac/rnaseq 四条不在此构建——它们恢复为 workflowStore.ts 里的
- * HPClaw 原生参数式流程（逐个指定参考文件，不走 genome TSV + Caper）。
+ * TRACE 原生参数式流程（逐个指定参考文件，不走 genome TSV + Caper）。
  */
 export function buildOfficialEncodeWorkflows(now: number): Workflow[] {
   return [

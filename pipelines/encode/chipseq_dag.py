@@ -26,7 +26,7 @@ def partition_key(line, namespace):
     rg = next((f[5:] for f in fields[11:] if f.startswith('RG:Z:')), '')
     # Both mates and their secondary records share QNAME/RG. Namespace avoids
     # collisions when different source libraries reuse instrument identifiers.
-    key = '\0'.join((namespace, rg, fields[0], 'HPClaw-41')).encode()
+    key = '\0'.join((namespace, rg, fields[0], 'TRACE-41')).encode()
     return hashlib.blake2b(key, digest_size=8).digest()[0] & 1
 
 
@@ -90,7 +90,7 @@ def pseudoreplicates(args):
     inputs, control = libraries(args)
     base = Path(args.input_dir).resolve() / 'peaks'
     first, second = [], []
-    audit = {'method': 'deterministic complementary template hashing', 'seed': 'HPClaw-41', 'libraries': []}
+    audit = {'method': 'deterministic complementary template hashing', 'seed': 'TRACE-41', 'libraries': []}
     for bam in inputs:
         name = bam.name[:-len('.dedup.bam')]
         targets = [base / 'pr' / (name + '.pr%d.bam' % i) for i in (1, 2)]
@@ -172,7 +172,7 @@ def idr(args):
         (dest / 'optimal.idr.narrowPeak').write_bytes((pooled_bed if pooled_count > best[0] else best[1]).read_bytes())
     result = reproducibility([n for n, _p in pairs], selfs, pooled_count)
     result['global_idr_threshold'] = args.idr_threshold
-    result['implementation'] = 'HPClaw native PE extension, not official ENCODE WDL'
+    result['implementation'] = 'TRACE native PE extension, not official ENCODE WDL'
     (qc / 'idr_qc.json').write_text(json.dumps({'_reproducibility': result}, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result))
     # QC failures produce evidence and a non-success exit; no silent completion.

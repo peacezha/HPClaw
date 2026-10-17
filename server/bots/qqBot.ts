@@ -1,4 +1,4 @@
-// QQ 官方机器人网关：把 QQ 私聊/群@消息映射为 HPClaw AI agent 对话。
+// QQ 官方机器人网关：把 QQ 私聊/群@消息映射为 TRACE AI agent 对话。
 // 官方 WebSocket 出站连接（无需公网回调地址），复用 agentRunner 的全套能力。
 // 文档：https://bot.q.qq.com/wiki/develop/api/
 import WebSocket from 'ws';
@@ -10,7 +10,7 @@ export interface QQBotConfig {
   appSecret: string;
   /** QQ openid 白名单；为空 = 不限制（建议生产环境配置） */
   allowlist?: string[];
-  /** AI 配置（与 HPClaw 应用内 AI 设置相同格式） */
+  /** AI 配置（与 TRACE 应用内 AI 设置相同格式） */
   ai?: AIProfile;
 }
 
@@ -19,7 +19,7 @@ export interface QQBotDeps {
   getClusterSession: () => { sid: string; home: string; exec: (cmd: string, to?: number) => Promise<string> } | undefined;
   /** 共享 AI 配置（与应用内 AI 设置同源）；config.ai 为空时回退到这里 */
   getAiProfile?: () => AIProfile | undefined;
-  /** 把对话存档到集群 ~/hpclaw_conversations（与应用对话记录同库） */
+  /** 把对话存档到集群 ~/trace_conversations（与应用对话记录同库） */
   saveConversation?: (record: {
     id: string;
     title: string;
@@ -196,7 +196,7 @@ export class QQBot {
     }
   }
 
-  /** 把当前 QQ 对话存档到集群 ~/hpclaw_conversations（应用对话记录面板可见） */
+  /** 把当前 QQ 对话存档到集群 ~/trace_conversations（应用对话记录面板可见） */
   private async saveChat(chatKey: string, replyBase: string, msgId: string, chat: ChatState): Promise<void> {
     if (chat.messages.length === 0) {
       await this.sendText(chatKey, replyBase, msgId, '当前没有可保存的对话');
@@ -215,7 +215,7 @@ export class QQBot {
         createdAt: chat.createdAt,
         updatedAt: Date.now(),
       });
-      await this.sendText(chatKey, replyBase, msgId, '💾 已保存到对话记录（HPClaw 对话记录面板可查看）');
+      await this.sendText(chatKey, replyBase, msgId, '💾 已保存到对话记录（TRACE 对话记录面板可查看）');
     } catch (err: any) {
       await this.sendText(chatKey, replyBase, msgId, `⚠️ 保存失败：${err?.message || String(err)}`);
     }
@@ -295,12 +295,12 @@ export class QQBot {
     // AI 配置：优先 qqbot.json 里的 ai 段，否则复用应用内 AI 设置（同源共享）
     const profile = this.config.ai?.apiKey ? this.config.ai : this.deps.getAiProfile?.();
     if (!profile?.apiKey) {
-      await this.sendText(chatKey, replyBase, msgId, '⚠️ AI 未配置：请先在 HPClaw 应用的 AI 设置里保存配置（或在 qqbot.json 中填写 ai 段）');
+      await this.sendText(chatKey, replyBase, msgId, '⚠️ AI 未配置：请先在 TRACE 应用的 AI 设置里保存配置（或在 qqbot.json 中填写 ai 段）');
       return;
     }
     const session = this.deps.getClusterSession();
     if (!session) {
-      await this.sendText(chatKey, replyBase, msgId, '⚠️ 当前没有已连接的集群，请先在 HPClaw 里登录一个集群');
+      await this.sendText(chatKey, replyBase, msgId, '⚠️ 当前没有已连接的集群，请先在 TRACE 里登录一个集群');
       return;
     }
 
@@ -314,7 +314,7 @@ export class QQBot {
       skillsDir: this.deps.skillsDir,
       lsfSkillDir: this.deps.lsfSkillDir,
       userSkillsDir: this.deps.userSkillsDir,
-      // QQ 对话没有可回写的 HPClaw 会话：只跟踪作业完成情况（通知/事件），不登记绑定不唤醒。
+      // QQ 对话没有可回写的 TRACE 会话：只跟踪作业完成情况（通知/事件），不登记绑定不唤醒。
       onJobsSubmitted: jobIds => this.deps.trackJobs?.(session.sid, jobIds),
       confirmCommand: (command) => new Promise<boolean>(resolve => {
         chat.pendingConfirm = ok => {

@@ -1,6 +1,5 @@
 import z from "@deepseek-ai/schemastery";
-import { SHELL_SETTINGS_NAMESPACE, ShellExecutor } from "@deepseek-ai/dsh-shell";
-import { installSettingsSection } from "@deepseek-ai/dsh-settings";
+import { ShellExecutor } from "@deepseek-ai/dsh-shell";
 import { MAX_TIMER_DELAY_MS, clampTimeout, deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
@@ -80,64 +79,6 @@ function resolvePwshPath(configured, env = process.env, platform = process.platf
 *
 * @module @deepseek-ai/dsh-pwsh-local
 */
-var __addDisposableResource = function(env, value, async) {
-	if (value !== null && value !== void 0) {
-		if (typeof value !== "object" && typeof value !== "function") throw new TypeError("Object expected.");
-		var dispose, inner;
-		if (async) {
-			if (!Symbol.asyncDispose) throw new TypeError("Symbol.asyncDispose is not defined.");
-			dispose = value[Symbol.asyncDispose];
-		}
-		if (dispose === void 0) {
-			if (!Symbol.dispose) throw new TypeError("Symbol.dispose is not defined.");
-			dispose = value[Symbol.dispose];
-			if (async) inner = dispose;
-		}
-		if (typeof dispose !== "function") throw new TypeError("Object not disposable.");
-		if (inner) dispose = function() {
-			try {
-				inner.call(this);
-			} catch (e) {
-				return Promise.reject(e);
-			}
-		};
-		env.stack.push({
-			value,
-			dispose,
-			async
-		});
-	} else if (async) env.stack.push({ async: true });
-	return value;
-};
-var __disposeResources = (function(SuppressedError) {
-	return function(env) {
-		function fail(e) {
-			env.error = env.hasError ? new SuppressedError(e, env.error, "An error was suppressed during disposal.") : e;
-			env.hasError = true;
-		}
-		var r, s = 0;
-		function next() {
-			while (r = env.stack.pop()) try {
-				if (!r.async && s === 1) return s = 0, env.stack.push(r), Promise.resolve().then(next);
-				if (r.dispose) {
-					var result = r.dispose.call(r.value);
-					if (r.async) return s |= 2, Promise.resolve(result).then(next, function(e) {
-						fail(e);
-						return next();
-					});
-				} else s |= 1;
-			} catch (e) {
-				fail(e);
-			}
-			if (s === 1) return env.hasError ? Promise.reject(env.error) : Promise.resolve();
-			if (env.hasError) throw env.error;
-		}
-		return next();
-	};
-})(typeof SuppressedError === "function" ? SuppressedError : function(error, suppressed, message) {
-	var e = new Error(message);
-	return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
-});
 /**
 * Model-friendly environment overrides for PowerShell: disable colors and
 * pagers that would garble tool output. `TERM=dumb` is a POSIX concept and is
@@ -176,69 +117,53 @@ function assertPositiveFinite(name, value) {
 /**
 * Reject a resolved section this executor could not run with. The schema
 * expresses neither "positive and finite" nor the timer bound `graceMs` has to
-* fit, so a stored value is refused where it is written instead of failing at
-* the next command.
-* @param config - the resolved section, schema-valid by construction.
+* fit, so a stored value that cannot be used fails at the next command.
+* @param config - the live configuration, schema-valid by construction.
 * @throws Error naming the field that cannot be used.
 */
 function assertServiceablePwshConfig(config) {
-	const resolved = config;
-	assertPositiveFinite("timeoutMs", resolved.timeoutMs);
-	assertPositiveFinite("maxTimeoutMs", resolved.maxTimeoutMs);
-	assertPositiveFinite("maxOutputBytes", resolved.maxOutputBytes);
-	assertPositiveFinite("maxSpillBytes", resolved.maxSpillBytes);
-	assertPositiveFinite("graceMs", resolved.graceMs);
-	if (resolved.graceMs > MAX_TIMER_DELAY_MS) throw new Error(`pwsh-local: graceMs must be no greater than ${MAX_TIMER_DELAY_MS}`);
+	assertPositiveFinite("timeoutMs", config.timeoutMs.get());
+	assertPositiveFinite("maxTimeoutMs", config.maxTimeoutMs.get());
+	assertPositiveFinite("maxOutputBytes", config.maxOutputBytes.get());
+	assertPositiveFinite("maxSpillBytes", config.maxSpillBytes.get());
+	assertPositiveFinite("graceMs", config.graceMs.get());
+	if (config.graceMs.get() > MAX_TIMER_DELAY_MS) throw new Error(`pwsh-local: graceMs must be no greater than ${MAX_TIMER_DELAY_MS}`);
 }
 /**
 * Local PowerShell executor over `ctx.subprocess`. Bounded output, spill
-* files, and process-tree termination are the subprocess service's mechanics;
+* files, and managed-range termination are the subprocess service's mechanics;
 * this executor supplies their configured budgets per spawn.
 */
 var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
+	config;
 	static inject = ["subprocess"];
 	static Config = z.object({
-		cwd: z.string(),
-		timeoutMs: z.number().default(12e4),
-		maxTimeoutMs: z.number().default(6e5),
-		maxOutputBytes: z.number().default(64e3),
-		maxSpillBytes: z.number().default(DEFAULT_MAX_SPILL_BYTES),
-		graceMs: z.number().default(DEFAULT_GRACE_MS),
-		pwshPath: z.string()
+		cwd: z.string().volatile(),
+		timeoutMs: z.number().default(12e4).volatile(),
+		maxTimeoutMs: z.number().default(6e5).volatile(),
+		maxOutputBytes: z.number().default(64e3).volatile(),
+		maxSpillBytes: z.number().default(DEFAULT_MAX_SPILL_BYTES).volatile(),
+		graceMs: z.number().default(DEFAULT_GRACE_MS).volatile(),
+		pwshPath: z.string().volatile()
 	});
-	/** The currently authoritative config: the settings section, or the composition entry. */
-	source;
 	/** The declared executable the current {@link pwshPath} was resolved from. */
 	declaredPwshPath;
 	/** The pwsh executable resolved from the current config. */
 	resolvedPwshPath;
-	/** Validated config (schemastery applied the defaults before construction). */
-	get config() {
-		return this.source();
-	}
-	/** The pwsh executable every command runs through. */
+	/** The pwsh executable every command runs through; a changed declared path is probed again on the next read. */
 	get pwshPath() {
+		const declared = this.config.pwshPath.get();
+		if (declared !== this.declaredPwshPath) {
+			this.resolvedPwshPath = resolvePwshPath(declared);
+			this.declaredPwshPath = declared;
+		}
 		return this.resolvedPwshPath;
 	}
 	constructor(ctx, config) {
 		super(ctx);
-		const entry = config;
-		assertServiceablePwshConfig(entry);
-		this.source = () => entry;
-		this.declaredPwshPath = entry.pwshPath;
-		this.resolvedPwshPath = resolvePwshPath(entry.pwshPath);
-		installSettingsSection(ctx, SHELL_SETTINGS_NAMESPACE, PwshLocalExecutor.Config, entry, {
-			validate: assertServiceablePwshConfig,
-			setSource: (current) => {
-				this.source = current;
-			},
-			onChange: () => {
-				const declared = this.source().pwshPath;
-				if (declared === this.declaredPwshPath) return;
-				this.declaredPwshPath = declared;
-				this.resolvedPwshPath = resolvePwshPath(declared);
-			}
-		});
+		this.config = config;
+		this.declaredPwshPath = config.pwshPath.get();
+		this.resolvedPwshPath = resolvePwshPath(this.declaredPwshPath);
 	}
 	/**
 	* Resolve a request into a fully-specified spec: fill `workdir` from
@@ -246,13 +171,15 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 	* `config.timeoutMs`, capped at `config.maxTimeoutMs`.
 	*/
 	resolve(request) {
-		const timeoutMs = clampTimeout(request.timeoutMs, this.config.timeoutMs, this.config.maxTimeoutMs, "pwsh-local: request.timeoutMs");
-		const stdoutMaxBytes = request.stdoutMaxBytes ?? this.config.maxOutputBytes;
+		assertServiceablePwshConfig(this.config);
+		const timeoutMs = clampTimeout(request.timeoutMs, this.config.timeoutMs.get(), this.config.maxTimeoutMs.get(), "pwsh-local: request.timeoutMs");
+		const stdoutMaxBytes = request.stdoutMaxBytes ?? this.config.maxOutputBytes.get();
 		assertPositiveFinite("request.stdoutMaxBytes", stdoutMaxBytes);
 		return {
 			command: request.command,
-			workdir: request.workdir ?? this.config.cwd ?? process.cwd(),
+			workdir: request.workdir ?? this.config.cwd.get() ?? process.cwd(),
 			timeoutMs,
+			onExpiry: request.onExpiry ?? "kill",
 			stdoutMaxBytes,
 			...request.signal ? { signal: request.signal } : {},
 			...request.stdin !== void 0 ? { stdin: request.stdin } : {},
@@ -264,7 +191,7 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 	/**
 	* The pwsh invocation argv for one resolved spec — the argv-level seam a
 	* confining subclass wraps through `ctx.sandbox.confine` (the pwsh twin of
-	* `dsh-bash-local`'s `runArgv`/`startArgv` hooks; see
+	* `dsh-bash-local`'s `executeArgv` hook; see
 	* `@deepseek-ai/dsh-pwsh-sandbox`).
 	*/
 	argv(spec) {
@@ -281,7 +208,7 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 	spawnSpec(spec, stdoutMaxBytes, signal, argv) {
 		const collect = (maxBytes) => ({
 			maxBytes,
-			spill: { maxBytes: this.config.maxSpillBytes }
+			spill: { maxBytes: this.config.maxSpillBytes.get() }
 		});
 		return {
 			argv: [...argv],
@@ -289,9 +216,9 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 			stdio: {
 				stdin: spec.stdin !== void 0 ? { data: spec.stdin } : "ignore",
 				stdout: collect(stdoutMaxBytes),
-				stderr: collect(this.config.maxOutputBytes)
+				stderr: collect(this.config.maxOutputBytes.get())
 			},
-			graceMs: this.config.graceMs,
+			graceMs: this.config.graceMs.get(),
 			signal,
 			env: {
 				...ENV_OVERRIDES,
@@ -311,73 +238,149 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 			stderr
 		};
 	}
-	async run(spec) {
-		return this.runArgv(spec, this.argv(spec));
+	async execute(spec) {
+		return this.executeArgv(spec, this.argv(spec));
 	}
-	/** Foreground run of an exact argv (the confining subclass re-wraps it). */
-	async runArgv(spec, argv) {
-		const env_1 = {
-			stack: [],
-			error: void 0,
-			hasError: false
-		};
-		try {
-			const d = __addDisposableResource(env_1, deadline(spec.signal, spec.timeoutMs, "BASH_TIMEOUT"), false);
-			const handle = this.ctx.subprocess.spawn(this.spawnSpec(spec, spec.stdoutMaxBytes, d.signal, argv));
-			const outcome = await handle.done;
-			const collected = PwshLocalExecutor.collected(handle);
-			const timedOut = timeoutOf(d.signal, "BASH_TIMEOUT") !== void 0;
-			const aborted = d.signal.aborted && !timedOut;
-			return {
-				...outcome,
-				timedOut,
-				aborted,
-				timeoutMs: spec.timeoutMs,
-				stdout: finalOutput(collected.stdout),
-				stderr: finalOutput(collected.stderr)
+	/**
+	* Execute an explicit argv with the lifecycle, environment, output,
+	* deadline, and cancellation semantics of this executor. Subclasses use this
+	* after replacing the public command's shell argv at an execution boundary.
+	* @param spec - resolved execution settings and caller-owned command metadata.
+	* @param argvOrPrepare - exact argv, or preparation using the execution cancellation signal.
+	* @param onStarted - installs provider facts synchronously before the handle can settle.
+	* @returns the live execution handle; spawn rejection settles the handle as
+	*   killed while `result()` carries the same failure as its rejection.
+	*/
+	async executeArgv(spec, argvOrPrepare, onStarted) {
+		let spawnSignal;
+		let classify;
+		let disarm = () => {};
+		if (spec.onExpiry === "kill") {
+			const d = deadline(spec.signal, spec.timeoutMs, "BASH_TIMEOUT");
+			spawnSignal = d.signal;
+			classify = () => {
+				const timedOut = timeoutOf(d.signal, "BASH_TIMEOUT") !== void 0;
+				return {
+					timedOut,
+					aborted: d.signal.aborted && !timedOut
+				};
 			};
-		} catch (e_1) {
-			env_1.error = e_1;
-			env_1.hasError = true;
-		} finally {
-			__disposeResources(env_1);
+			disarm = () => {
+				d[Symbol.dispose]();
+			};
+		} else {
+			spawnSignal = spec.signal;
+			classify = () => ({
+				timedOut: false,
+				aborted: spec.signal?.aborted === true
+			});
 		}
-	}
-	start(spec) {
-		return this.startArgv(spec, this.argv(spec));
-	}
-	/** Background start of an exact argv (the confining subclass re-wraps it). */
-	startArgv(spec, argv) {
-		const running = this.ctx.subprocess.spawn(this.spawnSpec(spec, this.config.maxOutputBytes, spec.signal, argv));
-		const collected = PwshLocalExecutor.collected(running);
-		let spawnFailureNote;
-		const consumeSpawnFailure = () => {
-			const note = spawnFailureNote ?? "";
-			spawnFailureNote = void 0;
-			return note;
+		let argv = [];
+		let preparationTimedOut = false;
+		if (typeof argvOrPrepare === "function") {
+			const signal = spawnSignal ?? new AbortController().signal;
+			const cancelled = Promise.withResolvers();
+			const abort = () => {
+				cancelled.reject(signal.reason);
+			};
+			signal.addEventListener("abort", abort, { once: true });
+			try {
+				argv = await Promise.race([Promise.resolve().then(() => {
+					signal.throwIfAborted();
+					return argvOrPrepare(signal);
+				}), cancelled.promise]);
+				signal.throwIfAborted();
+			} catch (error) {
+				if (!classify().timedOut) {
+					disarm();
+					throw error;
+				}
+				preparationTimedOut = true;
+			} finally {
+				signal.removeEventListener("abort", abort);
+			}
+		} else argv = argvOrPrepare;
+		let running;
+		let syncSpawnError;
+		try {
+			if (!preparationTimedOut) running = this.ctx.subprocess.spawn(this.spawnSpec(spec, spec.stdoutMaxBytes, spawnSignal, argv));
+		} catch (error) {
+			syncSpawnError = { error };
+		}
+		const emptyReader = { readFrom: () => ({
+			text: "",
+			lossy: false,
+			nextOffset: 0
+		}) };
+		const collected = running !== void 0 ? PwshLocalExecutor.collected(running) : {
+			stdout: emptyReader,
+			stderr: emptyReader
 		};
+		const spawnThrow = () => syncSpawnError.error;
+		const spawned = preparationTimedOut ? Promise.resolve({
+			exitCode: null,
+			signal: null
+		}) : running !== void 0 ? running.done : Promise.reject(spawnThrow());
+		let providerFailure;
+		let providerFailureReported = false;
+		const consumeProviderFailure = () => {
+			if (providerFailure === void 0 || providerFailureReported) return "";
+			providerFailureReported = true;
+			return providerFailure.note;
+		};
+		const observedStderr = { readFrom: (fromByte) => {
+			if (providerFailure === void 0) return collected.stderr.readFrom(fromByte);
+			const note = Buffer.from(providerFailure.note, "utf8");
+			return {
+				text: note.subarray(Math.min(fromByte, note.length)).toString("utf8"),
+				nextOffset: note.length,
+				lossy: false
+			};
+		} };
 		let stdoutOffset = 0;
 		let stderrOffset = 0;
+		let resultPromise;
 		const proc = {
 			status: "running",
 			exitCode: null,
 			signal: null,
-			done: running.done.then((outcome) => {
-				if (proc.status === "running") proc.status = spec.signal?.aborted === true || outcome.signal !== null ? "killed" : "completed";
+			observed: {
+				stdout: collected.stdout,
+				stderr: observedStderr
+			},
+			done: spawned.then((outcome) => {
+				if (proc.status === "running") proc.status = spawnSignal?.aborted === true || outcome.signal !== null ? "killed" : "completed";
 				proc.exitCode = outcome.exitCode;
 				proc.signal = outcome.signal;
 				this.onProcessDone(proc, collected.stderr.readFrom(0).text, false);
+				disarm();
 			}, (error) => {
+				if (running !== void 0 && (proc.status === "killed" || spawnSignal?.aborted === true)) {
+					proc.status = "killed";
+					this.onProcessDone(proc, collected.stderr.readFrom(0).text, false);
+					disarm();
+					return;
+				}
 				proc.status = "killed";
-				spawnFailureNote = `spawn failed: ${String(error)}`;
-				this.onProcessDone(proc, spawnFailureNote, true, error);
+				let detail = "unprintable provider failure";
+				try {
+					detail = String(error);
+				} catch {}
+				providerFailure = {
+					error,
+					note: `subprocess failed before reporting an outcome: ${detail}`
+				};
+				this.onProcessDone(proc, providerFailure.note, true, error);
+				disarm();
 			}),
 			readOutput: () => {
 				const out = collected.stdout.readFrom(stdoutOffset);
 				const err = collected.stderr.readFrom(stderrOffset);
 				stdoutOffset = out.nextOffset;
 				stderrOffset = err.nextOffset;
-				const errText = err.text.length > 0 ? err.text : consumeSpawnFailure();
+				const providerFailure = consumeProviderFailure();
+				const failureSeparator = err.text.length > 0 && !err.text.endsWith("\n") ? "\n" : "";
+				const errText = err.text + (providerFailure.length > 0 ? `${failureSeparator}${providerFailure}` : "");
 				const separator = out.text.length > 0 && !out.text.endsWith("\n") ? "\n" : "";
 				return {
 					delta: out.text + (errText.length > 0 ? `${separator}[stderr]\n${errText}` : ""),
@@ -389,10 +392,25 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 			kill: () => {
 				if (proc.status !== "running") return false;
 				proc.status = "killed";
-				running.terminate();
+				running?.terminate();
 				return true;
+			},
+			result: () => {
+				resultPromise ??= proc.done.then(() => {
+					if (providerFailure !== void 0) throw providerFailure.error;
+					return {
+						exitCode: proc.exitCode,
+						signal: proc.signal,
+						...classify(),
+						timeoutMs: spec.timeoutMs,
+						stdout: finalOutput(collected.stdout),
+						stderr: finalOutput(collected.stderr)
+					};
+				});
+				return resultPromise;
 			}
 		};
+		if (!preparationTimedOut) onStarted?.(proc);
 		return proc;
 	}
 	/**
@@ -402,10 +420,10 @@ var PwshLocalExecutor = class PwshLocalExecutor extends ShellExecutor {
 	* pwsh-confining consumer is `@deepseek-ai/dsh-pwsh-sandbox`.
 	* @param _proc - the settled process handle.
 	* @param _stderr - the process's retained stderr tail used by subclasses for settlement classification.
-	* @param _spawnFailed - whether the spawn rejected before any process existed.
-	* @param _spawnError - the spawn rejection, when `_spawnFailed`.
+	* @param _providerRejected - whether the subprocess promise rejected without a direct outcome.
+	* @param _providerError - the provider rejection reason, which may itself be undefined.
 	*/
-	onProcessDone(_proc, _stderr, _spawnFailed, _spawnError) {}
+	onProcessDone(_proc, _stderr, _providerRejected, _providerError) {}
 };
 //#endregion
 export { ENCODING_PREAMBLE, ENV_OVERRIDES, PwshLocalExecutor, PwshLocalExecutor as default, assertServiceablePwshConfig, candidatePwshPaths, resolvePwshPath };

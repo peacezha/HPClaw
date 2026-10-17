@@ -17,7 +17,7 @@ import SyncPlannerDialog from './SyncPlannerDialog';
 import FilePreview from './FilePreview';
 import PickConfirmBar from './PickConfirmBar';
 import { createDroppedTransfer, planClipboardMoves } from './FilePane';
-import { enqueueTransfer, pauseTransfer, resumeTransfer, cancelTransfer, retryTransfer, clearCompletedTransfers, copyRemote, renameRemote, mkdirRemote, statRemote, walkRemote, preflightRemoteCopy } from './api';
+import { enqueueTransfer, enqueueTransfersBatch, pauseTransfer, resumeTransfer, cancelTransfer, retryTransfer, clearCompletedTransfers, copyRemote, renameRemote, mkdirRemote, statRemote, walkRemote, preflightRemoteCopy } from './api';
 import { expandForUpload, expandForDownload, expandForRemoteCopy } from './folderTransfer';
 import {
   canOpenCachedEditSession,
@@ -34,6 +34,21 @@ export interface EndpointOption {
   id: string; // 'local' 或 sessionId
   label: string; // 显示名，如 本地 / user@login.example.edu
   home?: string; // 集群端点的家目录（本地端点无）
+}
+
+/** 服务端批量入队单次上限（与 /api/transfers/batch 一致） */
+const TRANSFER_BATCH_SIZE = 500;
+
+/** 文件夹展开后的批量入队：按服务端单次上限分片，一次请求代替逐条 POST */
+async function enqueueInBatches(
+  sessionId: string,
+  inputs: Parameters<typeof enqueueTransfersBatch>[1],
+): Promise<TransferTask[]> {
+  const tasks: TransferTask[] = [];
+  for (let i = 0; i < inputs.length; i += TRANSFER_BATCH_SIZE) {
+    tasks.push(...await enqueueTransfersBatch(sessionId, inputs.slice(i, i + TRANSFER_BATCH_SIZE)));
+  }
+  return tasks;
 }
 
 interface FileTransferWorkspaceProps {
@@ -297,7 +312,7 @@ export default function FileTransferWorkspace({
   const transferBetween = useCallback(
     async (srcEndpoint: string, sourcePaths: string[], dstEndpoint: string, targetPath: string) => {
       if (!srcEndpoint || !dstEndpoint || srcEndpoint === dstEndpoint || sourcePaths.length === 0) return;
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       const profileFor = (sid: string) => resolveTransferProfileId({
         activeProfileId: state.activeProfileId,
         profileId,
@@ -316,24 +331,22 @@ export default function FileTransferWorkspace({
           for (const dir of expansion.targetDirs) {
             try { await mkdirRemote(dstEndpoint, dir); } catch { /* 已存在则忽略 */ }
           }
-          for (const f of expansion.files) {
-            try {
-              const task = await enqueueTransfer(dstEndpoint, {
-                profileId: profileFor(dstEndpoint),
-                sessionId: dstEndpoint,
-                direction: 'upload' as const,
-                localPath: f.localPath,
-                remotePath: f.remotePath,
-                temporaryPath: makeTemporaryTransferName(f.remotePath, uuidv4(), 'remote'),
-                totalBytes: f.totalBytes,
-                transferredBytes: 0,
-                conflictPolicy: 'overwrite' as const,
-                verificationMode: 'size' as const,
-                retryCount: 0,
-              });
-              dispatch({ type: 'transfer/upsert', task });
-            } catch (err) { console.error('Failed to enqueue upload:', err); }
-          }
+          try {
+            const tasks = await enqueueInBatches(dstEndpoint, expansion.files.map(f => ({
+              profileId: profileFor(dstEndpoint),
+              sessionId: dstEndpoint,
+              direction: 'upload' as const,
+              localPath: f.localPath,
+              remotePath: f.remotePath,
+              temporaryPath: makeTemporaryTransferName(f.remotePath, uuidv4(), 'remote'),
+              totalBytes: f.totalBytes,
+              transferredBytes: 0,
+              conflictPolicy: 'overwrite' as const,
+              verificationMode: 'size' as const,
+              retryCount: 0,
+            })));
+            for (const task of tasks) dispatch({ type: 'transfer/upsert', task });
+          } catch (err) { console.error('Failed to enqueue uploads:', err); }
           return;
         }
 
@@ -351,24 +364,22 @@ export default function FileTransferWorkspace({
           for (const dir of expansion.targetDirs) {
             try { await desktop.localFiles.mkdir(dir); } catch { /* 已存在则忽略 */ }
           }
-          for (const f of expansion.files) {
-            try {
-              const task = await enqueueTransfer(srcEndpoint, {
-                profileId: profileFor(srcEndpoint),
-                sessionId: srcEndpoint,
-                direction: 'download' as const,
-                localPath: f.localPath,
-                remotePath: f.remotePath,
-                temporaryPath: makeTemporaryTransferName(f.localPath, uuidv4(), 'local'),
-                totalBytes: f.totalBytes,
-                transferredBytes: 0,
-                conflictPolicy: 'overwrite' as const,
-                verificationMode: 'size' as const,
-                retryCount: 0,
-              });
-              dispatch({ type: 'transfer/upsert', task });
-            } catch (err) { console.error('Failed to enqueue download:', err); }
-          }
+          try {
+            const tasks = await enqueueInBatches(srcEndpoint, expansion.files.map(f => ({
+              profileId: profileFor(srcEndpoint),
+              sessionId: srcEndpoint,
+              direction: 'download' as const,
+              localPath: f.localPath,
+              remotePath: f.remotePath,
+              temporaryPath: makeTemporaryTransferName(f.localPath, uuidv4(), 'local'),
+              totalBytes: f.totalBytes,
+              transferredBytes: 0,
+              conflictPolicy: 'overwrite' as const,
+              verificationMode: 'size' as const,
+              retryCount: 0,
+            })));
+            for (const task of tasks) dispatch({ type: 'transfer/upsert', task });
+          } catch (err) { console.error('Failed to enqueue downloads:', err); }
           return;
         }
 
@@ -380,26 +391,24 @@ export default function FileTransferWorkspace({
         for (const dir of expansion.targetDirs) {
           try { await mkdirRemote(dstEndpoint, dir); } catch { /* 已存在则忽略 */ }
         }
-        for (const f of expansion.files) {
-          try {
-            const task = await enqueueTransfer(dstEndpoint, {
-              profileId: profileFor(dstEndpoint),
-              sessionId: dstEndpoint,
-              sourceSessionId: srcEndpoint,
-              direction: 'remote-copy' as const,
-              // 字段约定（与引擎一致）：remotePath=源集群读取路径，localPath=目标集群最终路径
-              localPath: f.remotePath,
-              remotePath: f.localPath,
-              temporaryPath: makeTemporaryTransferName(f.remotePath, uuidv4(), 'remote'),
-              totalBytes: f.totalBytes,
-              transferredBytes: 0,
-              conflictPolicy: 'overwrite' as const,
-              verificationMode: 'size' as const,
-              retryCount: 0,
-            });
-            dispatch({ type: 'transfer/upsert', task });
-          } catch (err) { console.error('Failed to enqueue remote-copy:', err); }
-        }
+        try {
+          const tasks = await enqueueInBatches(dstEndpoint, expansion.files.map(f => ({
+            profileId: profileFor(dstEndpoint),
+            sessionId: dstEndpoint,
+            sourceSessionId: srcEndpoint,
+            direction: 'remote-copy' as const,
+            // 字段约定（与引擎一致）：remotePath=源集群读取路径，localPath=目标集群最终路径
+            localPath: f.remotePath,
+            remotePath: f.localPath,
+            temporaryPath: makeTemporaryTransferName(f.remotePath, uuidv4(), 'remote'),
+            totalBytes: f.totalBytes,
+            transferredBytes: 0,
+            conflictPolicy: 'overwrite' as const,
+            verificationMode: 'size' as const,
+            retryCount: 0,
+          })));
+          for (const task of tasks) dispatch({ type: 'transfer/upsert', task });
+        } catch (err) { console.error('Failed to enqueue remote-copies:', err); }
       } catch (err) {
         console.error('Failed to expand transfer sources:', err);
         setTransferError(toDisplayError(err, '文件传输准备失败'));
@@ -454,7 +463,7 @@ export default function FileTransferWorkspace({
     if (fileClipboard.mode === 'cut') {
       const moves = planClipboardMoves(fileClipboard.paths, targetDirectory);
       if (targetEndpoint === 'local') {
-        const desktop = window.hpclawDesktop;
+        const desktop = window.traceDesktop;
         if (!desktop) throw new Error('桌面应用模式下可用');
         for (const move of moves) await desktop.localFiles.rename(move.from, move.to);
       } else {
@@ -465,7 +474,7 @@ export default function FileTransferWorkspace({
     }
 
     if (targetEndpoint === 'local') {
-      const desktop = window.hpclawDesktop;
+      const desktop = window.traceDesktop;
       if (!desktop) throw new Error('桌面应用模式下可用');
       await desktop.localFiles.copy(fileClipboard.paths, targetDirectory);
       return;
@@ -504,7 +513,7 @@ export default function FileTransferWorkspace({
   }, []);
 
   const queueEditUpload = useCallback(async (session: RemoteEditSession) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     const fingerprint = session.lastLocalFingerprint;
     const activeSessionId = session.sshSessionId || sessionId;
     const activeProfileId = resolveTransferProfileId({
@@ -541,11 +550,11 @@ export default function FileTransferWorkspace({
   }, [profileId, sessionId, state.activeProfileId, upsertEditSession]);
 
   const handleLocalOpen = useCallback((file: FileEntry) => {
-    void window.hpclawDesktop?.localFiles.open(file.path);
+    void window.traceDesktop?.localFiles.open(file.path);
   }, []);
 
   const handleRemoteOpen = useCallback(async (file: FileEntry, remoteSessionId: string) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     const activeProfileId = resolveTransferProfileId({
       activeProfileId: state.activeProfileId,
       profileId,
@@ -630,7 +639,7 @@ export default function FileTransferWorkspace({
   }, [state.remote.selected, state.remote.entries]);
 
   const retryEditSession = useCallback(async (editSession: RemoteEditSession) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!desktop?.remoteEdits) return;
     const retrying = await desktop.remoteEdits.retry(editSession.id);
     upsertEditSession(retrying);
@@ -654,7 +663,7 @@ export default function FileTransferWorkspace({
 
   // 移除编辑会话（本地缓存文件仍保留在磁盘恢复目录中）
   const discardEditSession = useCallback(async (editSession: RemoteEditSession) => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!desktop?.remoteEdits) return;
     if (editSession.dirty) {
       const name = editSession.remotePath.split('/').pop() || editSession.remotePath;
@@ -668,7 +677,7 @@ export default function FileTransferWorkspace({
   }, []);
 
   useEffect(() => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!desktop?.remoteEdits) return;
     void desktop.remoteEdits.list().then(sessions => {
       for (const editSession of sessions) editSessionsRef.current.set(editSession.id, editSession);
@@ -688,7 +697,7 @@ export default function FileTransferWorkspace({
   }, [queueEditUpload, upsertEditSession]);
 
   useEffect(() => {
-    const desktop = window.hpclawDesktop;
+    const desktop = window.traceDesktop;
     if (!desktop?.remoteEdits) return;
     for (const task of Object.values(state.transfers)) {
       const link = editTransferLinksRef.current.get(task.id);
@@ -1055,7 +1064,7 @@ export default function FileTransferWorkspace({
                     </button>
                     <button
                       type="button"
-                      onClick={() => void window.hpclawDesktop?.localFiles.open(editSession.localPath)}
+                      onClick={() => void window.traceDesktop?.localFiles.open(editSession.localPath)}
                     >打开本地副本</button>
                   </>
                 )}

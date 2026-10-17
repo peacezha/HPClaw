@@ -46,7 +46,7 @@ export function makeFile(
   options?: FilePropertyBag,
 ): File {
   checkFileSupport();
-  return new File(fileBits as any, fileName ?? 'unknown_file', options);
+  return new File(fileBits as any, fileName ?? '', options);
 }
 
 export function getName(value: any, stripPath: boolean): string | undefined {
@@ -137,14 +137,11 @@ export const createForm = async <T = Record<string, unknown>>(
   return form;
 };
 
-// We check for Blob not File because Bun.File doesn't inherit from File,
-// but they both inherit from Blob and have a `name` property at runtime.
-const isNamedBlob = (value: unknown): value is Blob => value instanceof Blob && 'name' in value;
-
+// Blob, not File: bare Blobs and Bun.file() results don't inherit from File.
 const isUploadable = (value: unknown) =>
   typeof value === 'object' &&
   value !== null &&
-  (value instanceof Response || isAsyncIterable(value) || isNamedBlob(value));
+  (value instanceof Response || isAsyncIterable(value) || value instanceof Blob);
 
 const hasUploadableValue = (value: unknown): boolean => {
   if (isUploadable(value)) return true;
@@ -186,10 +183,19 @@ const addFormValue = async (
       key,
       makeFile([await new Response(ReadableStreamFrom(value)).blob()], getName(value, stripFilenames)),
     );
-  } else if (isNamedBlob(value)) {
-    form.append(key, makeFile([value], getName(value, stripFilenames), { type: value.type }));
+  } else if (value instanceof Blob) {
+    // A File's name is one the caller chose, so it is sent as is; any other Blob's name is a path.
+    const isFile = typeof File !== 'undefined' && value instanceof File;
+    const name = isFile ? value.name : getName(value, stripFilenames);
+    form.append(key, makeFile([value], name, { type: value.type }));
   } else if (Array.isArray(value)) {
     await Promise.all(value.map((entry) => addFormValue(form, key + '[]', entry, stripFilenames)));
+  } else if (typeof (value as any).then === 'function') {
+    throw new TypeError(`Received a Promise for "${key}"; await it first, e.g. \`await toFile(...)\``);
+  } else if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    throw new TypeError(
+      `Received ${value.constructor.name} for "${key}"; to upload raw bytes, wrap them with \`await toFile(bytes, 'filename')\``,
+    );
   } else if (typeof value === 'object') {
     await Promise.all(
       Object.entries(value).map(([name, prop]) =>

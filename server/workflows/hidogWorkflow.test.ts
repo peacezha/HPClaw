@@ -35,8 +35,8 @@ describe('HiDOG V11 builtin workflows', () => {
     expect(command).toContain('--guide-manifest');
     expect(command).toContain('--min-sample-anchor-reads');
     expect(workflow.assets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: 'hidog/hidogV11_hpclaw_runner.py' }),
-      expect.objectContaining({ source: 'hidog/hidogV11_hpclaw_report.py' }),
+      expect.objectContaining({ source: 'hidog/hidogV11_trace_runner.py' }),
+      expect.objectContaining({ source: 'hidog/hidogV11_trace_report.py' }),
     ]));
   });
 
@@ -74,7 +74,7 @@ describe('HiDOG V11 builtin workflows', () => {
     const alignedIds = [
       'builtin-hidog-vector-trace', 'builtin-hidog-amplicon',
       // 12 个 ENCODE 内置流程同样要求 dev 库与 builtinWorkflows() 逐字段一致
-      'encode-chipseq-tf', 'encode-chipseq-histone', 'encode-rnaseq-bulk', 'encode-atacseq',
+      'encode-chipseq-tf-dag', 'encode-chipseq-histone', 'encode-rnaseq-bulk', 'encode-atacseq',
       'encode-dnaseseq', 'encode-wgbs', 'encode-hic', 'encode-chiapet', 'encode-mirnaseq',
       'encode-eclip', 'encode-longread-rnaseq', 'encode-rampage',
     ];

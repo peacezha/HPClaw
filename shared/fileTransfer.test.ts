@@ -42,32 +42,32 @@ describe('transfer contracts', () => {
 
   it('uses a hidden task-specific temporary name for a POSIX path', () => {
     expect(makeTemporaryTransferName('/data/a.fastq.gz', 'task-7', 'remote'))
-      .toBe('/data/.a.fastq.gz.hpclaw-task-7.part');
+      .toBe('/data/.a.fastq.gz.trace-task-7.part');
   });
 
   it('uses Windows separators in a local temporary path', () => {
     expect(makeTemporaryTransferName('D:\\BioProject\\reads.fastq.gz', 'task-8', 'local'))
-      .toBe('D:\\BioProject\\.reads.fastq.gz.hpclaw-task-8.part');
+      .toBe('D:\\BioProject\\.reads.fastq.gz.trace-task-8.part');
   });
 
   it('preserves mixed separators in an explicit local path', () => {
     expect(makeTemporaryTransferName('D:\\Bio/read.fastq', 'task-9', 'local'))
-      .toBe('D:\\Bio/.read.fastq.hpclaw-task-9.part');
+      .toBe('D:\\Bio/.read.fastq.trace-task-9.part');
   });
 
   it('keeps a literal backslash in an explicit remote filename', () => {
     expect(makeTemporaryTransferName('/data/read\\part.fastq', 'task-10', 'remote'))
-      .toBe('/data/.read\\part.fastq.hpclaw-task-10.part');
+      .toBe('/data/.read\\part.fastq.trace-task-10.part');
   });
 
   it('creates a sibling temporary name for a Windows UNC path', () => {
     expect(makeTemporaryTransferName('\\\\server\\share\\reads.fastq', 'task-11', 'local'))
-      .toBe('\\\\server\\share\\.reads.fastq.hpclaw-task-11.part');
+      .toBe('\\\\server\\share\\.reads.fastq.trace-task-11.part');
   });
 
   it('preserves a forward-slash UNC prefix for an explicit local path', () => {
     expect(makeTemporaryTransferName('//server/share/reads.fastq', 'task-12', 'local'))
-      .toBe('//server/share/.reads.fastq.hpclaw-task-12.part');
+      .toBe('//server/share/.reads.fastq.trace-task-12.part');
   });
 
   it('requires callers to specify the file side', () => {

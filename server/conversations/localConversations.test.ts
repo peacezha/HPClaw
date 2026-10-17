@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 async function createStore(): Promise<LocalConversationStore> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'hpclaw-conversations-'));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'trace-conversations-'));
   roots.push(root);
   return new LocalConversationStore(root);
 }

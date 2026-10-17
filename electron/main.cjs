@@ -8,6 +8,10 @@ const crypto = require('node:crypto');
 const { createProfileStore } = require('./profile-store.cjs');
 const { createSecretStore } = require('./secret-store.cjs');
 const { createLocaleStore } = require('./locale-store.cjs');
+const { createEditingController } = require('./editing.cjs');
+require('./legacy-brand-env.cjs');
+const { migrateDesktopProfile } = require('./app-identity.cjs');
+const { migrateLegacyShortcuts } = require('./legacy-shortcuts.cjs');
 const { generateTotp } = require('./totp.cjs');
 const { createLocalFileService } = require('./local-files.cjs');
 const { createRemoteEditSessionManager } = require('./remote-edit-sessions.cjs');
@@ -16,25 +20,26 @@ const { autoUpdater } = require('electron-updater');
 const { createUpdateManager } = require('./update-manager.cjs');
 const packageMetadata = require('../package.json');
 
-const APP_EDITION = String(process.env.HPCLAW_EDITION || packageMetadata.hpclawEdition || 'full').toLowerCase() === 'competition'
+const APP_EDITION = String(process.env.TRACE_EDITION || packageMetadata.traceEdition || 'full').toLowerCase() === 'competition'
   ? 'competition'
   : 'full';
 const IS_COMPETITION_EDITION = APP_EDITION === 'competition';
-const APP_DISPLAY_NAME = IS_COMPETITION_EDITION ? 'HPClaw 竞赛版' : 'HPClaw';
-process.env.HPCLAW_EDITION = APP_EDITION;
+const APP_DISPLAY_NAME = IS_COMPETITION_EDITION ? 'TRACE 竞赛版' : 'TRACE';
+process.env.TRACE_EDITION = APP_EDITION;
 
 // 竞赛版与完整版必须能并排安装和运行。productName/appId 负责区分
 // 安装与单实例锁，这里再显式分开 userData，防止任何打包工具回退到 name 时
 // 复用完整版的账号、AI 密钥、传输队列或对话上下文。
-if (IS_COMPETITION_EDITION) {
-  app.setName('HPClaw Competition');
-  app.setPath('userData', path.join(app.getPath('appData'), 'HPClaw Competition'));
-}
+const desktopIdentity = migrateDesktopProfile({ appData: app.getPath('appData'), competition: IS_COMPETITION_EDITION });
+app.setName(desktopIdentity.runtimeName);
+app.setPath('userData', desktopIdentity.userData);
+app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME, applicationVersion: packageMetadata.version });
 const localeStore = createLocaleStore({ userData: app.getPath('userData'), installDir: path.dirname(process.execPath) });
 const desktopText = (zh, en) => localeStore.get() === 'en-US' ? en : zh;
+const editingController = createEditingController({ Menu, BrowserWindow, ipcMain, text: desktopText });
 
 // The Windows GPU process is the most frequent source of renderer loss in the
-// field logs (exit -2147483645). HPClaw is a text/terminal application, so the
+// field logs (exit -2147483645). TRACE is a text/terminal application, so the
 // small graphics-performance trade-off is preferable to a persistent white
 // window. This must be called before app.whenReady().
 if (process.platform === 'win32') app.disableHardwareAcceleration();
@@ -130,7 +135,7 @@ function restartAfterRendererCrash(win, detail) {
       type: 'error',
       title: `${APP_DISPLAY_NAME} 界面连续异常`,
       message: `界面进程连续崩溃，${APP_DISPLAY_NAME} 需要完整重启。`,
-      detail: `集群后台作业不会受影响。诊断日志：${currentLogFile || 'hpclaw-server.log'}`,
+      detail: `集群后台作业不会受影响。诊断日志：${currentLogFile || 'trace-server.log'}`,
       buttons: ['立即重启', '退出'],
       defaultId: 0,
       cancelId: 1,
@@ -163,7 +168,7 @@ function restartAfterRendererCrash(win, detail) {
 
 // 服务端落盘密钥（ai-profile/notify-config/qqbot 中的 apiKey、smtpPass、appSecret）
 // 的 AES-256-GCM 主密钥：随机 32 字节，用 safeStorage 加密后存
-// userData/server-key.json，派生后端进程时经 HPCLAW_ENCRYPTION_KEY 注入。
+// userData/server-key.json，派生后端进程时经 TRACE_ENCRYPTION_KEY 注入。
 // safeStorage 不可用时不注入，后端退化为明文透传（与纯 tsx 开发模式行为一致）。
 function loadServerEncryptionKey() {
   if (!safeStorage.isEncryptionAvailable()) return '';
@@ -189,24 +194,24 @@ function startBackend(port) {
   // Generate desktop token for secure IPC with the backend
   const desktopToken = crypto.randomBytes(32).toString('hex');
 
-  const logFile = path.join(dataRoot, 'hpclaw-server.log');
+  const logFile = path.join(dataRoot, 'trace-server.log');
   const env = {
     ...process.env,
     NODE_ENV: app.isPackaged ? 'production' : 'development',
     PORT: String(port),
-    HPCLAW_APP_ROOT: appRoot,
-    HPCLAW_STATIC_ROOT: appRoot,
-    HPCLAW_DATA_ROOT: dataRoot,
-    HPCLAW_NODE_EXECUTABLE: process.execPath,
-    HPCLAW_DESKTOP_TOKEN: desktopToken,
-    HPCLAW_PARENT_PID: String(process.pid),
-    HPCLAW_EDITION: APP_EDITION,
-    HPCLAW_AI_ENGINE: IS_COMPETITION_EDITION ? 'legacy' : (process.env.HPCLAW_AI_ENGINE || ''),
+    TRACE_APP_ROOT: appRoot,
+    TRACE_STATIC_ROOT: appRoot,
+    TRACE_DATA_ROOT: dataRoot,
+    TRACE_NODE_EXECUTABLE: process.execPath,
+    TRACE_DESKTOP_TOKEN: desktopToken,
+    TRACE_PARENT_PID: String(process.pid),
+    TRACE_EDITION: APP_EDITION,
+    TRACE_AI_ENGINE: IS_COMPETITION_EDITION ? 'legacy' : (process.env.TRACE_AI_ENGINE || ''),
   };
 
   const serverEncryptionKey = loadServerEncryptionKey();
   if (serverEncryptionKey) {
-    env.HPCLAW_ENCRYPTION_KEY = serverEncryptionKey;
+    env.TRACE_ENCRYPTION_KEY = serverEncryptionKey;
   }
 
   let command;
@@ -243,7 +248,7 @@ function startBackend(port) {
         type: 'error',
         title: `${APP_DISPLAY_NAME} 后台已停止`,
         message: '后台服务异常退出，当前 AI 和集群会话已无法继续。',
-        detail: `请重启 HPClaw。诊断日志：${logFile}\nexit=${code} signal=${signal}`,
+        detail: `请重启 TRACE。诊断日志：${logFile}\nexit=${code} signal=${signal}`,
       });
     }
   });
@@ -297,6 +302,7 @@ function createWindow(url) {
     minWidth: 1100,
     minHeight: 720,
     title: APP_DISPLAY_NAME,
+    autoHideMenuBar: true,
     // 与默认浅色登录页底色一致，避免启动白闪；深色主题由 index.html 内联脚本预置 data-theme 防闪
     backgroundColor: '#f3f4f7',
     show: false,
@@ -320,29 +326,7 @@ function createWindow(url) {
 
   // 全局右键菜单（v0.4.30）：Electron 默认没有右键菜单，非技术用户找不到
   // 「复制」入口（Ctrl+C 可用但不可发现）。按上下文给 剪切/复制/粘贴/全选。
-  const attachCopyMenu = (contents) => {
-    contents.on('context-menu', (_event, params) => {
-      const hasSelection = (params.selectionText || '').trim().length > 0;
-      const items = [];
-      if (params.isEditable) {
-        items.push(
-          { label: '剪切', role: 'cut', enabled: params.editFlags.canCut },
-          { label: '复制', role: 'copy', enabled: params.editFlags.canCopy },
-          { label: '粘贴', role: 'paste', enabled: params.editFlags.canPaste },
-          { type: 'separator' },
-          { label: '全选', role: 'selectAll' },
-        );
-      } else if (hasSelection) {
-        items.push(
-          { label: '复制', click: () => contents.copy() },
-          { label: '全选', click: () => contents.selectAll() },
-        );
-      } else {
-        items.push({ label: '全选', click: () => contents.selectAll() });
-      }
-      Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(contents) || win });
-    });
-  };
+  const attachCopyMenu = contents => editingController.attach(contents, win);
   attachCopyMenu(win.webContents);
   // 侧边网页栏等 <webview> 有独立 webContents，同样挂右键菜单
   app.on('web-contents-created', (_event, contents) => {
@@ -422,7 +406,7 @@ function stopBackend(reason = 'application-exit') {
   }
 
   // Windows 的普通 kill 只结束直接子进程。后台再启动的 dsh/node 会变成
-  // 孤儿进程并持续占用安装目录，导致下一次更新误报“HPClaw 无法关闭”。
+  // 孤儿进程并持续占用安装目录，导致下一次更新误报“TRACE 无法关闭”。
   // taskkill /T 只沿本应用后台进程的子树清理，不影响其他 Node 程序。
   if (process.platform === 'win32' && Number.isInteger(processToStop.pid)) {
     const windowsRoot = process.env.SystemRoot || 'C:\\Windows';
@@ -466,7 +450,7 @@ async function launchDefaultAppAndWait(filePath, onOpened) {
 async function checkActiveTransfers(port, token) {
   return new Promise(resolve => {
     const req = http.get(`http://127.0.0.1:${port}/api/transfers`, {
-      headers: { 'X-HPClaw-Desktop-Token': token },
+      headers: { 'X-TRACE-Desktop-Token': token },
     }, res => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -514,45 +498,49 @@ async function promptBeforeClose(port, token) {
 }
 
 function registerIpcHandlers(port, desktopToken) {
-  ipcMain.handle('hpclaw:locale:get', () => localeStore.get());
-  ipcMain.handle('hpclaw:locale:set', (_event, locale) => localeStore.set(locale));
+  ipcMain.handle('trace:locale:get', () => localeStore.get());
+  ipcMain.handle('trace:locale:set', (_event, locale) => {
+    const result = localeStore.set(locale);
+    editingController.refreshMenu();
+    return result;
+  });
   // Profile IPC handlers
-  ipcMain.handle('hpclaw:profiles:list', () => {
+  ipcMain.handle('trace:profiles:list', () => {
     return profileStore.list();
   });
 
   // 前端通用密钥（AI 配置/TOTP 种子/集群记住密码）的加密读写，
   // key 名白名单见 secret-store.cjs；渲染进程启动时水合到内存缓存后同步使用
-  ipcMain.handle('hpclaw:secrets:get', (_event, key) => {
+  ipcMain.handle('trace:secrets:get', (_event, key) => {
     return secretStore.get(key);
   });
 
-  ipcMain.handle('hpclaw:secrets:set', (_event, key, value) => {
+  ipcMain.handle('trace:secrets:set', (_event, key, value) => {
     return secretStore.set(key, value);
   });
 
-  ipcMain.handle('hpclaw:secrets:delete', (_event, key) => {
+  ipcMain.handle('trace:secrets:delete', (_event, key) => {
     return secretStore.delete(key);
   });
 
-  ipcMain.handle('hpclaw:profiles:save', (_event, profile) => {
+  ipcMain.handle('trace:profiles:save', (_event, profile) => {
     return profileStore.save(profile);
   });
 
-  ipcMain.handle('hpclaw:profiles:remove', (_event, id) => {
+  ipcMain.handle('trace:profiles:remove', (_event, id) => {
     return profileStore.remove(id);
   });
 
   // 登录界面下拉选择账号时回填密码/TOTP 秘钥（仅在渲染进程请求时解密）
-  ipcMain.handle('hpclaw:profiles:getCredentials', (_event, id) => {
+  ipcMain.handle('trace:profiles:getCredentials', (_event, id) => {
     return profileStore.getCredentials(id);
   });
 
-  ipcMain.handle('hpclaw:profiles:trustFingerprint', (_event, id, fingerprint) => {
+  ipcMain.handle('trace:profiles:trustFingerprint', (_event, id, fingerprint) => {
     return profileStore.trustFingerprint(id, fingerprint);
   });
 
-  ipcMain.handle('hpclaw:profiles:connect', async (_event, id) => {
+  ipcMain.handle('trace:profiles:connect', async (_event, id) => {
     const profile = profileStore.list().find(p => p.id === id);
     if (!profile) throw new Error(`Profile not found: ${id}`);
 
@@ -580,7 +568,7 @@ function registerIpcHandlers(port, desktopToken) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
-          'X-HPClaw-Desktop-Token': desktopToken,
+          'X-TRACE-Desktop-Token': desktopToken,
         },
       }, res => {
         let data = '';
@@ -632,22 +620,22 @@ function registerIpcHandlers(port, desktopToken) {
   });
 
   // Local file IPC handlers
-  ipcMain.handle('hpclaw:localFiles:listDrives', () => {
+  ipcMain.handle('trace:localFiles:listDrives', () => {
     return localFileService.listDrives();
   });
 
-  ipcMain.handle('hpclaw:localFiles:list', (_event, dirPath) => {
+  ipcMain.handle('trace:localFiles:list', (_event, dirPath) => {
     return localFileService.list(dirPath);
   });
 
   // 主进程剪贴板：绕过 navigator.clipboard 的窗口聚焦限制
-  ipcMain.handle('hpclaw:clipboard:readText', () => clipboard.readText());
-  ipcMain.handle('hpclaw:clipboard:writeText', (_event, text) => {
+  ipcMain.handle('trace:clipboard:readText', () => clipboard.readText());
+  ipcMain.handle('trace:clipboard:writeText', (_event, text) => {
     clipboard.writeText(String(text ?? ''));
   });
 
   // 选择本地目录（Agent 工作区：dsh 引擎本地工具的落点目录）
-  ipcMain.handle('hpclaw:dialog:pickDirectory', async () => {
+  ipcMain.handle('trace:dialog:pickDirectory', async () => {
     const options = { properties: ['openDirectory', 'createDirectory'] };
     const result = mainWindow && !mainWindow.isDestroyed()
       ? await dialog.showOpenDialog(mainWindow, options)
@@ -655,49 +643,49 @@ function registerIpcHandlers(port, desktopToken) {
     return result.canceled ? null : (result.filePaths[0] || null);
   });
 
-  ipcMain.handle('hpclaw:localFiles:stat', (_event, targetPath) => {
+  ipcMain.handle('trace:localFiles:stat', (_event, targetPath) => {
     return localFileService.stat(targetPath);
   });
 
-  ipcMain.handle('hpclaw:localFiles:mkdir', (_event, dirPath) => {
+  ipcMain.handle('trace:localFiles:mkdir', (_event, dirPath) => {
     return localFileService.mkdir(dirPath);
   });
 
-  ipcMain.handle('hpclaw:localFiles:createFile', (_event, targetPath) => {
+  ipcMain.handle('trace:localFiles:createFile', (_event, targetPath) => {
     return localFileService.createFile(targetPath);
   });
 
-  ipcMain.handle('hpclaw:localFiles:writeFile', (_event, targetPath, content) => {
+  ipcMain.handle('trace:localFiles:writeFile', (_event, targetPath, content) => {
     return localFileService.writeFile(targetPath, content);
   });
 
-  ipcMain.handle('hpclaw:localFiles:walk', (_event, dirPath) => {
+  ipcMain.handle('trace:localFiles:walk', (_event, dirPath) => {
     return localFileService.walk(dirPath);
   });
 
-  ipcMain.handle('hpclaw:localFiles:rename', (_event, from, to) => {
+  ipcMain.handle('trace:localFiles:rename', (_event, from, to) => {
     return localFileService.rename(from, to);
   });
 
-  ipcMain.handle('hpclaw:localFiles:copy', (_event, sourcePaths, targetDirectory) => {
+  ipcMain.handle('trace:localFiles:copy', (_event, sourcePaths, targetDirectory) => {
     return localFileService.copy(sourcePaths, targetDirectory);
   });
 
-  ipcMain.handle('hpclaw:localFiles:trash', (_event, targetPath) => {
+  ipcMain.handle('trace:localFiles:trash', (_event, targetPath) => {
     return localFileService.trash(targetPath);
   });
 
-  ipcMain.handle('hpclaw:localFiles:open', async (_event, targetPath) => {
+  ipcMain.handle('trace:localFiles:open', async (_event, targetPath) => {
     const error = await shell.openPath(targetPath);
     if (error) throw new Error(error);
     return { ok: true };
   });
 
-  ipcMain.handle('hpclaw:localFiles:preview', (_event, targetPath, maxBytes) => {
+  ipcMain.handle('trace:localFiles:preview', (_event, targetPath, maxBytes) => {
     return localFileService.readPreview(targetPath, maxBytes);
   });
 
-  ipcMain.handle('hpclaw:localFiles:search', async (_event, root, query) => {
+  ipcMain.handle('trace:localFiles:search', async (_event, root, query) => {
     const requestId = crypto.randomUUID();
     const abortController = new AbortController();
     searchAbortControllers.set(requestId, abortController);
@@ -710,7 +698,7 @@ function registerIpcHandlers(port, desktopToken) {
     }
   });
 
-  ipcMain.on('hpclaw:localFiles:cancelSearch', (_event, requestId) => {
+  ipcMain.on('trace:localFiles:cancelSearch', (_event, requestId) => {
     const controller = searchAbortControllers.get(requestId);
     if (controller) {
       controller.abort();
@@ -718,48 +706,46 @@ function registerIpcHandlers(port, desktopToken) {
     }
   });
 
-  ipcMain.handle('hpclaw:remoteEdits:prepare', (_event, metadata) => {
+  ipcMain.handle('trace:remoteEdits:prepare', (_event, metadata) => {
     return remoteEditSessionManager.prepare(metadata);
   });
-  ipcMain.handle('hpclaw:remoteEdits:markDownloaded', (_event, id) => {
+  ipcMain.handle('trace:remoteEdits:markDownloaded', (_event, id) => {
     return remoteEditSessionManager.markDownloaded(id);
   });
-  ipcMain.handle('hpclaw:remoteEdits:open', (_event, id) => {
+  ipcMain.handle('trace:remoteEdits:open', (_event, id) => {
     return remoteEditSessionManager.open(id);
   });
-  ipcMain.handle('hpclaw:remoteEdits:markUploading', (_event, id, fingerprint) => {
+  ipcMain.handle('trace:remoteEdits:markUploading', (_event, id, fingerprint) => {
     return remoteEditSessionManager.markUploading(id, fingerprint);
   });
-  ipcMain.handle('hpclaw:remoteEdits:markSynced', (_event, id, fingerprint) => {
+  ipcMain.handle('trace:remoteEdits:markSynced', (_event, id, fingerprint) => {
     return remoteEditSessionManager.markSynced(id, fingerprint);
   });
-  ipcMain.handle('hpclaw:remoteEdits:markFailed', (_event, id, error) => {
+  ipcMain.handle('trace:remoteEdits:markFailed', (_event, id, error) => {
     return remoteEditSessionManager.markFailed(id, error);
   });
-  ipcMain.handle('hpclaw:remoteEdits:retry', (_event, id) => {
+  ipcMain.handle('trace:remoteEdits:retry', (_event, id) => {
     return remoteEditSessionManager.retry(id);
   });
-  ipcMain.handle('hpclaw:remoteEdits:discard', (_event, id) => {
+  ipcMain.handle('trace:remoteEdits:discard', (_event, id) => {
     return remoteEditSessionManager.discard(id);
   });
-  ipcMain.handle('hpclaw:remoteEdits:list', () => remoteEditSessionManager.list());
+  ipcMain.handle('trace:remoteEdits:list', () => remoteEditSessionManager.list());
 
   // 安装版更新中心：在线检查/下载/安装，以及本地安装包兜底更新。
-  ipcMain.handle('hpclaw:update:getState', () => updateManager.getState());
-  ipcMain.handle('hpclaw:update:getSettings', () => updateManager.getSettings());
-  ipcMain.handle('hpclaw:update:saveSettings', (_event, settings) => updateManager.saveSettings(settings));
-  ipcMain.handle('hpclaw:update:check', () => updateManager.check());
-  ipcMain.handle('hpclaw:update:download', () => updateManager.download());
-  ipcMain.handle('hpclaw:update:install', () => updateManager.installDownloaded());
-  ipcMain.handle('hpclaw:update:pickAndInstall', () => updateManager.pickAndInstall());
+  ipcMain.handle('trace:update:getState', () => updateManager.getState());
+  ipcMain.handle('trace:update:getSettings', () => updateManager.getSettings());
+  ipcMain.handle('trace:update:saveSettings', (_event, settings) => updateManager.saveSettings(settings));
+  ipcMain.handle('trace:update:check', () => updateManager.check());
+  ipcMain.handle('trace:update:download', () => updateManager.download());
+  ipcMain.handle('trace:update:install', () => updateManager.installDownloaded());
+  ipcMain.handle('trace:update:pickAndInstall', () => updateManager.pickAndInstall());
 }
 
 async function boot() {
-  // 移除默认应用菜单：默认 Edit 菜单的 paste 加速键（Ctrl+V）会在浏览器进程
-  // 层面触发 webContents.paste()，渲染进程的 preventDefault 无法拦截，
-  // 与 Terminal.tsx 的自定义 Ctrl+V 处理叠加导致粘贴内容出现两次
-  // （是否双发取决于设备/Electron 版本，因此只在部分设备上复现）。
-  Menu.setApplicationMenu(null);
+  // Restore native editing; custom terminal/file keys ignore menu accelerators
+  // only while their pane owns focus, preventing a second terminal paste.
+  editingController.refreshMenu();
 
   createSplash();
   updateSplash(8, `正在启动 ${APP_DISPLAY_NAME}…`);
@@ -832,7 +818,7 @@ async function boot() {
     hashFile: hashLocalFile,
     launch: launchDefaultAppAndWait,
     onEvent: (type, session) => {
-      mainWindow?.webContents.send('hpclaw:remoteEdits:event', { type, session });
+      mainWindow?.webContents.send('trace:remoteEdits:event', { type, session });
     },
   });
   await remoteEditSessionManager.restore();
@@ -898,7 +884,14 @@ if (!hasSingleInstanceLock) {
     if (currentLogFile) appendLog(currentLogFile, `[electron] child process gone: ${JSON.stringify(details)}\n`);
   });
 
-  app.whenReady().then(boot);
+  app.whenReady().then(() => {
+    if (process.platform === 'win32') try {
+      migrateLegacyShortcuts({ desktop: app.getPath('desktop'),
+        programs: path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+        userData: app.getPath('userData'), readShortcutLink: filename => shell.readShortcutLink(filename), competition: IS_COMPETITION_EDITION });
+    } catch (error) { console.warn('[TRACE] Legacy shortcut cleanup skipped:', error.message); }
+    return boot();
+  });
 
   app.on('window-all-closed', () => {
     appIsQuitting = true;

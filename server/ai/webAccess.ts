@@ -1,7 +1,7 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-const USER_AGENT = 'HPClaw/0.3 (safe web research)';
+const USER_AGENT = 'TRACE/0.3 (safe web research)';
 const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_REDIRECTS = 4;
 

@@ -53,7 +53,7 @@ export const WORKFLOW_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['命令由随包启动器按 argv 数组构造，不再让 AI 临时改写；输出固定在本次运行的 results/vt_results', 'The bundled launcher constructs an argv array without ad hoc AI rewriting; output is written to results/vt_results for this run'],
   ['生成确定性 QC 与报告', 'Generate deterministic QC results and reports'],
   ['直接读取 V11 的 spacer_detection.tsv 与 run_parameters.json，生成 JSON、Markdown、HTML；不再把结果整段交给 AI 猜测', 'Generate JSON, Markdown, and HTML directly from the V11 spacer_detection.tsv and run_parameters.json files rather than asking AI to infer results'],
-  ['HiDOG V11 管线与 HPClaw 启动器', 'HiDOG V11 pipeline and HPClaw launcher'], ['随 HPClaw 分发并自动部署', 'Bundled with HPClaw and deployed automatically'],
+  ['HiDOG V11 管线与 TRACE 启动器', 'HiDOG V11 pipeline and TRACE launcher'], ['随 TRACE 分发并自动部署', 'Bundled with TRACE and deployed automatically'],
   ['输入模式', 'Input mode'], ['fastq 使用 R1/R2/barcode；hitom 只使用 Sequence.xls', 'fastq uses R1/R2/barcode inputs; hitom uses only Sequence.xls'],
   ['R1 FASTQ（hitom 模式填 NONE）', 'R1 FASTQ (enter NONE in hitom mode)'], ['R2 FASTQ（hitom 模式填 NONE）', 'R2 FASTQ (enter NONE in hitom mode)'],
   ['barcode 文件（hitom 模式填 NONE）', 'Barcode file (enter NONE in hitom mode)'], ['Hi-TOM Sequence.xls（fastq 模式填 NONE）', 'Hi-TOM Sequence.xls (enter NONE in fastq mode)'],

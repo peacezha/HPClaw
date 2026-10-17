@@ -7,7 +7,7 @@
  * session runs is the honest affordance, and the choice itself lives on the
  * new-session screen ({@link AgentPresetSeat}).
  */
-import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client';
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { AgentPresetSettingsState } from './settings-store.ts';
 /** Registration-side business face for the header label. */

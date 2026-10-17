@@ -65,6 +65,13 @@ export declare const DSH_LAUNCH_ENVIRONMENT_KEY = "launchEnvironment";
  * @returns the snapshot to resolve user-facing values against.
  */
 export declare function launchEnvironmentOf(ctx: Context): LaunchEnvironmentSnapshot;
+/**
+ * Detect SSH from non-empty SSH_CONNECTION or SSH_TTY inherited at launch.
+ * Project and user `.env` values never establish an SSH session.
+ * @param environment - the launcher's environment snapshot.
+ * @returns whether the inherited process layer carries either SSH marker.
+ */
+export declare function launchedThroughSsh(environment: LaunchEnvironmentSnapshot): boolean;
 declare module '@deepseek-ai/cordis' {
     interface Context {
         /** Launcher-owned snapshot of this run's environment; absent in compositions the product CLI did not boot. */

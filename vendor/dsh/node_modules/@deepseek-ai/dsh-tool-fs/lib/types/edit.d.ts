@@ -34,7 +34,7 @@ export declare function parseEditArgs(args: {
  */
 export declare function formatEditOutput(displayPath: string, replaceAll: boolean): string;
 /**
- * Register the `edit` tool and its system-prompt guidance.
+ * Register the `edit` tool and its scope-aware system-prompt guidance.
  * @param ctx - the plugin context; registrations are effects scoped to it, and execution uses its `fs` service.
  * @param sandbox - the shared sandbox-escalation API (advertisement, mode stamping, denial mapping).
  */

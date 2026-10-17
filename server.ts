@@ -1,3 +1,4 @@
+import './server/legacyBrandEnvironment';
 import express, { type Request, type Response } from 'express';
 import session from 'express-session';
 import { createServer } from 'node:http';
@@ -21,6 +22,7 @@ import { registerTransferRoutes } from './server/transfers/registerTransferRoute
 import { registerNotificationRoutes } from './server/notifications/registerNotificationRoutes';
 import { jobWatcher } from './server/notifications/jobWatcher';
 import { registerWorkflowRoutes } from './server/workflows/registerWorkflowRoutes';
+import { enableRequestedCatalogueCleanup } from './server/workflows/workflowStore';
 import { registerPreflightRoutes } from './server/workflows/registerPreflightRoutes';
 import { registerWorkflowRunRoutes } from './server/workflows/registerWorkflowRunRoutes';
 import { configureHttpServerForSse } from './server/httpServerConfig';
@@ -30,6 +32,8 @@ import { verifySSHCredentials } from './server/sshAuthenticator';
 import { runAgent, type AgentCtx } from './server/ai/agentRunner';
 import { CommandApprovals } from './server/ai/commandApprovals';
 import { UserQuestions } from './server/ai/userQuestions';
+import { PlanReviews, createPlanReviewId } from './server/ai/planReviews';
+import { SteerQueue } from './server/ai/steerQueue';
 import {
   resolveAccountScheduler,
   clearSchedulerTag,
@@ -49,11 +53,14 @@ import {
   replayRunEvents,
 } from './server/ai/activeRuns';
 import { classifyWorkflowTurn } from './server/ai/workflowTurnIntent';
+import { AgentTurnClock } from './shared/agentTurnClock';
+import { createRequestWatchdog } from './server/ai/requestWatchdog';
 import {
   buildSmartContext,
   profileFromBody,
   messagesFromBody,
 } from './server/ai/contextBuilder';
+import { createAiCompactionSummarizer } from './server/ai/compactionSummarizer';
 import { registerGatewayRoutes } from './server/ai/gatewayRoutes';
 import { saveServerAiProfile, loadServerAiProfile } from './server/ai/serverAiProfile';
 import {
@@ -68,19 +75,23 @@ import { installSkillFromSource } from './server/ai/skillInstaller';
 import { mergeConversationMemory, type ConversationWithMemory } from './server/ai/conversationMemory';
 import { clusterContext } from './server/ai/clusterContext';
 import { resolveRequestSessionId } from './server/cluster/sessionRequest';
-import { annotateRuns, collectActiveJobIds, needsAutomaticOutputReview, parseBjobsStates, reconcileRunsWithScheduler } from './server/workflows/runAnnotate';
+import { annotateRuns, collectActiveJobIds, needsAutomaticOutputReview, needsSchedulerStateQuery, parseBjobsStates, reconcileRunsWithScheduler, seedPersistedTerminalStates } from './server/workflows/runAnnotate';
 import { readWorkflowRun, reconcileWorkflowRunWithScheduler, updateWorkflowRun } from './server/workflows/workflowRunService';
+import type { WorkflowRun } from './shared/workflowRun';
 import { JobWakeQueue } from './server/ai/jobWakeQueue';
 import { unresolvedQcFailures } from './shared/workflowQc';
 import { importLegacyWorkflowRunIndex, readIndexedWorkflowRuns } from './server/workflows/workflowRunIndex';
 import {
   addFormalWorkflowContinuations,
+  handleFormalReconcileFailure,
   initFormalWorkflowContinuations,
+  isFormalWorkflowReconcileDue,
   listPendingFormalWorkflowContinuations,
   markFormalWorkflowJobFinished,
   markFormalWorkflowResuming,
   markFormalWorkflowWaitingUser,
   removeFormalWorkflowContinuation,
+  resetFormalWorkflowReconcileAttempts,
 } from './server/workflows/formalWorkflowContinuations';
 import {
   extractRunDirFromText,
@@ -117,7 +128,7 @@ import { restoreJobAgentBindings } from './server/notifications/jobBindingRestor
 import { sendNotification, loadNotifyConfig } from './server/notifications/notifyService';
 import { BoundedSessionStore } from './server/boundedSessionStore';
 import { buildDshConversationKey, normalizeConversationContextKey } from './server/dsh/conversationScope';
-import { isCompetitionRestrictedApiPath, normalizeHpclawEdition } from './shared/edition';
+import { isCompetitionRestrictedApiPath, normalizeTraceEdition } from './shared/edition';
 import { buildReconnectCredentials } from './server/cluster/reconnectCredentials';
 import { createWebAccess, readWebAccessConfig } from './server/webAccess';
 import { JobSubmissionGuard } from './server/ai/jobSubmissionGuard';
@@ -129,11 +140,11 @@ import { installPublicFetch } from './server/publicWeb/egress';
 
 const PORT = Number(process.env.PORT || 3003);
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const DESKTOP_TOKEN = process.env.HPCLAW_DESKTOP_TOKEN;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'hpclaw-dev-secret-change-in-production';
+const DESKTOP_TOKEN = process.env.TRACE_DESKTOP_TOKEN;
+const SESSION_SECRET = process.env.SESSION_SECRET || 'trace-dev-secret-change-in-production';
 const webAccessConfig = readWebAccessConfig();
 const webAccess = createWebAccess(webAccessConfig, getBridgeToken);
-const APP_EDITION = normalizeHpclawEdition(process.env.HPCLAW_EDITION);
+const APP_EDITION = normalizeTraceEdition(process.env.TRACE_EDITION);
 const IS_COMPETITION_EDITION = APP_EDITION === 'competition';
 const publicState = PUBLIC_WORKER ? new ClusterWebState(DATA_ROOT) : undefined;
 if (PUBLIC_WORKER) installPublicFetch();
@@ -176,8 +187,17 @@ const sessions = new Map<string, ActiveSession>();
 
 const pendingAiConfirmations = new CommandApprovals();
 const pendingAiQuestions = new UserQuestions();
+const pendingPlanReviews = new PlanReviews();
+const steerQueue = new SteerQueue();
 const formalWorkflowResumeLocks = new Set<string>();
 const formalWorkflowWakeQueue = new JobWakeQueue();
+/**
+ * 正式流程续跑对账链路的 SSH 小 IO 超时。大 LSF 集群上登录节点繁忙时
+ * cat/写 run.json 动辄超过默认 15s/20s，统一放宽到 90s；配套调度器查询
+ * 用远端 `timeout 60` 自杀包装，本地放弃后远端进程也会退出。
+ */
+const FORMAL_RECONCILE_READ_TIMEOUT_MS = 90_000;
+const FORMAL_RECONCILE_IO_TIMEOUTS = { readTimeoutMs: 90_000, writeTimeoutMs: 90_000 } as const;
 
 function createSessionId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -246,7 +266,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
     const paused = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, run.runDir, {
       status: 'waiting_user',
       error: `作业 ${jobId} 已完成，但未找到可用 AI 配置，无法自动验收并继续。`,
-    }).catch(() => undefined);
+    }, FORMAL_RECONCILE_IO_TIMEOUTS).catch(() => undefined);
     if (paused) emitWorkflowRunChanged(sessionId, paused);
     return true;
   }
@@ -260,7 +280,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
     const resumed = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, run.runDir, {
       status: 'running',
       error: '',
-    });
+    }, FORMAL_RECONCILE_IO_TIMEOUTS);
     emitWorkflowRunChanged(sessionId, resumed);
     if (unresolvedQcFailures(resumed).length) return true;
     let finalText = '';
@@ -308,7 +328,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
         statusWrites.push(updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
           status: 'waiting_user',
           error: question,
-        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
+        }, FORMAL_RECONCILE_IO_TIMEOUTS).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
       },
       onWorkflowRunChanged: next => emitWorkflowRunChanged(sessionId, next),
       onDone: text => { finalText = text; },
@@ -317,7 +337,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
         statusWrites.push(updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, {
           status: 'waiting_user',
           error: `自动续跑失败：${error}`,
-        }).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
+        }, FORMAL_RECONCILE_IO_TIMEOUTS).then(next => emitWorkflowRunChanged(sessionId, next)).catch(() => {}));
       },
       sig: () => abort.signal,
     }, [{
@@ -326,7 +346,7 @@ async function resumeFinishedFormalWorkflowRun(sessionId: string, run: any, jobI
     }]);
     await Promise.all(statusWrites);
     if (continuation?.conversationId) {
-      const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir);
+      const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, resumed.runDir, FORMAL_RECONCILE_READ_TIMEOUT_MS);
       const answer = finalText && !finalText.startsWith('__') ? finalText : (latest.error || `流程当前状态：${latest.status}，步骤 ${latest.currentStep}/${latest.totalSteps}。`);
       await appendJobResumeConversation(continuation.conversationId, [
         { role: 'system', content: `后台作业 ${jobId} 结束，已触发同一 RUN 的输出核验与续跑；实际状态见下方。` },
@@ -348,27 +368,43 @@ async function reconcileFinishedWorkflowJob(sessionId: string, jobId: string, st
   const continuationRecords = markFormalWorkflowJobFinished(s.info, jobId, status, sessionId);
   for (const record of continuationRecords) {
     await formalWorkflowWakeQueue.enqueue(`${record.connectionKey}:${record.runDir}`, jobId, async () => {
+      // 重试期间给流程面板的瞬时提示用最近一次成功读到的 run（不写盘，
+      // 避免覆盖 SCHEDULER_REVIEW_PENDING 等状态机约定字段）。
+      let lastKnownRun: WorkflowRun | undefined;
       try {
         // Use the exact durable binding, not a truncated recent-run index.
-        const run = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir);
+        const run = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir, FORMAL_RECONCILE_READ_TIMEOUT_MS);
+        lastKnownRun = run;
         const ids = collectActiveJobIds([run]);
-        const states = new Map<string, string>();
-        for (const pending of listPendingFormalWorkflowContinuations(s.info)) {
-          if (pending.runDir === run.runDir && pending.terminalStatus) states.set(pending.jobId, pending.terminalStatus);
-        }
-        if (ids.length) {
+        // 先用可信的持久化终态（续跑记录 + run.jobStates 里的调度器终态）预填；
+        // 全部到齐时跳过调度器补查——大集群上这次 bjobs/sacct 是主要超时来源。
+        const states = seedPersistedTerminalStates(run, listPendingFormalWorkflowContinuations(s.info));
+        if (ids.length && needsSchedulerStateQuery(run, states)) {
           const output = await s.cluster.exec(
-            `if command -v bjobs >/dev/null 2>&1; then bjobs -a -noheader -o "jobid stat" ${ids.join(' ')} 2>/dev/null; ` +
-            `elif command -v sacct >/dev/null 2>&1; then sacct -n -X -j ${ids.join(',')} --format=JobIDRaw,State 2>/dev/null; fi; true`, 15_000,
+            `if command -v bjobs >/dev/null 2>&1; then timeout 60 bjobs -a -noheader -o "jobid stat" ${ids.join(' ')} 2>/dev/null; ` +
+            `elif command -v sacct >/dev/null 2>&1; then timeout 60 sacct -n -X -j ${ids.join(',')} --format=JobIDRaw,State 2>/dev/null; fi; true`, 90_000,
           ).catch(() => '');
           for (const [id, state] of parseBjobsStates(output)) states.set(id, state);
         }
         states.set(jobId, status);
-        const after = await reconcileWorkflowRunWithScheduler(s.cluster.exec.bind(s.cluster), s.home, run.runDir, states);
+        const after = await reconcileWorkflowRunWithScheduler(s.cluster.exec.bind(s.cluster), s.home, run.runDir, states, FORMAL_RECONCILE_IO_TIMEOUTS);
+        lastKnownRun = after;
+        resetFormalWorkflowReconcileAttempts(record.id);
         emitWorkflowRunChanged(sessionId, after);
         if (['done', 'failed', 'cancelled'].includes(after.status)) {
           removeFormalWorkflowContinuation(record.id);
           return;
+        }
+        // 暗死路修复：补查后仍有作业状态无法确认时，写一条可见提示，而不是静默返回。
+        if (!after.error) {
+          const unknownIds = collectActiveJobIds([after]).filter(id => (after.jobStates?.[id] || 'UNKNOWN') === 'UNKNOWN');
+          if (unknownIds.length > 0) {
+            const hinted = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, run.runDir, {
+              error: `等待调度器核实其余 ${unknownIds.length} 个作业（${unknownIds.slice(0, 5).join(', ')}${unknownIds.length > 5 ? '…' : ''}）的状态；核实后自动继续，无需操作。`,
+            }, FORMAL_RECONCILE_IO_TIMEOUTS);
+            lastKnownRun = hinted;
+            emitWorkflowRunChanged(sessionId, hinted);
+          }
         }
         if (!needsAutomaticOutputReview(after)) {
           if (['waiting_user', 'blocked_env'].includes(after.status)) markFormalWorkflowWaitingUser(record.id);
@@ -377,31 +413,50 @@ async function reconcileFinishedWorkflowJob(sessionId: string, jobId: string, st
         if (record.resumeCount >= 3) {
           const paused = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir, {
             status: 'waiting_user', error: '自动验收多次失败，已暂停。请检查具体日志与 AI 配置后从断点恢复；未重复提交作业。',
-          });
+          }, FORMAL_RECONCILE_IO_TIMEOUTS);
           emitWorkflowRunChanged(sessionId, paused);
           markFormalWorkflowWaitingUser(record.id);
           return;
         }
         const started = await resumeFinishedFormalWorkflowRun(sessionId, after, jobId);
         if (!started) return; // Busy/offline: retain job_finished for the next recovery sweep.
-        const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir);
+        const latest = await readWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, record.runDir, FORMAL_RECONCILE_READ_TIMEOUT_MS);
         if (['waiting_user', 'blocked_env'].includes(latest.status)) markFormalWorkflowWaitingUser(record.id);
         else removeFormalWorkflowContinuation(record.id);
       } catch (err) {
-        // Keep the durable event pending. A failed read is not a request for user input.
+        // 对账失败：计数并退避重排；连续失败到上限后转 waiting_user 暂停并通知用户。
         console.warn('[workflow-continuation] reconciliation deferred: %s', err instanceof Error ? err.message : String(err));
-        markFormalWorkflowJobFinished(s.info, jobId, status, sessionId);
+        const failure = await handleFormalReconcileFailure(record, {
+          pauseRun: async (runDir, error) => {
+            const paused = await updateWorkflowRun(s.cluster.exec.bind(s.cluster), s.home, runDir, { status: 'waiting_user', error }, FORMAL_RECONCILE_IO_TIMEOUTS);
+            emitWorkflowRunChanged(sessionId, paused);
+          },
+          notify: notifyJobResume,
+        });
+        if (failure.action === 'retry') {
+          // Keep the durable event pending. A failed read is not a request for user input.
+          markFormalWorkflowJobFinished(s.info, jobId, status, sessionId);
+          if (lastKnownRun) {
+            emitWorkflowRunChanged(sessionId, {
+              ...lastKnownRun,
+              error: `自动续跑因集群响应缓慢重试中（第 ${failure.attempts} 次）；集群恢复后会自动继续，无需操作。`,
+            });
+          }
+        }
       }
     });
   }
 }
 
 // Recover a terminal event lost during a disconnect, index read failure or busy foreground turn.
+// 失败的记录按 reconcileAttempts 退避（45s→2min→5min→15min），不再每 45s 无差别重放。
 const formalContinuationTimer = setInterval(() => {
   for (const [sessionId, session] of sessions) {
     if (session.cluster.state !== 'connected') continue;
     for (const record of listPendingFormalWorkflowContinuations(session.info)) {
-      if (record.state === 'job_finished' && record.terminalStatus) void reconcileFinishedWorkflowJob(sessionId, record.jobId, record.terminalStatus);
+      if (record.state === 'job_finished' && record.terminalStatus && isFormalWorkflowReconcileDue(record)) {
+        void reconcileFinishedWorkflowJob(sessionId, record.jobId, record.terminalStatus);
+      }
     }
   }
 }, 45_000);
@@ -666,14 +721,14 @@ const sessionMiddleware = session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: webAccessConfig.enabled && process.env.HPCLAW_WEB_COOKIE_SECURE === '1',
+    secure: webAccessConfig.enabled && process.env.TRACE_WEB_COOKIE_SECURE === '1',
     httpOnly: true,
     sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 });
 
-if (webAccessConfig.enabled && process.env.HPCLAW_TRUST_PROXY === '1') app.set('trust proxy', 1);
+if (webAccessConfig.enabled && process.env.TRACE_TRUST_PROXY === '1') app.set('trust proxy', 1);
 if (PUBLIC_WORKER) app.set('trust proxy', 'loopback');
 app.use(sessionMiddleware);
 app.use(workerAuthentication);
@@ -726,7 +781,7 @@ function requireDesktopToken(req: Request, res: Response, next: () => void): voi
     next();
     return;
   }
-  const token = req.get('X-HPClaw-Desktop-Token');
+  const token = req.get('X-TRACE-Desktop-Token');
   if (token !== DESKTOP_TOKEN) {
     res.status(403).json({ error: 'Forbidden: invalid desktop token' });
     return;
@@ -802,7 +857,7 @@ app.post('/api/login', async (req, res) => {
     res.status(400).json({ success: false, error: '缺少登录信息' });
     return;
   }
-  if (PUBLIC_WORKER && (host !== process.env.HPCLAW_PUBLIC_SSH_HOST || sessions.size > 0)) {
+  if (PUBLIC_WORKER && (host !== process.env.TRACE_PUBLIC_SSH_HOST || sessions.size > 0)) {
     res.status(403).json({ success: false, error: '该隔离服务只能连接分配的集群；新连接请从网页登录入口建立' });
     return;
   }
@@ -980,8 +1035,16 @@ registerNotificationRoutes(app, (sessionId) => {
   const s = getSession(sessionId);
   if (!s) return undefined;
   return { cluster: { exec: s.cluster.exec.bind(s.cluster) } };
-});
+}, () => [...sessions.values()].map(s => ({
+  // 聚合接口（/api/jobs/summary/all）遍历全部会话；connected 过滤在路由内完成
+  sessionId: s.id,
+  host: s.info.host,
+  username: s.info.username,
+  state: s.cluster.state,
+  cluster: { exec: s.cluster.exec.bind(s.cluster), scheduler: s.cluster.scheduler },
+})));
 {
+  enableRequestedCatalogueCleanup();
   registerWorkflowRoutes(app);
   registerPreflightRoutes(app, (req) => {
     const sessionId = resolveRequestSessionId({
@@ -1021,6 +1084,15 @@ if (!IS_COMPETITION_EDITION) {
     getDshSessionBinding,
     getBridgeToken,
     jobSubmissionGuard,
+    onJobsSubmitted: (binding, jobIds) => {
+      // Register continuation BEFORE watching: fast jobs can finish on the first poll.
+      try {
+        if (binding.resume) addBindings(jobIds, { sshSessionId: binding.sshSessionId,
+          dshSessionId: binding.dshSessionId, conversationKey: binding.conversationKey, engine: 'dsh',
+          workspace: binding.workspaceRoot, confirmationPolicy: binding.confirmationPolicy,
+          ...binding.resume });
+      } finally { jobWatcher.trackJobs(binding.sshSessionId, jobIds); }
+    },
   });
 }
 
@@ -1141,7 +1213,7 @@ app.get('/api/skills/search', async (req, res) => {
 
 // ── Conversation routes（本地权威存档，可选同步到集群）──────────────
 // 对话不再依附 SSH 会话：无集群模式也能创建、读取和自动保存。连接集群后，
-// 首次空库会非破坏性导入旧的 ~/hpclaw_conversations，用户也可主动同步副本。
+// 首次空库会非破坏性导入旧的 ~/trace_conversations，用户也可主动同步副本。
 
 interface ConversationRecord {
   id: string;
@@ -1187,7 +1259,7 @@ function conversationScopeKey(req: Request): string {
 /**
  * 对话按计算目标物理分存：
  * - 本地工作台 → 本机数据目录（LocalConversationStore）；
- * - 集群目标且会话在线 → 写入该集群的 ~/hpclaw_conversations（ClusterConversationStore），
+ * - 集群目标且会话在线 → 写入该集群的 ~/trace_conversations（ClusterConversationStore），
  *   本地不再留副本，换机登录同一集群也能看到同样的对话；
  * - 集群目标但会话不在线 → 返回 null（调用方按"未连接"回应，不悄悄落到本地）。
  */
@@ -1442,7 +1514,7 @@ app.get('/api/public/profile', (_req, res) => {
 app.put('/api/public/preferences', (req, res) => {
   if (!PUBLIC_WORKER) { res.sendStatus(404); return; }
   const { key, value } = req.body || {};
-  if (typeof key !== 'string' || !/^(?:hpclaw_agent_settings|hpclaw-confirm-mode|hpclaw_cmd_history|hpclaw_workflow_(?:run_config|habits)_v1:[\w.-]{1,180})$/.test(key)
+  if (typeof key !== 'string' || !/^(?:trace_agent_settings|trace-confirm-mode|trace_cmd_history|trace_workflow_(?:run_config|habits)_v1:[\w.-]{1,180})$/.test(key)
     || typeof value !== 'string' || Buffer.byteLength(value) > 256 * 1024) {
     res.status(400).json({ error: '无效的网页偏好设置' }); return;
   }
@@ -1472,7 +1544,7 @@ app.post('/api/public/upload', async (req, res) => {
       if (error.code === 2 || error.code === 'ENOENT') return false; throw error;
     });
     if (exists && req.query.replace !== '1') { res.status(409).json({ error: '集群已存在该文件；需要明确确认替换' }); return; }
-    temporary = `${destination}.hpclaw-upload-${createSessionId()}`;
+    temporary = `${destination}.trace-upload-${createSessionId()}`;
     await pipeline(req, sftp.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
     const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
     await s.cluster.exec(`mv ${req.query.replace === '1' ? '-f' : '-n'} -- ${quote(temporary)} ${quote(destination)}`, 15000);
@@ -1512,6 +1584,8 @@ app.post('/api/ai/stream', async (req, res) => {
   }
   // 同步到服务端共享配置（QQ 机器人等复用同一份 AI 设置）
   saveServerAiProfile(profile);
+  // 长对话自动压缩的执行器：复用本次请求的供应商配置，仅在实际触发压缩时调用。
+  const compactionSummarizer = createAiCompactionSummarizer(profile);
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1575,6 +1649,9 @@ app.post('/api/ai/stream', async (req, res) => {
   res.once('close', onResponseClose);
 
   let deferredPublicDone: any;
+  const turnClock = new AgentTurnClock();
+  let requestWatchdog: ReturnType<typeof createRequestWatchdog> | undefined;
+  let armRequestWatchdog = () => {};
   const deliver = (event: any) => {
     pushRunEvent(activeRun, event);
     if (!res.writableEnded && !res.destroyed) {
@@ -1582,6 +1659,8 @@ app.post('/api/ai/stream', async (req, res) => {
     }
   };
   const send = (event: any) => {
+    turnClock.observe(event);
+    armRequestWatchdog();
     if (PUBLIC_WORKER && event?.type === 'done') { deferredPublicDone = event; return; }
     deliver(event);
   };
@@ -1600,17 +1679,42 @@ app.post('/api/ai/stream', async (req, res) => {
   // 收敛为单一 agent 模式后统一 15 分钟硬上限；Agent（尤其正式流程）允许
   // 在同一 SSE 请求中跨步骤续跑。供应商静默仍由更短的首包/空闲看门狗处理。
   const requestHardLimitMs = 15 * 60_000;
-  const requestWatchdog = setTimeout(() => {
+  const maxRequestWallMs = 45 * 60_000;
+  const onRequestTimeout = () => {
     terminalEvent = 'watchdog';
-    console.error('[AI:%s] hard watchdog fired after %dms', aiRequestId, Date.now() - aiStartedAt);
+    const diagnostics = turnClock.snapshot();
+    const stages: Record<string, string> = { preparing: '准备上下文/引擎', requesting: '等待模型响应', waiting_tool: '等待工具返回', waiting_model: '等待模型接续', generating: '模型生成', waiting_user: '等待用户回答', waiting_approval: '等待用户审批', resuming: '恢复原任务', reconnecting: '恢复引擎连接' };
+    const detail = requestLocale === 'en-US'
+      ? `Stage: ${diagnostics.stage}; last tool: ${diagnostics.lastTool || 'none'}; stage duration: ${Math.round(diagnostics.stageMs / 1000)}s; no event for ${Math.round(diagnostics.lastEventAgeMs / 1000)}s.`
+      : `最后阶段：${stages[diagnostics.stage] || diagnostics.stage}；最后工具：${diagnostics.lastTool || '无'}；该阶段持续 ${Math.round(diagnostics.stageMs / 1000)} 秒，最近 ${Math.round(diagnostics.lastEventAgeMs / 1000)} 秒无新事件。`;
+    const limit = diagnostics.wallMs >= maxRequestWallMs ? '45-minute total safety limit' : '15-minute active-execution limit (human waits excluded)';
+    console.error('[AI:%s] execution watchdog: %s', aiRequestId, JSON.stringify(diagnostics));
     send({
       type: 'error',
-      error: requestLocale === 'en-US' ? 'This agent turn reached the 15-minute limit and has been stopped. SSH stays connected; submitted cluster jobs continue to be monitored. Outputs have not been verified.' : `AI 本轮已达 ${Math.round(requestHardLimitMs / 60_000)} 分钟硬上限，已明确暂停。集群 SSH 连接不会因此断开，已提交的后台作业仍会继续监控；产物尚未核验。`,
+      error: requestLocale === 'en-US' ? `This Agent turn reached the ${limit} and is paused. ${detail} SSH stays connected; submitted jobs remain monitored. Outputs are unverified.`
+        : `AI 本轮已达${diagnostics.wallMs >= maxRequestWallMs ? '45 分钟总安全时限' : '15 分钟有效执行上限（不含等待回答/审批）'}，已暂停。${detail} 集群 SSH 未因此断开，已提交作业仍由后台监控；产物尚未核验。`,
+      timeoutDiagnostics: diagnostics,
       requestId: aiRequestId,
     });
     requestAbort.abort();
     if (!res.writableEnded && !res.destroyed) res.end();
-  }, requestHardLimitMs);
+  };
+  requestWatchdog = createRequestWatchdog({ clock: turnClock, signal: requestAbort.signal,
+    getTerminalEvent: () => terminalEvent, onTimeout: onRequestTimeout,
+    activeLimitMs: requestHardLimitMs, wallLimitMs: maxRequestWallMs });
+  armRequestWatchdog = requestWatchdog.arm;
+  armRequestWatchdog();
+
+  // 轮末未消费的插话：先从队列取出（done/error 前随 SSE 通知前端），
+  // detached 运行时再由收尾块追加进对话存档，保证一条都不丢。
+  let unconsumedSteers: string[] = [];
+  const drainSteers = (): string[] => {
+    const texts = steerQueue.drain(aiRequestId);
+    if (!texts.length) return unconsumedSteers;
+    unconsumedSteers = texts;
+    send({ type: 'steer_unconsumed', texts, requestId: aiRequestId });
+    return texts;
+  };
 
   try {
       const rawMessages: AIMessage[] = messagesFromBody(req.body);
@@ -1695,7 +1799,7 @@ app.post('/api/ai/stream', async (req, res) => {
     // 引擎不可用（dsh 未安装/启动失败）时返回 'fallback'，落回内置引擎。
     let handledByDsh = false;
     const dshDecision = selectDshEngine({
-      envEngine: IS_COMPETITION_EDITION || PUBLIC_WORKER ? 'legacy' : process.env.HPCLAW_AI_ENGINE,
+      envEngine: IS_COMPETITION_EDITION || PUBLIC_WORKER ? 'legacy' : process.env.TRACE_AI_ENGINE,
       mode,
       hasWorkflowRunContext: Boolean(workflowRunContext),
       provider: profile.provider,
@@ -1705,7 +1809,7 @@ app.post('/api/ai/stream', async (req, res) => {
       send({
         type: 'status',
         phase: 'preparing',
-        message: workflowRunContext ? '结构化流程使用 HPClaw 原生智能体…' : '正在接入 HPClaw 原生智能体…',
+        message: workflowRunContext ? '结构化流程使用 TRACE 原生智能体…' : '正在接入 TRACE 原生智能体…',
         requestId: aiRequestId,
       });
     }
@@ -1735,11 +1839,12 @@ app.post('/api/ai/stream', async (req, res) => {
           },
           userText: query,
           summary: effectiveConversationSummary,
+          recentMessages: rawMessages.slice(-12),
           locale: requestLocale,
           sshSessionId: sessionId ?? undefined,
           workspace,
           conversationId: typeof req.body?.conversationId === 'string' ? req.body.conversationId : undefined,
-          // dsh persists its own history. Scope that mapping to one HPClaw
+          // dsh persists its own history. Scope that mapping to one TRACE
           // conversation instead of the whole SSH session, otherwise separate
           // sidebar chats silently share context.
           conversationKey: buildDshConversationKey({
@@ -1762,7 +1867,7 @@ app.post('/api/ai/stream', async (req, res) => {
               signal: requestAbort.signal, title: requestLocale === 'en-US' ? 'Agent requests permission to run a command' : 'Agent 请求执行命令' });
           },
           onQuestion: async ({ questions }) => {
-            const answers: Array<{ id: string; selected: string[]; custom?: string }> = [];
+            const answers: Array<{ id: string; selected: string[]; custom?: string; intent?: 'clarification' }> = [];
             for (const question of questions) {
               const id = `question-${createSessionId()}`;
               dshQuestionIds.add(id);
@@ -1862,6 +1967,9 @@ app.post('/api/ai/stream', async (req, res) => {
             summary: effectiveConversationSummary,
             structuredMemory: persistedConversationMemory.structuredMemory,
             skillIndex: agentSkillIndex,
+            conversationId: requestedConversationId,
+            compactSummarize: requestedConversationId ? compactionSummarizer : undefined,
+            onCompacted: info => send({ type: 'compacted', count: info.count, summaryChars: info.summaryChars, requestId: aiRequestId }),
           });
       console.log(
         '[AI:%s] context ready messages=%d chars=%d context=%dms elapsed=%dms workflowScoped=%s cachedSkills=%d cachedSnapshot=%s',
@@ -1886,6 +1994,7 @@ app.post('/api/ai/stream', async (req, res) => {
       });
 
       const requestConfirmationIds = new Set<string>();
+      const requestPlanReviewIds = new Set<string>();
       // legacy 路径的作业绑定会话标识：与 dsh 路径同款（buildDshConversationKey），
       // 作业终态唤醒时凭它锁定原对话并回写续跑内容。
       const agentConversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : undefined;
@@ -1899,6 +2008,13 @@ app.post('/api/ai/stream', async (req, res) => {
       const agentConfirmationPolicy = rawConfirmationPolicy === 'never' || rawConfirmationPolicy === 'state_changes' || rawConfirmationPolicy === 'every_command'
         ? rawConfirmationPolicy
         : undefined;
+      // 集群会话同样接受前端配置的本地工作区：cluster_fs 的 push/pull 本地端
+      // 与本地模式同规（normalizeWorkspace 校验存在且为目录），不传则互传动作如实报错。
+      const requestedAgentWorkspaces = Array.isArray(req.body?.workspaces) ? req.body.workspaces : [];
+      const agentWorkspaces = [...new Set([
+        ...requestedAgentWorkspaces.map((value: unknown) => normalizeWorkspace(value)).filter((value): value is string => Boolean(value)),
+        normalizeWorkspace(req.body?.workspace),
+      ].filter((value): value is string => Boolean(value)))].slice(0, 20);
       const ctx: AgentCtx = {
         sid: sessionId,
         profile,
@@ -1912,6 +2028,7 @@ app.post('/api/ai/stream', async (req, res) => {
           }
           return output;
         },
+        getSftp: () => s.cluster.getSftp(),
         confirmCommand: async (command, details) => {
           const id = `confirm-${createSessionId()}`;
           requestConfirmationIds.add(id);
@@ -1919,10 +2036,27 @@ app.post('/api/ai/stream', async (req, res) => {
             title: details?.title, send, signal: requestAbort.signal, requestId: aiRequestId });
           return decision.approved;
         },
+        // 计划审批：set_plan 后挂起本轮，等用户批准/编辑/取消（事件与恢复走同一条 SSE）。
+        reviewPlan: (plan) => {
+          const id = createPlanReviewId();
+          requestPlanReviewIds.add(id);
+          return pendingPlanReviews.request({
+            id,
+            goal: plan.goal,
+            steps: plan.steps.map(step => ({ title: step.title, verification: step.verification })),
+            send,
+            signal: requestAbort.signal,
+            requestId: aiRequestId,
+          });
+        },
+        // 中途插话：模型循环在每个模型步开始前从这里取走用户插话。
+        steer: { take: () => steerQueue.take(aiRequestId) },
         home: s.home,
         skillsDir: APP_SKILLS_DIR,
         lsfSkillDir: LSF_SKILLS_DIR,
         userSkillsDir: USER_SKILLS_DIR,
+        workspace: agentWorkspaces[0],
+        workspaces: agentWorkspaces,
         runtimeConfig: req.body.agentConfig,
         resumePlan: req.body.resumePlan,
         workflowRun: workflowRunContext,
@@ -1978,6 +2112,7 @@ app.post('/api/ai/stream', async (req, res) => {
           onAsk: (question, options) => send({ type: 'ask', question, options }),
           onPlan: (plan) => send({ type: 'plan', plan }),
           onPlanUpdate: (plan, stepId) => send({ type: 'plan_update', plan, stepId }),
+          onSteer: (texts) => send({ type: 'steer_applied', texts, requestId: aiRequestId }),
           onWorkflowRunChanged: (run) => emitWorkflowRunChanged(sessionId, run),
           onWorkflowRunMissing: (wf) => {
             terminalEvent = 'error';
@@ -1997,10 +2132,12 @@ app.post('/api/ai/stream', async (req, res) => {
             send({ type: 'status', phase: 'working', message: 'AI 已响应，正在规划和执行…', requestId: aiRequestId });
           },
           onDone: (text) => {
+            drainSteers();
             terminalEvent = 'done';
             send({ type: 'done', content: text, requestId: aiRequestId });
           },
           onErr: (error) => {
+            drainSteers();
             terminalEvent = 'error';
             console.error('[AI:%s] agent error after %dms: %s', aiRequestId, Date.now() - aiStartedAt, error);
             send({ type: 'error', error, requestId: aiRequestId });
@@ -2010,6 +2147,9 @@ app.post('/api/ai/stream', async (req, res) => {
       } finally {
         for (const id of requestConfirmationIds) {
           pendingAiConfirmations.cancel(id);
+        }
+        for (const id of requestPlanReviewIds) {
+          pendingPlanReviews.cancel(id);
         }
       }
     } else {
@@ -2034,10 +2174,14 @@ app.post('/api/ai/stream', async (req, res) => {
         selectedOutput: req.body.selectedOutput,
         summary: effectiveConversationSummary,
         structuredMemory: persistedConversationMemory.structuredMemory,
+        conversationId: requestedConversationId,
+        compactSummarize: requestedConversationId ? compactionSummarizer : undefined,
+        onCompacted: info => send({ type: 'compacted', count: info.count, summaryChars: info.summaryChars, requestId: aiRequestId }),
       });
       send({ type: 'status', phase: 'requesting', message: `正在请求 ${profile.model}…`, requestId: aiRequestId });
 
       const localConfirmationIds = new Set<string>();
+      const localPlanReviewIds = new Set<string>();
       const localCtx: AgentCtx = {
         sid: sessionId || 'local-workspace',
         profile,
@@ -2050,6 +2194,20 @@ app.post('/api/ai/stream', async (req, res) => {
             title: details?.title, send, signal: requestAbort.signal, requestId: aiRequestId });
           return decision.approved;
         },
+        // 与集群路径一致：本地模式的 set_plan 同样先经用户审批再执行。
+        reviewPlan: (plan) => {
+          const id = createPlanReviewId();
+          localPlanReviewIds.add(id);
+          return pendingPlanReviews.request({
+            id,
+            goal: plan.goal,
+            steps: plan.steps.map(step => ({ title: step.title, verification: step.verification })),
+            send,
+            signal: requestAbort.signal,
+            requestId: aiRequestId,
+          });
+        },
+        steer: { take: () => steerQueue.take(aiRequestId) },
         skillsDir: APP_SKILLS_DIR,
         lsfSkillDir: LSF_SKILLS_DIR,
         userSkillsDir: USER_SKILLS_DIR,
@@ -2072,6 +2230,7 @@ app.post('/api/ai/stream', async (req, res) => {
           onAsk: (question, options) => send({ type: 'ask', question, options }),
           onPlan: (plan) => send({ type: 'plan', plan }),
           onPlanUpdate: (plan, stepId) => send({ type: 'plan_update', plan, stepId }),
+          onSteer: (texts) => send({ type: 'steer_applied', texts, requestId: aiRequestId }),
           onActivity: (type) => {
             if (providerResponded || type === 'start' || type === 'start-step') return;
             providerResponded = true;
@@ -2079,10 +2238,12 @@ app.post('/api/ai/stream', async (req, res) => {
             send({ type: 'status', phase: 'working', message: 'AI 已响应，正在规划和执行…', requestId: aiRequestId });
           },
           onDone: (text) => {
+            drainSteers();
             terminalEvent = 'done';
             send({ type: 'done', content: text, requestId: aiRequestId });
           },
           onErr: (error) => {
+            drainSteers();
             terminalEvent = 'error';
             console.error('[AI:%s] local agent error after %dms: %s', aiRequestId, Date.now() - aiStartedAt, error);
             send({ type: 'error', error, requestId: aiRequestId });
@@ -2093,14 +2254,18 @@ app.post('/api/ai/stream', async (req, res) => {
         for (const id of localConfirmationIds) {
           pendingAiConfirmations.cancel(id);
         }
+        for (const id of localPlanReviewIds) {
+          pendingPlanReviews.cancel(id);
+        }
       }
     }
   } catch (err: any) {
     terminalEvent = 'error';
     console.error('[AI:%s] route error after %dms: %s', aiRequestId, Date.now() - aiStartedAt, err?.message || String(err));
+    drainSteers();
     send({ type: 'error', error: err.message || String(err) });
   } finally {
-    clearTimeout(requestWatchdog);
+    requestWatchdog?.stop();
     if (publicState) {
       try { await publicState.flush(); if (terminalEvent === 'done' && deferredPublicDone) deliver(deferredPublicDone); }
       catch { terminalEvent = 'error'; deliver({ type: 'error', error: '任务执行已结束，但集群设置/恢复信息保存失败；请检查集群连接，不能视为已完整保存', requestId: aiRequestId }); }
@@ -2119,7 +2284,11 @@ app.post('/api/ai/stream', async (req, res) => {
       const content = terminalKind === 'done'
         ? (text || (requestLocale === 'en-US' ? '(The background turn ended without text.)' : '(后台任务已结束，未产生文本)'))
         : `${text ? `${text}\n\n` : ''}${failureText}`;
-      void appendJobResumeConversation(runConversationId, [{ role: 'assistant', content }], activeRun.sessionId);
+      // 轮末未消费的插话按用户消息存档，排在最终答复之前，下一轮模型能看到它们。
+      void appendJobResumeConversation(runConversationId, [
+        ...unconsumedSteers.map(steerText => ({ role: 'user', content: steerText })),
+        { role: 'assistant', content },
+      ], activeRun.sessionId);
       const sid = activeRun.sessionId || 'local-workbench';
       io.to(workflowRunRoom(sid)).emit('ai:resumed', {
         type: 'ai:resumed',
@@ -2227,6 +2396,45 @@ app.post('/api/ai/question', (req, res) => {
   res.status(receipt.success ? 200 : receipt.error === 'invalid_question_answer' ? 400 : 409).json(receipt);
 });
 
+// 计划审批：批准按计划继续；edit 带用户改过的 steps 继续；cancel 取消本轮。
+app.post('/api/ai/plan-review', (req, res) => {
+  const id = String(req.body?.id || '');
+  const action = req.body?.action;
+  if (!id || (action !== 'approve' && action !== 'edit' && action !== 'cancel')) {
+    res.status(400).json({ success: false, error: 'invalid_plan_review_response' });
+    return;
+  }
+  const receipt = pendingPlanReviews.respond(id, { action, steps: req.body?.steps });
+  res.status(receipt.success ? 200 : receipt.error === 'invalid_plan_review_steps' ? 400 : 409).json(receipt);
+});
+
+// 中途插话：AI 运行中用户发来的新指令。挂起的反问优先把插话当回答消化；
+// 否则按 requestId 排队，agentRunner 在下一个模型步开始前注入。
+app.post('/api/ai/steer', (req, res) => {
+  const requestId = String(req.body?.requestId || '');
+  const text = String(req.body?.text || '').trim();
+  if (!requestId || !text) {
+    res.status(400).json({ success: false, error: 'invalid_steer_request' });
+    return;
+  }
+  const run = getActiveRun(requestId);
+  if (!run || run.terminal) {
+    res.status(404).json({ success: false, error: '运行已结束或不存在' });
+    return;
+  }
+  const questionReceipt = pendingAiQuestions.respondForRequest(requestId, text);
+  if (questionReceipt.success) {
+    res.json({ success: true, delivered: 'question' });
+    return;
+  }
+  const position = steerQueue.enqueue(requestId, text);
+  if (!position) {
+    res.status(429).json({ success: false, error: '插话排队已满，请稍后再试' });
+    return;
+  }
+  res.json({ success: true, delivered: 'queued', position });
+});
+
 // ── Remote file download (used by AI chat output file links) ─────────
 
 app.get('/api/files/download', async (req, res) => {
@@ -2290,7 +2498,7 @@ app.get('/api/files/download', async (req, res) => {
   }
 });
 
-// ── 流程运行监控：读取集群 ~/hpclaw_runs 与 ~/hpclaw_flows 下的 run.json ──────────────
+// ── 流程运行监控：读取集群 ~/trace_runs 与 ~/trace_flows 下的 run.json ──────────────
 
 app.get('/api/workflow-runs', async (req, res) => {
   const sessionId = resolveRequestSessionId({
@@ -2446,11 +2654,11 @@ io.use((socket, next) => {
 });
 
 io.use((socket, next) => {
-  if (PUBLIC_WORKER && socket.handshake.headers['x-hpclaw-worker'] !== process.env.HPCLAW_PUBLIC_WORKER_TOKEN) {
+  if (PUBLIC_WORKER && socket.handshake.headers['x-trace-worker'] !== process.env.TRACE_PUBLIC_WORKER_TOKEN) {
     return next(new Error('Forbidden'));
   }
   if (webAccessConfig.enabled && !webAccess.authorized(socket.request as any)) {
-    return next(new Error('HPClaw web authentication required'));
+    return next(new Error('TRACE web authentication required'));
   }
   next();
 });
@@ -2584,7 +2792,7 @@ function launchQQBot(): boolean {
       },
       getAiProfile: loadServerAiProfile,
       saveConversation: async (record) => {
-        // QQ 对话存档到当前集群的 ~/hpclaw_conversations（与应用对话记录同库）
+        // QQ 对话存档到当前集群的 ~/trace_conversations（与应用对话记录同库）
         const first = [...sessions.values()][0];
         if (!first) throw new Error('当前没有已连接的集群');
         const store = new ClusterConversationStore(
@@ -2605,7 +2813,7 @@ function launchQQBot(): boolean {
 }
 
 httpServer.listen(PORT, webAccessConfig.host, () => {
-  console.log(`[HPClaw] Server listening on http://${webAccessConfig.host}:${PORT}`);
+  console.log(`[TRACE] Server listening on http://${webAccessConfig.host}:${PORT}`);
   if (!PUBLIC_WORKER) initBridgeState(PORT);
   initJobAgentBindings(DATA_ROOT);
   if (!PUBLIC_WORKER) {
@@ -2643,8 +2851,8 @@ if (publicState) {
 }
 
 // Electron 主进程崩溃时，后台不得成为长期占端口的孤儿进程。
-// 这不会影响 `npm run dev`（开发模式没有 HPCLAW_PARENT_PID）。
-const desktopParentPid = Number(process.env.HPCLAW_PARENT_PID || 0);
+// 这不会影响 `npm run dev`（开发模式没有 TRACE_PARENT_PID）。
+const desktopParentPid = Number(process.env.TRACE_PARENT_PID || 0);
 if (Number.isSafeInteger(desktopParentPid) && desktopParentPid > 0 && desktopParentPid !== process.pid) {
   let parentGone = false;
   const parentWatch = setInterval(() => {
@@ -2653,7 +2861,7 @@ if (Number.isSafeInteger(desktopParentPid) && desktopParentPid > 0 && desktopPar
       process.kill(desktopParentPid, 0);
     } catch {
       parentGone = true;
-      console.error('[HPClaw] Electron parent pid=%d is gone; closing orphan backend.', desktopParentPid);
+      console.error('[TRACE] Electron parent pid=%d is gone; closing orphan backend.', desktopParentPid);
       qqBotInstance?.stop();
       stopSidecar();
       for (const [sessionId, session] of sessions) {

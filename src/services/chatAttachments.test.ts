@@ -23,10 +23,10 @@ describe('chatAttachments', () => {
   it('appends attachment path refs to the message text', () => {
     const attachments: ChatAttachment[] = [
       { id: '1', name: 'data.csv', refPath: 'attachments/data.csv' },
-      { id: '2', name: 'reads.fastq', refPath: '~/hpclaw_uploads/reads.fastq' },
+      { id: '2', name: 'reads.fastq', refPath: '~/trace_uploads/reads.fastq' },
     ];
     const text = appendAttachmentRefs('分析这两个文件', attachments, false);
-    expect(text).toBe('分析这两个文件\n\n附件:\n- attachments/data.csv\n- ~/hpclaw_uploads/reads.fastq');
+    expect(text).toBe('分析这两个文件\n\n附件:\n- attachments/data.csv\n- ~/trace_uploads/reads.fastq');
   });
 
   it('uses the English header in English locale and supports attachments-only messages', () => {

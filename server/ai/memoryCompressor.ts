@@ -44,10 +44,10 @@ export function shouldCompress(
 }
 
 export class MemoryCompressor {
-  buildCompressionPrompt(messages: AIMessage[]): string {
+  buildCompressionPrompt(messages: AIMessage[], maxMessages: number = 15): string {
     const nonSystem = messages
       .filter(m => m.role !== 'system')
-      .slice(-15);
+      .slice(-maxMessages);
 
     const conversation = nonSystem
       .map(m => `${m.role}: ${(m.content || '').slice(0, 300)}`)
@@ -58,13 +58,14 @@ export class MemoryCompressor {
 
   buildCompressionRequest(
     messages: AIMessage[],
-    model: string = 'deepseek-chat',
+    model: string = 'deepseek-flash',
+    maxMessages: number = 15,
   ) {
     return {
       model,
       messages: [
         { role: 'system', content: COMPRESSION_SYSTEM_PROMPT },
-        { role: 'user', content: this.buildCompressionPrompt(messages) },
+        { role: 'user', content: this.buildCompressionPrompt(messages, maxMessages) },
       ],
       temperature: 0,
       maxTokens: 800,

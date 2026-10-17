@@ -12,10 +12,11 @@
  *
  * @module @deepseek-ai/dsh-pwsh-local
  */
+import type { Volatile } from '@deepseek-ai/cordis';
 import { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { ShellExecutor } from '@deepseek-ai/dsh-shell';
-import type { ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult } from '@deepseek-ai/dsh-shell';
+import type { ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess } from '@deepseek-ai/dsh-shell';
 /**
  * Model-friendly environment overrides for PowerShell: disable colors and
  * pagers that would garble tool output. `TERM=dumb` is a POSIX concept and is
@@ -35,57 +36,67 @@ export declare const ENV_OVERRIDES: {
  * numbers stay accurate.
  */
 export declare const ENCODING_PREAMBLE = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); ";
-/** Plugin config (all optional — `static Config` supplies the defaults). */
+/** Validated plugin configuration with live command budgets. */
 export interface Config {
     /** Default working directory for commands (default: process.cwd()). */
-    cwd?: string;
+    cwd: Volatile<string | undefined>;
     /** Default foreground timeout in milliseconds. */
-    timeoutMs?: number;
+    timeoutMs: Volatile<number>;
     /** Upper bound for per-call timeout overrides. */
-    maxTimeoutMs?: number;
+    maxTimeoutMs: Volatile<number>;
     /** Per-stream in-memory output cap; overflow spills to a temp file. */
-    maxOutputBytes?: number;
+    maxOutputBytes: Volatile<number>;
     /** Per-stream spill-file cap; larger streams retain only their in-memory tail. */
-    maxSpillBytes?: number;
+    maxSpillBytes: Volatile<number>;
     /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
-    graceMs?: number;
+    graceMs: Volatile<number>;
     /**
      * Explicit pwsh executable. When omitted, well-known Windows install
      * locations and PATH entries are probed in order (PowerShell 7 install,
      * PATH entries such as the Microsoft Store install, then Windows
      * PowerShell 5.1), falling back to a bare `pwsh` resolved through PATH.
      */
-    pwshPath?: string;
+    pwshPath: Volatile<string | undefined>;
 }
-/** The shape after schemastery applied the defaults (cwd/pwshPath have none). */
-type ResolvedConfig = Required<Omit<Config, 'cwd' | 'pwshPath'>> & Pick<Config, 'cwd' | 'pwshPath'>;
 export { candidatePwshPaths, resolvePwshPath } from './resolve.ts';
 /**
  * Reject a resolved section this executor could not run with. The schema
  * expresses neither "positive and finite" nor the timer bound `graceMs` has to
- * fit, so a stored value is refused where it is written instead of failing at
- * the next command.
- * @param config - the resolved section, schema-valid by construction.
+ * fit, so a stored value that cannot be used fails at the next command.
+ * @param config - the live configuration, schema-valid by construction.
  * @throws Error naming the field that cannot be used.
  */
 export declare function assertServiceablePwshConfig(config: Config): void;
 /**
  * Local PowerShell executor over `ctx.subprocess`. Bounded output, spill
- * files, and process-tree termination are the subprocess service's mechanics;
+ * files, and managed-range termination are the subprocess service's mechanics;
  * this executor supplies their configured budgets per spawn.
  */
 export declare class PwshLocalExecutor extends ShellExecutor {
+    readonly config: Config;
     static inject: string[];
-    static Config: z<Config>;
-    /** The currently authoritative config: the settings section, or the composition entry. */
-    private source;
+    static Config: z<Schemastery.ObjectS<NoInfer<{
+        cwd: z<string, string, "volatile">;
+        timeoutMs: z<number, number, "volatile-defined">;
+        maxTimeoutMs: z<number, number, "volatile-defined">;
+        maxOutputBytes: z<number, number, "volatile-defined">;
+        maxSpillBytes: z<number, number, "volatile-defined">;
+        graceMs: z<number, number, "volatile-defined">;
+        pwshPath: z<string, string, "volatile">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        cwd: z<string, string, "volatile">;
+        timeoutMs: z<number, number, "volatile-defined">;
+        maxTimeoutMs: z<number, number, "volatile-defined">;
+        maxOutputBytes: z<number, number, "volatile-defined">;
+        maxSpillBytes: z<number, number, "volatile-defined">;
+        graceMs: z<number, number, "volatile-defined">;
+        pwshPath: z<string, string, "volatile">;
+    }>>, "plain">;
     /** The declared executable the current {@link pwshPath} was resolved from. */
     private declaredPwshPath;
     /** The pwsh executable resolved from the current config. */
     private resolvedPwshPath;
-    /** Validated config (schemastery applied the defaults before construction). */
-    get config(): ResolvedConfig;
-    /** The pwsh executable every command runs through. */
+    /** The pwsh executable every command runs through; a changed declared path is probed again on the next read. */
     get pwshPath(): string;
     constructor(ctx: Context, config: Config);
     /**
@@ -97,7 +108,7 @@ export declare class PwshLocalExecutor extends ShellExecutor {
     /**
      * The pwsh invocation argv for one resolved spec — the argv-level seam a
      * confining subclass wraps through `ctx.sandbox.confine` (the pwsh twin of
-     * `dsh-bash-local`'s `runArgv`/`startArgv` hooks; see
+     * `dsh-bash-local`'s `executeArgv` hook; see
      * `@deepseek-ai/dsh-pwsh-sandbox`).
      */
     protected argv(spec: ShellExecSpec): string[];
@@ -105,12 +116,18 @@ export declare class PwshLocalExecutor extends ShellExecutor {
     private spawnSpec;
     /** The collect-mode readers the executor itself requested (present by construction). */
     private static collected;
-    run(spec: ShellExecSpec): Promise<ShellRunResult>;
-    /** Foreground run of an exact argv (the confining subclass re-wraps it). */
-    protected runArgv(spec: ShellExecSpec, argv: readonly string[]): Promise<ShellRunResult>;
-    start(spec: ShellExecSpec): ShellProcess;
-    /** Background start of an exact argv (the confining subclass re-wraps it). */
-    protected startArgv(spec: ShellExecSpec, argv: readonly string[]): ShellProcess;
+    execute(spec: ShellExecSpec): Promise<ShellExecution>;
+    /**
+     * Execute an explicit argv with the lifecycle, environment, output,
+     * deadline, and cancellation semantics of this executor. Subclasses use this
+     * after replacing the public command's shell argv at an execution boundary.
+     * @param spec - resolved execution settings and caller-owned command metadata.
+     * @param argvOrPrepare - exact argv, or preparation using the execution cancellation signal.
+     * @param onStarted - installs provider facts synchronously before the handle can settle.
+     * @returns the live execution handle; spawn rejection settles the handle as
+     *   killed while `result()` carries the same failure as its rejection.
+     */
+    protected executeArgv(spec: ShellExecSpec, argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>), onStarted?: (process: ShellExecution) => void): Promise<ShellExecution>;
     /**
      * Settlement hook for subclasses that attach execution facts to a process.
      * The base implementation is intentionally empty. Mirrored from
@@ -118,10 +135,10 @@ export declare class PwshLocalExecutor extends ShellExecutor {
      * pwsh-confining consumer is `@deepseek-ai/dsh-pwsh-sandbox`.
      * @param _proc - the settled process handle.
      * @param _stderr - the process's retained stderr tail used by subclasses for settlement classification.
-     * @param _spawnFailed - whether the spawn rejected before any process existed.
-     * @param _spawnError - the spawn rejection, when `_spawnFailed`.
+     * @param _providerRejected - whether the subprocess promise rejected without a direct outcome.
+     * @param _providerError - the provider rejection reason, which may itself be undefined.
      */
-    protected onProcessDone(_proc: ShellProcess, _stderr: string, _spawnFailed: boolean, _spawnError?: unknown): void;
+    protected onProcessDone(_proc: ShellProcess, _stderr: string, _providerRejected: boolean, _providerError?: unknown): void;
 }
 export default PwshLocalExecutor;
 //# sourceMappingURL=index.d.ts.map

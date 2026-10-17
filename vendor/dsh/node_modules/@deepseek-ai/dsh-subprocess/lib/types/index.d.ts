@@ -1,6 +1,6 @@
 /**
  * Service Definition for the subprocess capability seam (`ctx.subprocess`): execution-world executable lookup,
- * fully specified managed process trees with raw or
+ * fully specified provider-managed process ranges with raw or
  * collected stdio, and one terminal-process primitive. Command defaulting,
  * shell semantics, deadlines, protocol framing, terminal readiness, and
  * presentation belong to consumers. The local implementation lives in
@@ -9,9 +9,9 @@
  */
 import { Context, Service } from '@deepseek-ai/cordis';
 import type { SubprocessHandle, SubprocessSpawnSpec } from './types.ts';
-import type { SubprocessTerminalHandle, SubprocessTerminalSpawnSpec } from './types.ts';
+import type { SubprocessTerminalEnvironment, SubprocessTerminalHandle, SubprocessTerminalSpawnSpec } from './types.ts';
 export { DSH_ENV_PREFIX } from './types.ts';
-export type { CollectedOutput, DshEnvironment, DshEnvironmentKey, SubprocessCollect, SubprocessCollectedOutputs, SubprocessHandle, SubprocessOutcome, SubprocessOutputMode, SubprocessOutputRead, SubprocessOutputReader, SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio, SubprocessTerminalForeground, SubprocessTerminalHandle, SubprocessTerminalSignal, SubprocessTerminalSpawnSpec, } from './types.ts';
+export type { CollectedOutput, DshEnvironment, DshEnvironmentKey, SubprocessCollect, SubprocessCollectedOutputs, SubprocessHandle, SubprocessOutcome, SubprocessOutputMode, SubprocessOutputRead, SubprocessOutputReader, SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio, SubprocessTerminalForeground, SubprocessTerminalActivity, SubprocessTerminalEnvironment, SubprocessTerminalHandle, SubprocessTerminalSignal, SubprocessTerminalSpawnSpec, } from './types.ts';
 /**
  * Credential-shaped environment names are NOT forwarded to children (the
  * harness's own `DEEPSEEK_API_KEY`/secrets must not leak into a spawned
@@ -32,6 +32,9 @@ export declare const SENSITIVE_ENV_PATTERN: RegExp;
  * deliberate lowercase `dsh_*` names on POSIX are implausible. Exported as a plain function so spawners
  * that cannot route through the service (node-pty backends, SDK-managed
  * transports) share the one scrub definition.
+ *
+ * When a proxy is active the result also carries the resolved proxy names and the flag a child Node
+ * needs to honor them, so a child inherits the same routing as its parent.
  * @returns a fresh environment object safe to hand to a child spawn.
  */
 export declare function scrubbedParentEnv(): Record<string, string>;
@@ -49,17 +52,18 @@ declare module '@deepseek-ai/cordis' {
  * Implementations must honor these semantics:
  * - Executable paths belong to one execution world shared with the mounted
  *   filesystem provider.
- * - {@link spawn} returns immediately with a live handle; `done` resolves at
- *   process close with exit facts and rejects only for spawn-level failures.
+ * - {@link spawn} returns a live handle synchronously. Target identity remains
+ *   provider-private; `done` resolves with the spawned command's exit facts and
+ *   may reject for spawn or provider failures.
  * - Collect-mode readers are offset-based and non-consuming, so independent
  *   readers never consume one another's output; lossy reads report truncation
  *   and the spill file holding the complete stream when one exists. Piped
  *   streams are handed to the caller raw and never buffered here.
- * - {@link SubprocessHandle.terminate} (and the spec's abort signal) escalates
- *   SIGTERM→grace→SIGKILL — the only termination verb — tree-scoped on every
- *   platform. {@link SubprocessHandle.waitForExit} observes whole-tree
- *   liveness, so a consumer-owned teardown ladder can hold each tier on real
- *   quiescence.
+ * - {@link SubprocessHandle.terminate} (and the spec's abort signal) starts the
+ *   provider's documented procedure against its managed range.
+ *   {@link SubprocessHandle.waitForExit} observes that same range so a
+ *   consumer-owned teardown ladder can hold each tier on real quiescence; each
+ *   provider documents its signalling and observability limits.
  * - Disposal of the service terminates all still-running managed processes
  *   and awaits their exit.
  * - {@link spawnTerminal} owns terminal allocation, text transport,
@@ -83,20 +87,35 @@ export declare abstract class SubprocessRuntime extends Service {
      */
     abstract resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>;
     /**
+     * Inspect shell-selection facts in the provider's execution environment.
+     * @param signal - cancellation of remote environment inspection.
+     * @returns platform and preferred shell; executable lookup and allocation remain separate operations.
+     */
+    abstract terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment>;
+    /**
      * Start one managed child process from a fully-specified spec; this seam
      * applies no defaults.
      * @param spec - argv, directory, stdio dispositions, grace, cancellation, and environment.
      * @returns the live process handle (streams/readers, signalling, outcome promise).
+     * @throws synchronously when pre-aborted or when argv, cwd, environment, or grace is invalid before handle creation.
      */
     abstract spawn(spec: SubprocessSpawnSpec): SubprocessHandle;
     /**
      * Allocate a real terminal and start one owned process session. This is the
      * only non-pipe process primitive: implementations own terminal byte I/O,
-     * foreground groups, signals, and complete session-tree cleanup.
+     * foreground groups, signals, and whole-session quiescence.
      * @param spec - fully specified argv, cwd, environment, dimensions, grace, and allocation cancellation.
      * @returns the live terminal handle after allocation succeeds.
      */
     abstract spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle>;
 }
 export default SubprocessRuntime;
+/** Executable lookup completed without finding an executable file. */
+export declare class SubprocessExecutableNotFoundError extends Error {
+    /**
+     * @param message - provider-specific lookup diagnostic.
+     * @param options - original provider failure, when available.
+     */
+    constructor(message: string, options?: ErrorOptions);
+}
 //# sourceMappingURL=index.d.ts.map

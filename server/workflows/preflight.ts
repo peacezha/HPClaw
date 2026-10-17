@@ -1,6 +1,6 @@
 // 流程预检服务：通过 SSH 在集群上核查流程的必要软件与参考数据是否就绪。
 // 所有检查命令均为只读。module load 仅在隔离子 shell 中验证可加载性，不修改登录环境、不安装。
-// 目录约定：~/hpclaw_flows/<slug>/{01_software,02_reference,03_workspace,04_results}
+// 目录约定：~/trace_flows/<slug>/{01_software,02_reference,03_workspace,04_results}
 import type { Workflow } from './workflowTypes';
 import { createHash } from 'node:crypto';
 import type {
@@ -46,8 +46,8 @@ function shqPath(p: string): string {
 
 const MODULE_INIT = [
   'if ! type module >/dev/null 2>&1; then',
-  '  for hpclaw_module_init in /etc/profile.d/modules.sh /etc/profile.d/lmod.sh /usr/share/Modules/init/bash /usr/share/lmod/lmod/init/bash; do',
-  '    if [ -r "$hpclaw_module_init" ]; then . "$hpclaw_module_init" >/dev/null 2>&1; type module >/dev/null 2>&1 && break; fi',
+  '  for trace_module_init in /etc/profile.d/modules.sh /etc/profile.d/lmod.sh /usr/share/Modules/init/bash /usr/share/lmod/lmod/init/bash; do',
+  '    if [ -r "$trace_module_init" ]; then . "$trace_module_init" >/dev/null 2>&1; type module >/dev/null 2>&1 && break; fi',
   '  done',
   'fi',
   'if type module >/dev/null 2>&1; then echo "MODULESYS|ready|Module/Lmod 已初始化"; else echo "MODULESYS|unavailable|非交互 SSH 未找到 module 命令"; fi',
@@ -93,8 +93,8 @@ function moduleCheckBody(item: SoftwareItem, idx: number, requestedModule: strin
   const directCandidates = executableCandidates(item.name).map(shq).join(' ');
   const directFallback = [
     'elif ! type module >/dev/null 2>&1; then',
-    `  direct_found=""; for hpclaw_tool in ${directCandidates}; do`,
-    '    if command -v "$hpclaw_tool" >/dev/null 2>&1; then direct_found=$(command -v "$hpclaw_tool"); break; fi; done',
+    `  direct_found=""; for trace_tool in ${directCandidates}; do`,
+    '    if command -v "$trace_tool" >/dev/null 2>&1; then direct_found=$(command -v "$trace_tool"); break; fi; done',
     `  if [ -n "$direct_found" ]; then echo "${tag}|1|无 module，直装可用: $direct_found"; `,
     `  else echo "${tag}|0|无 module 系统且 PATH 未找到: ${base}（需要直接安装，不走 module）"; fi`,
   ].join('\n');
@@ -143,8 +143,8 @@ function softwareCheckScript(item: SoftwareItem, idx: number): string {
 
   const candidates = executableCandidates(item.name);
   const commandArgs = candidates.map(shq).join(' ');
-  return `( found_command=""; for hpclaw_tool in ${commandArgs}; do ` +
-    `if command -v "$hpclaw_tool" >/dev/null 2>&1; then found_command=$(command -v "$hpclaw_tool"); break; fi; done; ` +
+  return `( found_command=""; for trace_tool in ${commandArgs}; do ` +
+    `if command -v "$trace_tool" >/dev/null 2>&1; then found_command=$(command -v "$trace_tool"); break; fi; done; ` +
     `if [ -n "$found_command" ]; then echo "${tag}|1|命令可用: $found_command"; else ` +
     `${moduleCheckBody(item, idx, item.name)}; fi )`;
 }
@@ -247,10 +247,18 @@ function finalizeReady(result: PreflightResult): void {
  * 4. 解析结果并写回 env-check.json / ref-check.json。
  *
  * 传入 filter 时只检查指定项，并与集群缓存的上次结果合并后回写（单项"校验"按钮）。
+ * options.persist === false 时不写 flow.json/manifest.json，也不回写 env-check 缓存——
+ * 供"启动前整体检查"按本次运行配置解析占位符后临时核查，避免把运行级解析结果污染集群缓存。
  */
-export async function runPreflight(exec: ExecFn, workflow: Workflow, filter?: PreflightFilter): Promise<PreflightResult> {
+export async function runPreflight(
+  exec: ExecFn,
+  workflow: Workflow,
+  filter?: PreflightFilter,
+  options?: { persist?: boolean },
+): Promise<PreflightResult> {
+  const persist = options?.persist !== false;
   const slug = workflowSlug(workflow.name);
-  const home = `~/hpclaw_flows/${slug}`;
+  const home = `~/trace_flows/${slug}`;
   const rawManifest: FlowManifest = workflow.manifest ?? { software: [], references: [], qcGates: [] };
   // {{FLOW_HOME}} 模板变量：参考数据可声明位于流程家目录内的路径（如随包分发的管线代码）
   const manifest: FlowManifest = {
@@ -272,17 +280,20 @@ export async function runPreflight(exec: ExecFn, workflow: Workflow, filter?: Pr
 
   const parts: string[] = [];
   // 目录创建与清单同步总是执行（单项校验也要靠 env-check.json 缓存做合并，
-  // 否则第一次单项校验的结果写不进集群，下一项校验时前一项会"回退"成未通过）
+  // 否则第一次单项校验的结果写不进集群，下一项校验时前一项会"回退"成未通过）；
+  // persist=false（启动前整体检查的临时核查）只建目录，不同步清单。
   parts.push(`mkdir -p ${home}/01_software ${home}/02_reference ${home}/03_workspace/runs ${home}/04_results`);
-  parts.push(writeJsonScript(`${home}/flow.json`, {
-    workflowId: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    manifest,
-    syncedAt: Date.now(),
-  }));
-  parts.push(writeJsonScript(`${home}/01_software/manifest.json`, manifest.software));
-  parts.push(writeJsonScript(`${home}/02_reference/manifest.json`, manifest.references));
+  if (persist) {
+    parts.push(writeJsonScript(`${home}/flow.json`, {
+      workflowId: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      manifest,
+      syncedAt: Date.now(),
+    }));
+    parts.push(writeJsonScript(`${home}/01_software/manifest.json`, manifest.software));
+    parts.push(writeJsonScript(`${home}/02_reference/manifest.json`, manifest.references));
+  }
 
   parts.push(MODULE_INIT);
   parts.push(SCHED_DETECT);
@@ -310,16 +321,19 @@ export async function runPreflight(exec: ExecFn, workflow: Workflow, filter?: Pr
   result.checkedAt = Date.now();
   finalizeReady(result);
 
-  // 结果回写集群（全量进 env-check.json，参考数据部分进 ref-check.json）
-  await exec(
-    writeJsonScript(`${home}/01_software/env-check.json`, result) + '\n' +
-    writeJsonScript(`${home}/02_reference/ref-check.json`, {
-      workflowId: result.workflowId,
-      checkedAt: result.checkedAt,
-      references: result.references,
-    }),
-    20_000,
-  ).catch(() => { /* 回写失败不影响返回结果 */ });
+  // 结果回写集群（全量进 env-check.json，参考数据部分进 ref-check.json）；
+  // persist=false 的临时核查不回写，避免运行级占位符解析结果污染集群缓存。
+  if (persist) {
+    await exec(
+      writeJsonScript(`${home}/01_software/env-check.json`, result) + '\n' +
+      writeJsonScript(`${home}/02_reference/ref-check.json`, {
+        workflowId: result.workflowId,
+        checkedAt: result.checkedAt,
+        references: result.references,
+      }),
+      20_000,
+    ).catch(() => { /* 回写失败不影响返回结果 */ });
+  }
 
   return result;
 }
@@ -341,7 +355,7 @@ export function parsePreflightOutput(raw: string, workflow: Workflow, manifest: 
 export async function readCachedPreflight(exec: ExecFn, workflow: Workflow): Promise<PreflightResult | null> {
   const slug = workflowSlug(workflow.name);
   try {
-    const raw = await exec(`cat ~/hpclaw_flows/${slug}/01_software/env-check.json 2>/dev/null || true`, 15_000);
+    const raw = await exec(`cat ~/trace_flows/${slug}/01_software/env-check.json 2>/dev/null || true`, 15_000);
     const text = raw.trim();
     if (!text) return null;
     const parsed = JSON.parse(text) as PreflightResult;

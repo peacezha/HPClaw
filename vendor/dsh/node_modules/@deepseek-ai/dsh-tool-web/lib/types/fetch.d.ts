@@ -5,8 +5,9 @@
  * signal. A provider timeout remains a backstop for direct service callers.
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { GenericCallView, JsonValue, ToolResult, WebFetchResultView } from '@deepseek-ai/dsh-tools';
+import type { GenericCallView, ToolResult, WebFetchResultView } from '@deepseek-ai/dsh-tools';
 import type { WebFetchResult } from '@deepseek-ai/dsh-web';
+import { type JsonValue } from '@deepseek-ai/dsh-util-values';
 /**
  * Validate value constraints the schema DSL can't express: a non-blank `url`.
  * Throws a plain `Error` otherwise. No timeout parameter — the tool-call budget
@@ -95,7 +96,7 @@ export declare function presentFetchResult(args: {
     url: string;
 }, result: ToolResult): WebFetchResultView | undefined;
 /**
- * Register the `web_fetch` tool and its system-prompt guidance.
+ * Register the `web_fetch` tool and its scope-aware system-prompt guidance.
  *
  * @param ctx - context whose `tools` and `systemPrompt` registries receive the
  *   registrations; both are effect-scoped and unregister on plugin dispose.

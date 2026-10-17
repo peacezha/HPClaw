@@ -18,10 +18,10 @@ describe('extractFilePaths', () => {
 
   it('extracts Windows absolute paths (both separator variants)', () => {
     const paths = extractFilePaths(
-      '图片已保存到 C:\\Users\\Administrator\\AppData\\Roaming\\HPClaw\\runtime\\R16_D.editing_summary.png 和 C:/work/out/plot.png 里',
+      '图片已保存到 C:\\Users\\Administrator\\AppData\\Roaming\\TRACE\\runtime\\R16_D.editing_summary.png 和 C:/work/out/plot.png 里',
     );
 
-    expect(paths).toContain('C:\\Users\\Administrator\\AppData\\Roaming\\HPClaw\\runtime\\R16_D.editing_summary.png');
+    expect(paths).toContain('C:\\Users\\Administrator\\AppData\\Roaming\\TRACE\\runtime\\R16_D.editing_summary.png');
     expect(paths).toContain('C:/work/out/plot.png');
   });
 

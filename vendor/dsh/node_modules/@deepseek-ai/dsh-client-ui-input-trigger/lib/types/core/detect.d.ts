@@ -1,9 +1,9 @@
 import type { DetectTrigger } from './contract.ts';
 /**
- * Detect a trigger token at the caret. Scans left from the caret and stops
- * at the first whitespace (the token under edit never spans whitespace);
- * trigger chars failing the guard tier or the word boundary are treated as
- * ordinary token chars and the scan continues (`user@host`, URL slashes).
+ * Detect a trigger token at the caret. `@` first uses the shared grammar,
+ * including an open quoted token that may span whitespace. Slash detection
+ * scans left to the first whitespace; slashes failing the word boundary are
+ * treated as ordinary token chars and the scan continues (URL slashes).
  * Guard tiers: plain = both chars live; claimed = '/' fully suppressed,
  * '@' live; frozen = none.
  *

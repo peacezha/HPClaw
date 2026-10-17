@@ -10,10 +10,12 @@ import {
 } from 'lucide-react';
 import WorkflowFlowGraph from './WorkflowFlowGraph';
 import HtmlReportFrame from './rich-content/HtmlReportFrame';
+import WorkflowPreflightCard from './WorkflowPreflightCard';
 import WorkflowQcNotice from './WorkflowQcNotice';
 import { unresolvedQcFailures } from '@/shared/workflowQc';
 import { needsAutomaticOutputReview } from '@/shared/workflowContinuation';
-import { useWorkflowText } from '../i18n';
+import { useWorkflowText, useWorkflowLocale } from '../i18n';
+import { writeClipboardText } from '../services/clipboard';
 import { buildDataPrepGuide } from '../features/workflows/dataPrepGuide';
 import { encodeExampleFor } from '../features/workflows/encodeExample';
 import type { Workflow } from '@/shared/workflow';
@@ -23,9 +25,10 @@ import type { PreflightResult } from '@/shared/flowManifest';
 import {
   createWorkflowRun, deployWorkflowAssets, fetchRunLog, fetchWorkflowRuns, fetchWorkflowStepCode, getCachedPreflight,
   importWorkflowRunHistory, mergeWorkflowRunUpdate, reconcileWorkflowRunSnapshot, runBelongsToWorkflow, runPreflight,
-  resumeWorkflowRun, saveWorkflowStepCode, type WorkflowRun,
+  resumeWorkflowRun, runPreflightForConfig, saveWorkflowStepCode,
+  type PreflightRunReport, type WorkflowRun, type WorkflowRunConfigInput,
 } from '../features/workflows/api';
-import { composeResumeRunMessage, composeRunMessage } from '../features/workflows/compose';
+import { composeResumeRunMessage, composeRunMessage, type PreRunCheckSummary } from '../features/workflows/compose';
 import { workflowSlug } from '@/shared/flowManifest';
 import {
   clearWorkflowHabits,
@@ -148,6 +151,9 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const [reportPath, setReportPath] = useState<string | null>(null);
   const [codeRun, setCodeRun] = useState<WorkflowRun | null>(null);
   const [startingRun, setStartingRun] = useState(false);
+  // 启动前整体检查：非 null 时以覆盖层展示集中解答卡
+  const [preRunReport, setPreRunReport] = useState<PreflightRunReport | null>(null);
+  const [preRunChecking, setPreRunChecking] = useState(false);
   const [importingHistory, setImportingHistory] = useState(false);
   const [configNotice, setConfigNotice] = useState(() => initialHabit
     ? `已按之前 ${initialHabit.sampleCount} 次使用习惯预填非敏感参数`
@@ -171,7 +177,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
     };
   }, [socket]);
 
-  const configStorageKey = `hpclaw_workflow_run_config_v1:${workflow.id}`;
+  const configStorageKey = `trace_workflow_run_config_v1:${workflow.id}`;
 
   const loadSavedConfig = useCallback(() => {
     try {
@@ -345,6 +351,87 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   );
   const needInputs = !!inputHint || workflow.params.some(p => /INPUT|DATA|FASTQ| SAMPLE/i.test(p.name));
 
+  const buildRunConfig = useCallback((): WorkflowRunConfigInput => ({
+    inputs,
+    params: paramValues,
+    stepParams: stepValues,
+    referenceOverrides: refOverrides,
+    skippedSteps,
+    stepCommandOverrides,
+  }), [inputs, paramValues, stepValues, refOverrides, skippedSteps, stepCommandOverrides]);
+
+  // 正式创建运行并发出执行协议；preRunCheck 记录启动前整体检查结论（通过 / 用户接受的警告）
+  const startRun = useCallback(async (preRunCheck?: PreRunCheckSummary) => {
+    setFormError('');
+    setStartingRun(true);
+    try {
+      const run = await createWorkflowRun(workflow.id, buildRunConfig(), sessionId);
+      const sampleCount = recordWorkflowHabit(workflow.id, {
+        params: paramValues,
+        stepParams: stepValues,
+        skippedSteps,
+      });
+      if (sampleCount >= 2) setConfigNotice(`已学习本次选择（累计 ${sampleCount} 次），路径和命令不会保存`);
+      setRuns(current => mergeWorkflowRunUpdate(current, run));
+      onRun(composeRunMessage(workflow, {
+        preflight: preflight ?? null,
+        preRunCheck,
+        inputs,
+        paramValues,
+        stepValues,
+        referenceOverrides: refOverrides,
+        skippedSteps,
+        stepCommandOverrides,
+        run: { runId: run.runId || run.runDir.split('/').pop() || 'run', runDir: run.runDir },
+      }), { dedicatedConversation: true });
+      setPreRunReport(null);
+      // 旧抽屉模式运行后回到聊天区；主页面模式保持流程时间线可见。
+      if (!embedded) onClose();
+    } catch (e: any) {
+      setFormError(e?.message || '创建流程运行失败');
+    } finally {
+      setStartingRun(false);
+    }
+  }, [buildRunConfig, onRun, onClose, workflow, preflight, paramValues, stepValues, refOverrides, skippedSteps, stepCommandOverrides, sessionId, embedded]);
+
+  // 启动前整体检查：无问题直接建运行；有问题弹集中解答卡，解答后用最新配置重检，通过才继续
+  const checkBeforeRun = useCallback(async () => {
+    setFormError('');
+    setPreRunChecking(true);
+    try {
+      const report = await runPreflightForConfig(workflow.id, buildRunConfig(), sessionId);
+      if (report.issues.length === 0) {
+        await startRun({ passed: true });
+      } else {
+        setPreRunReport(report);
+      }
+    } catch (e: any) {
+      setFormError(`启动前整体检查失败：${e?.message || String(e)}`);
+    } finally {
+      setPreRunChecking(false);
+    }
+  }, [workflow.id, buildRunConfig, sessionId, startRun]);
+
+  // 集中解答卡：参考数据改指实际路径（占位参考有同名参数时同步写入参数值，与服务端解析顺序一致）
+  const handlePreRunReferenceChange = useCallback((refName: string, path: string) => {
+    setRefOverrides(v => ({ ...v, [refName]: path }));
+    const ref = manifest?.references.find(r => r.name === refName);
+    for (const match of (ref?.path ?? '').matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)) {
+      if (workflow.params.some(p => p.name === match[1])) {
+        setParamValues(v => ({ ...v, [match[1]]: path }));
+      }
+    }
+  }, [manifest, workflow.params]);
+
+  // 用户明确接受剩余警告，仍然开始运行（有 blocker 时卡片内禁用该按钮）
+  const handlePreRunRunAnyway = useCallback(async () => {
+    if (!preRunReport) return;
+    const acceptedWarnings = preRunReport.issues
+      .filter(issue => issue.severity === 'warn')
+      .map(issue => `${issue.label || issue.name}：${issue.message}`);
+    await startRun({ passed: false, acceptedWarnings });
+  }, [preRunReport, startRun]);
+
   const handleRun = useCallback(async () => {
     if (isPendingDisposal(workflow)) { setFormError(displayText('此流程在待弃置中，不能发起新运行。请在流程管理中恢复；已有任务不受影响。')); return; }
     if (needInputs && inputs.length === 0) {
@@ -373,42 +460,9 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
       setFormError(validationErrors.slice(0, 3).join('；'));
       return;
     }
-    setFormError('');
-    setStartingRun(true);
-    try {
-      const run = await createWorkflowRun(workflow.id, {
-        inputs,
-        params: paramValues,
-        stepParams: stepValues,
-        referenceOverrides: refOverrides,
-        skippedSteps,
-        stepCommandOverrides,
-      }, sessionId);
-      const sampleCount = recordWorkflowHabit(workflow.id, {
-        params: paramValues,
-        stepParams: stepValues,
-        skippedSteps,
-      });
-      if (sampleCount >= 2) setConfigNotice(`已学习本次选择（累计 ${sampleCount} 次），路径和命令不会保存`);
-      setRuns(current => mergeWorkflowRunUpdate(current, run));
-      onRun(composeRunMessage(workflow, {
-        preflight: preflight ?? null,
-        inputs,
-        paramValues,
-        stepValues,
-        referenceOverrides: refOverrides,
-        skippedSteps,
-        stepCommandOverrides,
-        run: { runId: run.runId || run.runDir.split('/').pop() || 'run', runDir: run.runDir },
-      }), { dedicatedConversation: true });
-      // 旧抽屉模式运行后回到聊天区；主页面模式保持流程时间线可见。
-      if (!embedded) onClose();
-    } catch (e: any) {
-      setFormError(e?.message || '创建流程运行失败');
-    } finally {
-      setStartingRun(false);
-    }
-  }, [needInputs, inputs, missingParams, onRun, onClose, workflow, preflight, paramValues, stepValues, refOverrides, skippedSteps, stepCommandOverrides, sessionId, embedded]);
+    // 前端校验过后，先做启动前整体检查（软件/参考数据/输入/参数/脚本占位符）
+    await checkBeforeRun();
+  }, [workflow, displayText, needInputs, inputs, missingParams, paramValues, stepValues, skippedSteps, checkBeforeRun]);
 
   const activeRun = runs.find(r => !r.stale && (r.status === 'running' || r.status === 'waiting_user' || r.status === 'waiting_jobs' || r.status === 'blocked_env'));
   const envReady = preflight?.ready;
@@ -416,25 +470,27 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
   const envFailed = !!preflight && [...preflight.software, ...preflight.references]
     .some(i => !i.ok && i.required && i.detail && i.detail !== '未检查');
   const inputHintText = inputHint || '选择计算资源上要处理的数据目录';
-  const dedicatedFlowDir = `~/hpclaw_flows/${workflowSlug(workflow.name)}/`;
+  const dedicatedFlowDir = `~/trace_flows/${workflowSlug(workflow.name)}/`;
   // 数据准备引导：从流程定义生成（格式要点 + 可复制模板）
-  const dataPrep = useMemo(() => buildDataPrepGuide(workflow), [workflow]);
+  const locale = useWorkflowLocale();
+  const prepText = (zh: string, en: string) => locale === 'en-US' ? en : zh;
+  const dataPrep = useMemo(() => buildDataPrepGuide(workflow, locale), [workflow, locale]);
 
   /** 让 AI 协助准备数据：留在当前对话，AI 先看目录再帮忙生成/检查输入文件 */
   const handleAskAiDataPrep = useCallback(() => {
     const paramLines = workflow.params
       .filter(p => p.type === 'path' || /INPUT|DATA|FASTQ|SAMPLE|SHEET|JSON|YAML|CONFIG/i.test(p.name))
-      .map(p => `- ${p.name}（${p.label}）${p.help ? `：${p.help}` : ''}`);
+      .map(p => `- ${p.name} (${displayText(p.label)})${p.help ? `: ${displayText(p.help)}` : ''}`);
     const message = [
-      `我准备运行流程「${workflow.name}」（ID: ${workflow.id}），请帮我准备数据：`,
-      ...(dataPrep.summary ? [`数据形态：${dataPrep.summary}`] : []),
-      ...(paramLines.length ? ['需要我准备/确认的输入：', ...paramLines] : []),
+      prepText(`我准备运行流程「${workflow.name}」（ID: ${workflow.id}），请帮我准备数据：`, `I plan to run "${displayText(workflow.name)}" (ID: ${workflow.id}). Please help me prepare the input data. Respond in English.`),
+      ...(dataPrep.summary ? [prepText(`数据形态：${dataPrep.summary}`, `Input data: ${dataPrep.summary}`)] : []),
+      ...(paramLines.length ? [prepText('需要我准备/确认的输入：', 'Inputs to prepare or confirm:'), ...paramLines] : []),
       '',
-      '请先看一下我当前目录里有什么（我会告诉你数据目录，或你直接列当前目录），',
-      '然后帮我生成或检查样本表/输入文件；格式确认无误后再开始流程。',
+      prepText('请先看一下我当前目录里有什么（我会告诉你数据目录，或你直接列当前目录），', 'First inspect the data directory I provide, or list the current directory.'),
+      prepText('然后帮我生成或检查样本表/输入文件；格式确认无误后再开始流程。', 'Then generate or validate the sample sheet and input files. Confirm their format before starting the workflow.'),
     ].join('\n');
     onRun(message);
-  }, [workflow, dataPrep.summary, onRun]);
+  }, [workflow, dataPrep.summary, onRun, locale, displayText]);
 
   /** 「参考示例」一键填参：只填空着的参数（不覆盖用户已填），数据目录有示例就一并带上 */
   const handleFillEncodeExample = useCallback(() => {
@@ -460,10 +516,11 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
       setInputs([spec.inputDir]);
     }
     setConfigNotice(
-      `已按参考示例填好 ${filled.length} 个参数${kept.length ? `（${kept.length} 个您已填写的保持不变）` : ''}，`
-      + '点「开始运行」即可。示例是 GRCh38 chr19 小数据集，只用于验证流程跑通。',
+      prepText(`已按参考示例填好 ${filled.length} 个参数${kept.length ? `（${kept.length} 个您已填写的保持不变）` : ''}，`
+        + '点「开始运行」即可。示例是 GRCh38 chr19 小数据集，只用于验证流程跑通。',
+      `Filled ${filled.length} example parameters; preserved ${kept.length} existing values. Click Run workflow to start. The small GRCh38 chr19 dataset is for workflow validation only.`),
     );
-  }, [workflow, paramValues, inputs.length]);
+  }, [workflow, paramValues, inputs.length, locale]);
 
   const handleImportHistory = useCallback(async () => {
     if (!sessionId) return;
@@ -509,15 +566,15 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
       animate={embedded ? undefined : { x: 0, opacity: 1 }}
       transition={{ duration: 0.2, ease: 'easeOut' }}
       className={embedded
-        ? 'h-full min-w-0 bg-scholar-900 flex flex-col'
+        ? 'relative h-full min-w-0 bg-scholar-900 flex flex-col'
         : 'fixed inset-y-0 right-0 z-30 w-[600px] max-w-[92vw] bg-scholar-900 border-l border-scholar-700 shadow-lg flex flex-col'}
     >
       {/* 头部（GitBranch 为流程语义图标；不用 Play 三角，避免“可点击播放”的误导） */}
       <div className="px-4 py-3 border-b border-scholar-700/60 flex items-center gap-2 shrink-0">
         <GitBranch className="w-4 h-4 text-accent shrink-0" />
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-medium text-scholar-100 truncate">{workflow.name}</h2>
-          {workflow.description && <p className="text-[11px] text-scholar-400 truncate">{workflow.description}</p>}
+          <h2 className="text-sm font-medium text-scholar-100 truncate">{displayText(workflow.name)}</h2>
+          {workflow.description && <p className="text-[11px] text-scholar-400 truncate">{displayText(workflow.description)}</p>}
         </div>
         <button onClick={onClose} className="btn-icon" aria-label="关闭"><X className="w-4 h-4" /></button>
       </div>
@@ -612,7 +669,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                   </button>
                 </div>
                 <p className="mt-1 text-[9px] text-scholar-500">
-                  {workflow.assets.map(a => a.label || a.remotePath).join('、')}
+                  {workflow.assets.map(a => displayText(a.label || a.remotePath)).join(' / ')}
                 </p>
                 {deployResults && (
                   <div className="mt-1 space-y-0.5">
@@ -640,7 +697,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
           <div className="px-2 pt-2">
             <details open={inputs.length === 0} className="rounded-md border border-accent/25 bg-accent/5">
               <summary className="px-2 py-1.5 flex items-center gap-1.5 cursor-pointer list-none text-[11px] text-accent font-medium">
-                <FileText className="w-3 h-3" /> 数据怎么准备？（格式说明 + 模板 + AI 协助）
+                <FileText className="w-3 h-3" /> {prepText('数据怎么准备？（格式说明 + 模板 + AI 协助）', 'How do I prepare my data? (Formats, templates and AI assistance)')}
               </summary>
               <div className="px-2.5 pb-2 pt-1 space-y-1.5">
                 <p className="text-[11px] text-scholar-200 font-medium">{dataPrep.summary}</p>
@@ -655,12 +712,16 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                           <span className="text-[10px] font-medium text-scholar-200 flex-1">{tpl.label}</span>
                           <button
                             type="button"
-                            onClick={() => {
-                              void navigator.clipboard?.writeText(tpl.content).catch(() => {});
-                              setConfigNotice('模板「' + tpl.label + '」已复制，粘贴到文本编辑器保存为 ' + tpl.filename);
+                            onClick={async () => {
+                              try {
+                                await writeClipboardText(tpl.content);
+                                setConfigNotice(prepText('模板「' + tpl.label + '」已复制，粘贴到文本编辑器保存为 ' + tpl.filename, 'Copied ' + tpl.label + '. Paste into a text editor and save as ' + tpl.filename));
+                              } catch {
+                                setConfigNotice(prepText('复制失败，请选择模板文本并使用 Ctrl+C。', 'Copy failed. Select the template text and press Ctrl+C.'));
+                              }
                             }}
                             className="text-[10px] px-1.5 py-0.5 rounded bg-scholar-800 text-scholar-200 hover:text-scholar-50 border border-scholar-700/60"
-                          >复制模板</button>
+                          >{prepText('复制模板', 'Copy template')}</button>
                         </div>
                         <pre className="text-[10px] leading-relaxed text-scholar-300 px-2 py-1.5 whitespace-pre-wrap break-all max-h-36 overflow-y-auto font-mono">{tpl.content}</pre>
                       </div>
@@ -672,9 +733,9 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                   onClick={handleAskAiDataPrep}
                   disabled={!sessionId}
                   className="btn-ghost !text-[11px] !px-2.5 !text-accent border-accent/30"
-                  title="让 AI 看你的数据目录并协助生成/检查输入文件"
+                  title={prepText('让 AI 看你的数据目录并协助生成/检查输入文件', 'Ask AI to inspect your data directory and help generate or validate input files')}
                 >
-                  <Bot className="w-3 h-3" /> 让 AI 帮我准备数据
+                  <Bot className="w-3 h-3" /> {prepText('让 AI 帮我准备数据', 'Ask AI to help prepare my data')}
                 </button>
                 {encodeExampleFor(workflow.id) && (
                   <button
@@ -682,9 +743,9 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                     onClick={handleFillEncodeExample}
                     disabled={!sessionId}
                     className="btn-ghost !text-[11px] !px-2.5 !text-emerald-500 border-emerald-500/30"
-                    title="把参数自动填成集群示例参考库（~/hpclaw_refs/encode_example）里的文件，填完即可运行"
+                    title={prepText('把参数自动填成集群示例参考库（~/trace_refs/encode_example）里的文件，填完即可运行', 'Fill parameters using files from the cluster example reference library (~/trace_refs/encode_example)')}
                   >
-                    <Package className="w-3 h-3" /> 参考示例（一键填好，直接运行）
+                    <Package className="w-3 h-3" /> {prepText('参考示例（一键填好，直接运行）', 'Reference example (fill parameters and run)')}
                   </button>
                 )}
               </div>
@@ -723,7 +784,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             <header className="px-3 py-2 flex items-center gap-2 border-b border-scholar-700/40">
               <Wrench className="w-3.5 h-3.5 text-accent" />
               <span className="text-xs font-medium text-scholar-100 flex-1">全局参数</span>
-              <span className="text-[10px] text-scholar-500">{workflow.params.length} 个参数</span>
+              <span className="text-[10px] text-scholar-500">{displayText(`${workflow.params.length} 个参数`)}</span>
             </header>
             <div className="p-2 grid grid-cols-2 gap-2">
               {workflow.params.map(p => (
@@ -771,7 +832,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             <summary className="px-3 py-2 flex items-center gap-2 cursor-pointer list-none">
               <Wrench className="w-3.5 h-3.5 text-accent" />
               <span className="text-xs font-medium text-scholar-100 flex-1">步骤、代码与高级设置</span>
-              <span className="text-[10px] text-scholar-500">{workflow.steps.length} 步 · 默认按流程执行</span>
+              <span className="text-[10px] text-scholar-500">{displayText(`${workflow.steps.length} 步 · 默认按流程执行`)}</span>
             </summary>
             <div className="p-2 space-y-2.5 border-t border-scholar-700/40">
               {workflow.steps.map((s, i) => (
@@ -781,7 +842,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                   className={`rounded-md border p-2 transition-colors ${openCodeSteps.includes(i + 1) ? 'border-accent/50 bg-scholar-950/60' : 'border-scholar-700/40 bg-scholar-950/40'}`}
                 >
                   <div className="flex items-center gap-2 mb-1.5">
-                    <p className="text-[10px] font-medium text-scholar-300 flex-1">{i + 1}. <span>{s.title}</span></p>
+                    <p className="text-[10px] font-medium text-scholar-300 flex-1">{i + 1}. <span>{displayText(s.title)}</span></p>
                     {s.agent?.confidence && (
                       <span className={`text-[9px] px-1 rounded ${s.agent.confidence === 'high' ? 'bg-emerald-500/10 text-emerald-500' : s.agent.confidence === 'medium' ? 'bg-amber-500/10 text-amber-500' : 'bg-red-500/10 text-red-500'}`}>
                         {s.agent.confidence === 'high' ? '高可信' : s.agent.confidence === 'medium' ? '中可信' : '低可信'}
@@ -800,10 +861,10 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                   </div>
                   {s.agent && (s.agent.evidence || s.agent.inputs?.length || s.agent.outputs?.length) && (
                     <div className="mb-1.5 rounded bg-scholar-900/70 px-2 py-1.5 text-[9px] text-scholar-400 space-y-0.5">
-                      {s.agent.sourceSection && <p>来源：{s.agent.sourceSection}{s.agent.sourcePath ? ` · ${s.agent.sourcePath}` : ''}</p>}
-                      {s.agent.evidence && <p className="text-scholar-300">依据：{s.agent.evidence}</p>}
-                      {!!s.agent.inputs?.length && <p>输入：{s.agent.inputs.join('、')}</p>}
-                      {!!s.agent.outputs?.length && <p>预期输出：{s.agent.outputs.join('、')}</p>}
+                      {s.agent.sourceSection && <p>{displayText('来源：')}{s.agent.sourceSection}{s.agent.sourcePath ? ` · ${s.agent.sourcePath}` : ''}</p>}
+                      {s.agent.evidence && <p className="text-scholar-300">{displayText('依据：')}{displayText(s.agent.evidence)}</p>}
+                      {!!s.agent.inputs?.length && <p>{displayText('输入：')}{s.agent.inputs.map(displayText).join(' / ')}</p>}
+                      {!!s.agent.outputs?.length && <p>{displayText('预期输出：')}{s.agent.outputs.map(displayText).join(' / ')}</p>}
                     </div>
                   )}
                   {/* 每步的代码/指令：默认展开可读，不需要先开“高级” */}
@@ -822,7 +883,7 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
                       <pre className="text-[10px] leading-relaxed text-scholar-200 bg-scholar-950 border border-scholar-700/60 rounded px-2 py-1.5 whitespace-pre-wrap break-all max-h-56 overflow-y-auto font-mono">{s.command}</pre>
                       <button
                         type="button"
-                        onClick={() => void navigator.clipboard?.writeText(s.command).catch(() => {})}
+                        onClick={() => void writeClipboardText(s.command).catch(() => setConfigNotice(prepText('代码复制失败，请选择文本并使用 Ctrl+C。', 'Code copy failed. Select the text and press Ctrl+C.')))}
                         className="absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded bg-scholar-800/90 text-scholar-300 hover:text-scholar-100 border border-scholar-700/60"
                         title="复制本步命令"
                       >
@@ -878,10 +939,10 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
             环境有必需项未就绪，运行后 AI 会先引导你补齐，再开始分析。
           </p>
         )}
-        <button onClick={() => void handleRun()} disabled={!sessionId || startingRun || isPendingDisposal(workflow)}
+        <button onClick={() => void handleRun()} disabled={!sessionId || startingRun || preRunChecking || isPendingDisposal(workflow)}
           className="btn-primary w-full !py-2.5 text-sm">
-          {startingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          {startingRun ? '正在创建正式运行…' : '运行流程'}
+          {startingRun || preRunChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          {startingRun ? '正在创建正式运行…' : preRunChecking ? displayText('正在整体检查…') : '运行流程'}
         </button>
 
         {/* ── 卡片4：任务监控 ── */}
@@ -938,6 +999,29 @@ export default function FlowRunnerDrawer({ workflow, sessionId, socket, onClose,
           }}
         />
       )}
+      {/* 启动前整体检查：集中解答卡覆盖层（解答写回配置 → 重检通过才建运行） */}
+      {preRunReport && (
+        <div className="absolute inset-0 z-10 bg-scholar-900/95 overflow-y-auto p-3">
+          <WorkflowPreflightCard
+            workflow={workflow}
+            report={preRunReport}
+            paramValues={paramValues}
+            stepValues={stepValues}
+            refOverrides={refOverrides}
+            inputs={inputs}
+            onParamChange={(name, value) => setParamValues(prev => ({ ...prev, [name]: value }))}
+            onStepParamChange={(step, name, value) => setStepValues(prev => ({ ...prev, [step]: { ...(prev[step] || {}), [name]: value } }))}
+            onReferenceChange={handlePreRunReferenceChange}
+            onInputChange={(index, value) => setInputs(list => list.map((p, i) => (i === index ? value : p)))}
+            onProvision={handleProvision}
+            onPickPath={onPickFolder}
+            onRecheck={() => void checkBeforeRun()}
+            onRunAnyway={() => void handlePreRunRunAnyway()}
+            onCancel={() => setPreRunReport(null)}
+            busy={preRunChecking || startingRun}
+          />
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -951,13 +1035,14 @@ export function ParamField({ param: p, value, onChange, onPickPath, required }: 
   onPickPath?: (kind: 'file' | 'folder') => void;
   required: boolean;
 }) {
+  const text = useWorkflowText();
   const wide = p.type === 'path' || !p.type || p.type === 'text';
   return (
     <label className={`block ${wide ? 'col-span-2' : ''}`}>
-      <span className="text-[10px] text-scholar-400">{p.label || p.name}
+      <span className="text-[10px] text-scholar-400">{text(p.label || p.name)}
         {required
           ? <span className="text-red-400"> *</span>
-          : <span className="text-scholar-500">（可选{p.defaultValue ? `，默认 ${p.defaultValue}` : '，留空由 AI 处理'}）</span>}
+          : <span className="text-scholar-500">({text('可选')}{p.defaultValue ? `, ${text('默认')} ${p.defaultValue}` : `, ${text('留空由 AI 处理')}`})</span>}
       </span>
       {p.type === 'select' ? (
         <select value={value} onChange={e => onChange(e.target.value)}
@@ -968,7 +1053,7 @@ export function ParamField({ param: p, value, onChange, onPickPath, required }: 
       ) : p.type === 'number' ? (
         <input type="number" value={value} onChange={e => onChange(e.target.value)}
           min={p.min} max={p.max} step={p.step}
-          placeholder={p.placeholder || p.defaultValue}
+          placeholder={p.placeholder ? text(p.placeholder) : p.defaultValue}
           className="mt-0.5 w-full bg-scholar-950 border border-scholar-600 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/50" />
       ) : p.type === 'boolean' ? (
         <select value={value} onChange={e => onChange(e.target.value)}
@@ -980,7 +1065,7 @@ export function ParamField({ param: p, value, onChange, onPickPath, required }: 
       ) : (
         <div className="mt-0.5 flex gap-1">
           <input value={value} onChange={e => onChange(e.target.value)}
-            placeholder={p.placeholder || p.defaultValue || p.name}
+            placeholder={p.placeholder ? text(p.placeholder) : p.defaultValue || p.name}
             className="flex-1 bg-scholar-950 border border-scholar-600 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-accent/50" />
           {onPickPath && (
             <>
@@ -996,7 +1081,7 @@ export function ParamField({ param: p, value, onChange, onPickPath, required }: 
           )}
         </div>
       )}
-      {p.help && <span className="mt-0.5 block text-[9px] text-scholar-500">{p.help}</span>}
+      {p.help && <span className="mt-0.5 block text-[9px] text-scholar-500">{text(p.help)}</span>}
     </label>
   );
 }
@@ -1016,10 +1101,11 @@ export function EnvItems({ title, icon, items, checked, kind, itemBusy, onCheck,
   sessionId?: string | null;
   placeholderNames?: string[];
 }) {
+  const text = useWorkflowText();
   if (items.length === 0) return null;
   return (
     <div>
-      <p className="text-[10px] text-scholar-400 flex items-center gap-1 px-1 pt-1">{icon}{title}</p>
+      <p className="text-[10px] text-scholar-400 flex items-center gap-1 px-1 pt-1">{icon}{text(title)}</p>
       {items.map(item => {
         const busy = !!itemBusy[`${kind}:${item.name}`];
         const isParam = placeholderNames?.includes(item.name);
@@ -1037,10 +1123,10 @@ export function EnvItems({ title, icon, items, checked, kind, itemBusy, onCheck,
                 : item.required
                   ? <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
                   : <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
-            <span className="text-[11px] text-scholar-200 shrink-0">{item.name}</span>
+            <span className="text-[11px] text-scholar-200 shrink-0">{text(item.name)}</span>
             {!item.required && <span className="text-[9px] text-scholar-500 shrink-0">（可选）</span>}
             <span className="flex-1 text-[10px] text-scholar-500 truncate" title={override || item.detail || ''}>
-              {override ? `已指定：${override}` : isParam ? '运行时由参数指定或 AI 协助准备' : unchecked ? '未检查' : item.detail || ''}
+              {override ? `${text('已指定：')}${override}` : isParam ? text('运行时由参数指定或 AI 协助准备') : unchecked ? text('未检查') : item.detail ? text(item.detail) : ''}
             </span>
             {kind === 'references' && onPickFile && (
               <button onClick={() => onPickFile(item.name)}

@@ -1,122 +1,174 @@
+---
+description: "The subagent delegation seam for users and maintainers choosing a provider backend, composing delegation tools, or debugging child-agent runs."
+kind: "package-reference"
+---
+
 # @deepseek-ai/dsh-subagent
 
 English | [中文](README.zh.md)
 
-The subagent seam lets one agent delegate work to a child through a named provider. Callers use one service API (`ctx.subagents`); providers decide whether the child runs in this process, in another process, or through a future transport.
+## Summary
 
-The [subagent family overview](../README.md) maps implementations and model-facing consumers. This package owns the provider registry, shared request and result contracts, durable descriptors, and continuable-child orchestration. Multiple named providers may coexist behind that contract.
+Use `dsh-subagent` to delegate work through named providers and collect managed activation results. Local spawn and fork children retain durable sessions for later messages; ACP, DSH SDK, Codex, and Claude Code execute once. Every child shares admission, cancellation, ownership, and discovery. Compose the service with a provider and a delegation tool.
 
-## Service API
+## Table of Contents
 
-`SubagentRuntime` has these operations:
+- [Use this package](#use-this-package)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
 
-| Member | Meaning |
+-----
+
+<a id="use-this-package"></a>
+## Use this package
+
+Each start accepts an optional `cwd`; relative paths resolve against the parent's current working directory, and omission captures that current directory. The child keeps its parent's origin metadata and permission roots. A child-owned directory value follows any inherited history, survives continuation and restart, and is independent of later parent changes.
+
+This package is the contract every delegation setup shares. You enable it by mounting the service together with one or more provider backends and the model-facing delegation tool; from then on, an agent can delegate work and the service routes each request to the named provider.
+
+### Enabling delegation
+
+Mount the service with a provider and the delegation tool. The provider registers under its configured name; each tool row selects one provider. A minimal setup:
+
+```yaml
+- name: '@deepseek-ai/dsh-subagent'
+- name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+- name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent
+```
+
+The tool returns a child session id immediately. The parent receives a completion notice when the background activation settles. Mounting the service alone enables no delegation.
+
+### Delegation settings
+
+The limits section on the **Plugins → Subagent** page edits the Host’s `subagent` settings section. User values override this plugin's composition; reset removes the user override. `maxDepth` defaults to `1` and supplies the delegation tools' depth when their own configuration omits it. An explicit tool depth, including `provider-managed`, takes precedence. Depth `0` disables delegation through tools inheriting this setting; depth `1` permits direct children only. Changes apply on the next delegation attempt. Direct service callers continue to supply their own optional request depth.
+
+### Activation capacity
+
+Set `maxActiveSubagents` on the host plugin to limit live and materializing children in each activation tree. It defaults to `8` and accepts positive safe integers. A top-level parent starts a pool shared by its local and external descendants; the root parent consumes no slot. Creation and cold resume reserve before yielding, and disposal returns the slot only after cleanup. Waiting parents, pending inbox work, and stopping activations remain counted. Sending to a resident child reuses its slot. Delegation depth is a separate policy.
+
+The current `maxActiveSubagents` value is sampled before every new or cold-resumed Activation. Raising it admits more children in existing trees; lowering it leaves resident children running and refuses further admissions until usage is below the limit.
+
+At capacity, creation or cold resume rejects with `ACTIVATION_LIMIT_REACHED` (browser prompts receive `subagent/delivery-unavailable`): wait for a child to finish or continue using the existing agents. Admission does not queue, because a parent waiting for descendants must not wait for its own occupied slot. Slots are process-local and do not constrain cumulative Session history or token usage.
+
+### Local and external children
+
+`startActivation({ provider, label, request, signal, delivery })` returns `{ childId, messageId?, result, dispose }`. Supplying `childId` selects a local backend and guarantees `messageId`. Local children accept later messages and can cold-resume; external children expose one execution and reject continuation. `request.agentOptions` overrides supported child model settings. `delivery: 'parent'` supplies the model-facing completion notice; `delivery: 'caller'` lets workflows await the result without a parent notice or initial return guidance. Local parent delivery requires persistence; caller delivery can use an ephemeral local session. Cold resume requires persistence and Session query.
+
+### Child presets
+
+In-process spawn accepts an independent `agentPreset`; fork and external backends reject this option. Without a selection, a local child joins the parent's current preset revision. An explicit id mounts the currently available revision, even when that id matches the parent's. Configure model choices through [`dsh-tool-subagent`](../tool-subagent/README.md#selecting-a-child-preset) and persona and tools in the [preset composition](../../preset/agent-preset-registry/README.md). Cold resume preserves persona and tool restrictions recorded in historical child descriptors.
+
+### Messaging, interrupting, and discovering
+
+Every exact live Agent can use `sendMessage()` with a direct continuable child; a resident continuable child can also use it with its direct parent. A working target receives the Agent message through Steer at its nearest step; an idle target starts a turn, and only a direct child can be cold-resumed. The parent can also interrupt a running descendant or list its children at any time. A browser continuation prompt independently selects Queue or Steer and may carry image parts: the Host admits and persists each image batch through the attachment store before the child inbox accepts the message, and refuses delivery when the child's declared model does not accept image input. Direct-child discovery reads the parent-owned `subagentCatalog` projection. `listChildren(parentSessionId, signal?)` owns a live-preferred Session observation and returns the catalog asynchronously without reading child logs. It forwards cancellation and releases the observation after materialization. Materialization preserves parent event order in O(D) time for D facts. External entries are leaves and require no child Session observation. Descendant discovery recursively reads local child catalogs in parent event order, observing each reachable Session once. It skips branches whose catalogs cannot be read and returns diagnostics for them; neither path loads or resumes a child Agent.
+
+### Failure and recovery
+
+Starting without the `agents` service rejects with `CONTINUATION_UNAVAILABLE`; an available runtime rejects a missing or replaced parent with `UNAUTHORIZED`. Providers implementing neither execution method are rejected at registration with `UNSUPPORTED_CAPABILITY`; unsupported requested capabilities reject creation with the same code. The caller signal cancels only unpublished work; after publication, `dispose()` cancels the exact activation and waits for its descendants, including pending startups, and their resource cleanup. `result` settles after teardown and notifications, carrying output, optional structured data, and a stop reason; capture failures reject it after teardown. Cleanup failures reject `dispose()` and mark the lifecycle end as failed; the result promise and parent notification retain the captured execution result.
+
+-----
+
+<a id="understand-the-implementation"></a>
+## Understand the implementation
+
+<details>
+<summary>Implementation internals — click to expand</summary>
+
+This section explains how the service is built and where the observable behavior comes from; the full contract lives in [Use this package](#use-this-package).
+
+### Design concept
+
+- **One service, many providers.** The service is a named-provider registry; each backend registers under a unique name and a request picks one by name.
+- **One managed lifetime.** `SubagentManager` owns startup, message admission, capacity, parent relationships, and disposal. Each activation retains a local AgentHandle or external SubagentRun directly; local inbox and idle state belong only to the local variant.
+- **Fulfillment is publication.** `startActivation()` returns only after the child is accepted and its handle can cancel that exact execution.
+- **Trusted same-process values.** Requests, descriptors, and results are borrowed immutable; serialization and hostile-input validation belong at process and wire boundaries.
+
+### Source map
+
+| File | Role |
 |---|---|
-| `registerProvider(provider)` | Register one trusted same-process implementation by name. Registration is effect-scoped; removing it prevents new starts but does not revoke runs already returned to callers. Duplicate names fail loud. |
-| `getProvider(name)` | Return the provider, or `undefined` when absent. |
-| `list()` | Return provider names in insertion order. |
-| `start(name, request)` | Validate an ordinary caller request, resolve its detached `one-shot` descriptor, then await the provider until a real one-shot child is published. Fulfillment returns a holder-owned `SubagentRun`; rejection means the provider has already cleaned every unpublished startup resource, while post-publication turn or infrastructure faults settle through the run. Continuable children never enter through this operation. |
-| `startContinuable(spec)` | Establish one durable continuable child and deliver its initial prompt. Resolves with `{ childId, messageId }` when the child's inbox accepts that prompt, without waiting for the turn to start or for the message to reach the Session log; any earlier failure rejects with no ids and rolls the child back entirely. Requires `ctx.agents`, session persistence, and a provider with the `prepareContinuable` capability. |
-| `followup(parent, childId, content, { source, signal })` | Deliver one later message from the exact live direct parent as the child's next FIFO turn, matching `Agent.followup()` terminology, and return the accepted `MessageId`. A resident child's inbox accepts it directly (waking a waiting Activation); an absent one cold-resumes from its persisted Session. Requires `ctx.agents`; cold resume also requires session persistence. |
-| `interrupt(targetSessionId, authority)` | Interrupt one live continuable child's current turn under a human durable parent address (`{ kind: 'user', parentSessionId }`) or an exact live ancestor Agent (`{ kind: 'ancestor', agent }`). Admission is synchronous and the effect asynchronous: it issues `Agent.cancel(cause, { keepInbox: true })` and returns without waiting for the target to observe the signal. Unclaimed pending inbox work, the Activation, and published descendants are preserved; work already claimed into the interrupted turn is not requeued. An absent target is an accepted no-op; a wrong parent address or a stale, self-targeting, or non-ancestor caller rejects with `UNAUTHORIZED`. |
-| `reportFrom(child, content, { delivery, signal })` | Deliver one selected message from the exact live continuable child to its exact live direct parent and return the accepted stable `MessageId`. Quiet delivery injects context; waking delivery submits one later parent turn. |
-| `registerContinuableSetup(contribution)` | Compose an optional deployment capability into each continuable child's unpublished scope, with immediate revocation from resident children. |
-| `drainContinuableDescendants(parents)` | Close admission below exact live host-owned parent Agents, stop only their visible continuable descendants, await materializations admitted below those roots through publication or rollback, then release the selected forests child-first. The cutoff lasts until each exact parent leaves the registry; unrelated parent forests and manager-wide admission remain live. |
-| `listChildren(parentSessionId, signal?)` | List direct session-backed subagents with their `one-shot`/`continuable` mode, `running`/`inactive` activity, origin-classified one-level `hasChildren` hint, and per-child diagnostics, ordered by `createdAt` then id, without loading or resuming them. Reads the live session store and optional session persistence directly (live-only enumeration when persistence is absent) and requires the mounted `sessionProjections` registry; it does not require `ctx.agents`, the continuation manager, or any query service. |
-| `listDescendants(rootSessionId, signal?)` | Flatten the root's complete session tree in stable pre-order from the same live-preferred corpus, adding each subagent entry's durable `parentId` and root-relative `depth`. Ordinary sessions and one-shot children remain traversal nodes so continuable descendants below them are discovered. Identity, diagnostics, dependencies, and cancellation follow `listChildren()`. |
+| [`src/index.ts`](src/index.ts) | Service entry: provider registry, start and continuation API, lifecycle events |
+| [`src/manager.ts`](src/manager.ts) | Unified startup, message admission, cold resume, parent ownership, settlement, and disposal |
+| [`src/activation.ts`](src/activation.ts) | Execution records, capacity slots, child locks, and local output capture |
+| [`src/continuation-messages.ts`](src/continuation-messages.ts) | Adjacent-Agent messages, return guidance, and settlement notices |
+| [`src/internal.ts`](src/internal.ts) | Host-only Queue and Steer adapters plus standard adjacent-Agent messaging markers |
+| [`src/structured.ts`](src/structured.ts) | Activation-scoped structured capture and guards |
+| [`src/types.ts`](src/types.ts) | Public request, result, and provider contracts |
+| [`src/descriptor.ts`](src/descriptor.ts) | Versioned `subagent/descriptor` session-event vocabulary |
+| [`src/catalog.ts`](src/catalog.ts) | Parent-owned `subagent/catalog` event and chunked host projection |
+| [`src/child-agent.ts`](src/child-agent.ts) | Child composition, delegated policy, depth helpers |
+| [`src/list-children.ts`](src/list-children.ts) | Direct and recursive parent-catalog reads |
+| [`src/control.ts`](src/control.ts) | Browser control request validation and stable failure codes |
+| [`src/control-types.ts`](src/control-types.ts) | Client-safe catalog row, control requests, receipts, and failures |
+| [`src/archive-admission.ts`](src/archive-admission.ts) | The `subagent` family of the Workspace registry's archive admission: running descendants and their parent-cause cancel |
 
-`SubagentStartRequest.label` is an optional short durable display label for a session-backed one-shot child. Model-facing delegation supplies its existing `description`; lower-level callers need not invent presentation metadata. Continuable starts always carry their own required label. `signal` is required and is the canonical cancellation channel for a one-shot `start`. An abort before publication makes `start()` reject after rollback; an abort after publication cancels the returned run's remaining turn work without hiding its id. The request may also select a model, require structured output, cap delegation depth, restrict child tools, or set a child persona. For a continuable start or follow-up, the caller signal owns lookup, materialization, and admission only until inbox acceptance; afterward the manager owns the Activation independently, so later caller cancellation neither cancels the accepted turn nor disposes the child.
+### Provider preparation and structured output
 
-Follow-up authority comes from the exact live direct parent recorded in the child's durable header. Cold resume checks that authority before reconstruction and again in the final no-await inbox-admission span, so a parent unregistered or replaced during materialization cannot authorize delivery. The `source` on a follow-up records who supplied the delivered message and grants no authority.
+The service validates requested capabilities before creation. Local providers supply only `prepareContinuable()`: spawn returns fresh state and fork returns a completed-turn seed. The manager captures the parent model settings, delegated permissions, and composition before creating the child. External providers retain `start()` as a transport adapter and retain their own permission systems. The common manager owns their published execution. Structured tools, instructions, validation, and terminal guards belong to one local activation; they are not persisted as resume configuration. The child can submit its structured result after consuming accepted input and releasing owned descendants. Staging a result closes further input through tool-result policy and any enclosing PTC execution; a rejected result reopens input, while a committed result keeps it closed. Later cold resume has no structured schema.
 
-Same-process requests, descriptors, results, and event payloads are trusted typed values borrowed as immutable. The service does not clone or freeze them; serialization and hostile-input validation belong at actual process, worker, persistence, and model boundaries.
+External providers mint a fresh `SubagentRun.id` for each execution in the runtime's shared Session id namespace, across all parents and providers. A collision with a resident Agent, Session, or activation rejects startup with `DUPLICATE_CHILD` and disposes the new external handle without replacing the existing execution.
 
-## Capabilities
+### Activation settlement
 
-Start-time features are advertised in `provider.capabilities` because the service must reject an unsupported one-shot request before child creation:
+The manager reserves child identity and capacity, materializes a local Agent or external execution, and accepts the initial task. Local admission closes after Agent activity, pending input, and owned descendants finish, with activity revalidated after the final Session flush. Both local and external activations deliver their result after handle cleanup, capacity release, and settlement notifications. Host waits join progressing descendants and their cleanup, including failed executions; idle parked subtrees remain resident without delaying host completion. Closing admission and disposing the handle prevent late work from entering a released Agent. Parent delivery emits its notice after settlement; caller delivery leaves collection to the awaiting workflow. Headless hosts repeat `agent.whenIdle()` and `waitForChildren(agent)` until no child work remains and the parent stays idle with an unchanged Session sequence across the child check, so completion notices can produce the final parent answer.
 
-- `outputSchema` — enforce a structured final result.
-- `depthLimit` — enforce `maxDepth`.
-- `toolFilter` — apply the requested child tool restriction.
-- `persona` — apply a per-child persona.
+A local Agent failure without a subsequently committed `turn/end` settles as `error` after its owned descendants finish. Unclaimed input cannot keep that failed activation resident. A later committed turn ending supersedes the live failure and supplies the recovered outcome.
 
-Every in-process child is composed by one call, `applyChildComposition(childCtx, parent, composition)`, which joins the parent's agent-preset composition before applying the child's own persona and tool filter. The join is what gives the child its capabilities: with every model-facing row on the agent plane, a child that joined nothing would reach the model with an empty tool registry ([`dsh-agent-presets`](../../preset/agent-presets/README.md)). Taking the parent as a parameter is deliberate — it makes composing a child WITHOUT that join unrepresentable at the call sites, which is the defect the one call exists to prevent. A deployment composing no preset roster joins nothing and needs nothing: its model-facing rows sit in the host composition, where the child already resolves them through the tool registry's global layer.
+Successful local creation appends a `subagent/catalog` fact to the parent Session regardless of result delivery. External creation appends a catalog fact only with `delivery: 'parent'`; caller-owned external executions retain their caller's membership records. External entries use `mode: 'external'` to identify children without a local Session. Catalog entries record membership once at creation and carry no execution status. Complete results go to the caller or the parent completion notice. Projections exclude inherited facts. Direct lists read one parent projection, so completed local workflow children remain discoverable and can be opened or continued. Catalog payload v0 records local modes; v1 also accepts unknown mode; v2 records external executions. Readers support all three versions. Historical migration appends a v1 `subagent/catalog` from a readable child header when its descriptor is unavailable; local creation retains v0. Its `mode: 'unknown'` projection keeps the child visible without claiming continuation support; an existing complete entry remains authoritative.
 
-`childSessionMeta()` records the joined preset id on the child's durable header for the same reason a top-level session records its own: the preset decides the tool schemas and prompt sections the model saw, so a cold read of the child's history has to rebuild that composition rather than the deployment default. It is read from the parent's live scope chain, not from the parent header, because a parent that switched preset while blank runs on the newer composition while its header still names the older one.
+<a id="restoring-child-composition"></a>
+### Restoring child composition
 
-Continuable creation is the optional `SubagentProvider.prepareContinuable?()` method: its presence is the capability check, so the service rejects a configured continuable start on a provider without it, while a provider that has it may still serve ordinary one-shot delegations. The method returns only a detached `ContinuableCreateSpec` (`{ seed? }`) — data, never a capability: it carries no Agent, `AgentHandle`, prompt delivery, result, disposal, or resume operation, because the continuation manager owns identity reservation, composition, Agent creation, prompt delivery, cold resume, ownership, and disposal after preparation. A one-shot `SubagentRun` represents one disposable foreground delegation with one result and no cold-resume operation. The service may invoke one provider concurrently for distinct siblings: each start or preparation owns its mutable state and cancellation path, and one operation's failure, result, or cleanup must not settle or release another. A provider may queue its own capacity internally without changing that independence contract.
+An independently selected spawn records `agent-preset/selected` before its first own `subagent/descriptor`. Cold resume excludes the inherited event prefix and checks that ordering, then reads the preset id from the existing `agentPreset` projection. It mounts that id without requiring the original subagent provider to remain registered. A missing or broken selected preset rejects restoration; it does not fall back to the parent or deployment default.
 
-## The durable descriptor
+Logs without that selection before the first own descriptor, including historical spawn and fork logs, retain `composeFrom` of the parent's current composition. A header preset id, an inherited selection, or a selection after the descriptor does not opt a child into independent restoration, including a fork with no inherited events. Session and descriptor formats are unchanged. Independent cold resume uses the currently registered preset definition, without preserving an earlier revision across restarts.
 
-The Service Definition owns the versioned `subagent/descriptor` session event vocabulary (`src/descriptor.ts`): `snapshotSubagentDescriptor()` validates and detaches the record before provider work, and `foldSubagentDescriptor()` validates the complete current-version payload before recovering it from a loaded child log. Every local session-backed start appends one descriptor with the provider name and lifecycle `mode`. A `one-shot` descriptor optionally carries the caller-owned durable display `label`; a `continuable` descriptor requires its durable creation label and additionally records resolved child `agentOptions.provider`/`model` and optional `persona`/`toolFilter` for cold resume. These are explicit fields, never the merge-extensible `AgentOptions` object, so an unrelated extension value cannot break continuation. The descriptor omits `subagentDepth` (the persisted header's `delegationDepth` is the monotone floor) and `outputSchema` (an Activation's result contract). The event is log-only: no `surfaceOp`, absent from model history, and retained by the append-only log across compaction. Malformed current-version payloads are corrupt; unsupported versions cannot be classified by this runtime.
+### Ownership and invariants
 
-## Delegation depth
+- **The manager owns accepted work** — unpublished failures roll back; published handles cancel their exact activation and await child-first disposal.
+- **Registration is effect-scoped** — removing a provider blocks new starts but never revokes accepted runs.
+- **Agent-message authority is exact adjacency** — `sendMessage()` requires the exact live sender; every sender may target a direct continuable child, while only a sender with a resident continuable Activation may target its direct parent.
+- **The descriptor is log-only** — a session event absent from model history and retained across compaction; the writer records the resolved child provider, model, and reasoning effort for cold resume. Historical one-shot descriptors remain readable.
+- **This runtime answers archive admission for children** ([seam](../../workspace/workspace/README.md)) — `workspace/session-activity` reports the live subagent descendants inside a turn as the `subagent` family, found by the durable lineage this package records (`parentSession` with the subagent origin, any depth, never a fork) and labelled from each child's descriptor through a live Session observation when the Session query service is composed, otherwise by id; `workspace/session-stop` cancels each of them with the parent cause, one at a time, so one child refusing its cancel is logged while its siblings still stop. The parent's own turn, its jobs, and the archived-lineage step gate belong to the API Session Controller.
 
-The seam owns the depth vocabulary shared by Service Providers and Consumers: the `AgentOptions.subagentDepth` declaration, `assertSubagentMaxDepth`, and `delegationDepthOf(agent)`. The persisted `SessionHeader.delegationDepth` is authoritative and monotone — runtime options may deepen the count but never lower it, so a resumed child cannot be re-counted as top-level.
+</details>
 
-`inheritsParentContext` is descriptive rather than enforceable. It says only whether the child sees completed parent conversation history (`fork` does; `spawn` and the out-of-process one-shot providers do not), not whether it inherits tools, services, or authority.
+-----
 
-## Delegated policy
+<a id="further-exploration"></a>
+## Further Exploration
 
-Both in-process delegation paths fix the child's permission scope at the delegation boundary through the shared child-agent helpers. `captureDelegatedPolicyOverrides(parent)` snapshots the parent session's explicit sandbox override (`sandboxPolicy.overrideOf()`) and pins the child's approval policy to `'never'` whenever the approval capability is composed — regardless of the parent's own policy — so a delegated child acts only within its inherited sandbox scope and every ask (for example a `sandbox_permissions` escalation) is rejected deterministically instead of waiting on a prompt no one is watching (both services are optional `ctx.get` consumers). `appendDelegatedPolicyOverrides()` writes each value onto the child's own log as a `source: 'delegation'` `sandbox/mode` or `approval/policy` event during unpublished setup, after any fork seed — so fresh policy wins stale seed state and the child's effective policy stays reconstructable from its log alone. The sandbox deployment default is never copied: an unswitched parent stamps no `sandbox/mode` and its child follows the deployment default dynamically. A continuable start captures before its first await and seeds only fresh materialization; a cold resume replays the persisted delegation events instead of re-capturing the parent, so a parent switch after creation never retroactively changes a durable child. Every in-process child also receives a scoped runtime-context statement (`subagent:delegation`) telling it the scope is fixed and that a task needing wider access ends with a reported limitation, not retries. See the [one-shot](../../../.agents/notes/implemented/feature/2026-07-25-subagent-policy-inheritance.md) and [continuable](../../../.agents/notes/implemented/feature/2026-08-10-continuable-subagent-policy-inheritance.md) delegation-policy Agent Notes.
+Read these pages when the package-level contract is not enough. They move from the shared seam to the backends, the model-facing tools, and the design decisions.
 
-## One-shot ownership and lifecycle
+- [Subagent subsystem](../../../docs/subsystems/subagent.md) — the service contract, provider contract, and terminal result semantics.
+- [historical Subagent capability seam](../../../.agents/notes/archived/feature/2026-06-21-subagent-capability-seam.md) — the design record for the delegation capability family.
+- [Continuable subagents](../../../.agents/notes/implemented/feature/2026-07-28-continuable-subagent-conversations.md) — durable children that accept follow-up turns.
+- [In-process spawn backend](../subagent-spawn-in-process/README.md) — the simplest provider to compose.
+- [Auto review](../../experimental/auto-review/README.md) — the current-session authorization mode inherited only by in-process DSH children.
+- [Out-of-process ACP backend](../subagent-acp/README.md) — children with their own runtime over the Agent Client Protocol.
+- [DeepSeek input conversion](../../llm/llm-deepseek/README.md#model-experience) — provider replay rules for saved settlement notices.
+- [tool-subagent-control README](../tool-subagent-control/README.md) — the follow-up, interrupt, and listing surface.
 
-`provider.start(request): Promise<SubagentRun>` is the ownership-transfer boundary; the delegation tool also uses it inside its one-shot Task-backed background path. Before fulfillment, the provider owns setup and must cancel, roll back, and quiesce unpublished resources on every failure. After fulfillment, the caller owns the run and must call `dispose()` on every path; remaining prompt and turn work belongs to `SubagentRun.result`.
+-----
 
-`SubagentRun.result` resolves to `{ output, structured?, stopReason }`. Child-level failures resolve with a non-`completed` reason; only an infrastructure fault that the seam cannot represent may reject. `dispose()` is idempotent, cancels remaining work, and waits for both result settlement and child-resource quiescence. A result rejection remains on `result`; `dispose()` rejects only for an independent resource-release failure. `output` and the `subagent/end` event's `lastAssistantMessage` use the exported `AssistantOutputFold`/`finalAssistantOutput` helpers to select the child's last non-empty assistant message, or its accumulated assistant text when no such message exists. `output` is `[]` and the event field is absent when the child produced neither ([`SubagentResult.output`](../../../docs/subsystems/subagent.md#the-terminal-result-subagentresult) owns the result contract).
-
-A local run publishes an ordinary child agent/session before `start()` fulfills, returns that shared session id as `SubagentRun.id`, exposes the exact child as `SubagentRun.localAgent`, records `request.parent.session.id` in the child's `parentSession` header, and appends the resolved descriptor inside its initial turn. Remote providers instead mint a parent-scoped lifecycle id and return `localAgent: undefined`; without a local child session, their one-shot runs are not part of trace-backed enumeration.
-
-## Continuable children and Activations
-
-A continuable child has one durable Session and at most one process-local **Activation** — one residency epoch for a reconstructed child Agent, not a request, result, cancellation, or Task boundary. The Agent inbox is the only turn queue, so the continuation manager owns residency while the Agent loop owns all turn ordering and execution. No continuable path creates a Task or an intermediate result-bearing wrapper.
-
-The manager derives three internal residency conditions from Agent quiescence and the owned-child set rather than maintaining a second state machine: running (an active admission, open turn, or waking inbox work), waiting (quiescent but still owning at least one undisposed child), and settled (quiescent with every owned child disposed, so the manager disposes the `AgentHandle` and removes the Activation). Every continuation message uses `Agent.followup()` and becomes one FIFO turn with no steering of the current turn. Routing depends only on residency: running enqueues, waiting wakes the same Agent, and an absent Activation cold-resumes a new one.
-
-The manager reserves the child identity, resolves the durable descriptor, calls `ctx.agents.create()` (or `ctx.agents.resume()` for cold resume) through a private activation-owner scope, installs the returned `AgentHandle` in the Activation, establishes any continuable-parent ownership, and then submits the prompt. Cold resume never dispatches through a provider because the persisted Session already holds the initial prefix and the folded descriptor is the whole reconstruction input.
-
-### Settlement delivery
-
-When a resident Activation settles, the manager tells the child's durable direct parent, in the parent's own turn stream, that the child produced everything it is going to. Delivery is unconditional for every child whose id a caller actually received: it does not consider whether the child called `report`, because the endings that most need an account — a token ceiling, a model failure, cancellation, teardown — are exactly the ones where the child never got to choose. A materialization rolled back before its first accepted message stays silent, since that caller was told the child was not established. The message carries the epoch's stop reason, its final assistant content when it produced any, and durable provenance `{ kind: 'subagent-settled', form: 'notice', senderSessionId: <child-id> }` — a different source kind from a child-authored `subagent-report`, so a transcript never credits the child with words the runtime wrote.
-
-Two ordering rules make the delivery reliable rather than lucky, and both are why this belongs to the manager instead of an external `subagent/end` listener. First, the send happens **before** the child's ownership release, while the parent still counts the child and is therefore structurally unable to be judged settled. Second, a parent that is itself a resident Activation receives the message through the same waking-admission accounting as a report, so the window between the synchronous send and the microtask that admits it is not mistaken for quiescence — `Agent.status` folds context maintenance into `idle`, and a waking send behind maintenance only arms a deferred wake. Without either rule the parent can be disposed with the notice still in an inbox that `cancel()` clears, which loses it silently.
-
-An idle parent receives the notice as one ordinary later turn. A busy parent is steered into its nearest step boundary instead, so several children settling together cost one step rather than one turn each; steering rather than injecting also means a driver that retires between the status read and the send still claims the message. A parent whose own lineage is already draining receives the notice by injection, with no wake at all: `Agent.followup()` on a quiescent parent starts a turn and `cancel()` does not arm against a later one, so waking during teardown would spend a model request on an Agent its host is about to dispose — once per tree layer, since each layer's notice then wakes the layer above it. The injected message reaches a parent that is still reading its inbox, and the log records the account either way, but it does not outlive that parent's own disposal: `AgentHandle.dispose()` is a `keepInbox: false` cancel, which durably cancels an unclaimed notice. A resumed parent therefore has no pending notice to read: `list_agents` tells it which children exist and whether each is live or stored, while the outcome itself stays in the child's own Session, which a `send_message` reaches by resuming that child. A parent that has left the registry is not an error: the notice is dropped and the child's own Session remains the durable record. Delivery never blocks or fails teardown — a rejected send is logged, because retaining a child to retry a notice would pin its whole ancestry in `waiting` forever.
-
-A continuation-managed parent Activation records each child Session id in an `ownedChildren` set before the child can run and disposes only after every owned child Activation completes `AgentHandle` disposal (child-first). Teardown propagates Agent cancellation top-down before awaiting slow descendants, while handle release remains child-first. Top-level and other non-continuation Agents have no Activation and stay outside this waiting graph. Final settlement awaits a best-effort `ctx.sessions.flush(child.session)` before handle disposal. A listener rejection is logged without failing the Activation because listener participation does not identify a persistence backend; the persisted state may therefore be missing or stale on resume.
-
-## Lifecycle events
-
-The service emits a `subagent/start`/`subagent/end` pair for each one-shot run and each resident continuable Activation epoch, so continuable children are observable with the same vocabulary as one-shot runs without exposing whether the manager materialized, woke, or cold-resumed them. For a one-shot start it attaches the result observer before the synchronous `subagent/start`, so even an already-settled child still produces `subagent/start` before `subagent/end`; a continuable epoch that fails before residency emits neither edge. The pair shares a service-minted `runId`; the `local` flag is snapshotted from the provider's exact `localAgent` (always true for a continuable child), so observers never infer run identity or locality from reusable provider/session names. The `provider` field contains the provider name recorded when the child was first created rather than claiming current registration: an accepted one-shot run may settle after provider removal, and a cold-resumed epoch reads the initial provider name from its descriptor without calling or registering that provider.
-
-Run events are scoped to the delegating parent. Every listener is independently contained: a synchronous throw or rejected returned promise is logged without starving peer listeners or changing the run.
-
-Provider additions and removals also emit `subagent/provider-added` and `subagent/provider-removed`. Consumers such as the model-facing tool use those events because Cordis may load sibling plugins concurrently; configuration order does not prove registration order.
-
-Continuable children do not create `SubagentRun` or Jobs. The continuation manager directly owns one process-local Activation and retained `AgentHandle` per resident child Session, uses the Agent inbox as the only FIFO, and cold-resumes from the durable descriptor. Exact live direct-parent identity authorizes parent-to-child delivery. Exact live child identity authorizes reports; the manager derives the recipient from durable `parentSession`, and `MessageSource` records the sender without granting authority. Interrupt authority is deliberately wider than delivery authority: a human presents the durable direct-parent address so a live child stays stoppable while its parent Agent is offline, and any exact live ancestor recorded in the Activation's materialization lineage may stop its descendant, because stopping a turn is idempotent and delivers no content.
-
-When `ctx.sessionProjections` is available, the service registers two projection units. `subagentTiming` resets at each descriptor so a fork seed's ancestor work cannot enter the child's total, then accumulates `turn/start` → `turn/end` active time and retains same-cut `active.since` and `active.through` bounds for an open turn; while that turn remains open, `active.through` follows the latest folded event, giving an inactive consumer a conservative crash bound without mixing in newer session metadata. `subagent` folds the durable identity — mode plus creation label — from `subagent/descriptor` events with the same last-wins reset discipline, so a fork seed's ancestor descriptor stands only until the child's own overrides it; a malformed or unrecognized-version payload folds to the serializable `null` sentinel — indistinguishable from a log with no descriptor, and surviving every JSON push frame so a consumer replaces a stale identity instead of keeping it — and never throws.
-
-`registerContinuableSetup()` lets optional packages add child-scoped capabilities without teaching the continuation manager their names. Contributions install synchronously before Activation publication, roll back with failed setup, and are released with the child scope. New grants wait for the next Activation, while contribution removal revokes every resident installation immediately.
-
-## Collection model
-
-The model-facing tool collects synchronously by default: it awaits the child result and disposes the run before returning. One-shot background delegation registers a plain Task in the tool, whose generic status, collection, and cancellation tools own later interaction, and persists its model-supplied `description` as the optional display label. Continuable background delegation calls `ctx.subagents.startContinuable()` and returns only the durable child id; the child owns its own turns from inbox acceptance, so there is no Task and no result promise — a caller sends later work with the `send_message` follow-up tool, and `interrupt()` stops only the current turn without disposing the child, and the durable child Session remains the source of the child's detailed output. The continuation manager exists only while `ctx.agents` is available, and session persistence is resolved per continuation operation. Independently, `listChildren()` enumerates the live-preferred merge of the live session store and optional session persistence — live-only when persistence is absent, since a cold child cannot be resumed then either — and serves each child's durable mode/label from the registered `subagent` projection unit: the registry's watermark snapshot for a live child; for a cold one, a durable projection-cache row when it serves an own-suffix identity — its `seq` gate proves the value postdates the fork seed, where a child's own descriptor is immutable once appended — else one bounded-concurrency persistence inspection folded through the registry, whose result must still name the enumerated lifecycle (a re-published id degrades to a `corrupt` diagnostic). A throwing cache read renders no verdict — the cache is derived data — and silently falls through to that authoritative re-fold. The projection fold is the single classification authority; listing parses no descriptor itself. A served identity produces a child row; a settled candidate whose fold served no identity is a `corrupt` diagnostic, a failed inspection is a transient `unavailable` retried on the next listing, and a running candidate without an identity yet is omitted (the creation window before its descriptor is appended). It never consults the continuation manager, Agent registrations, Activations, or providers. Each child row derives its read-time `hasChildren` hint from merged headers carrying durable `origin: 'subagent'`; it does not read descendant event logs, and the descriptor-backed child catalog remains authoritative when expanded. Service consumers such as a UI can retain both modes and choose a fallback for an unlabeled one-shot child; the model-facing `list_agents` tool projects only `continuable` entries and refines status through the live Agent registry and maps storage-only to its resumable-not-terminal `ready` (`running`/`idle`/`ready`) and walks `listDescendants()` for its `descendants` scope. The listing forwards the caller's signal to every persistence read, checks cancellation around each of those awaits, and reports every observed abort as `SubagentError` code `CANCELLED`; an unmounted projection registry fails loud with `SUBAGENT_CONTROL_PROJECTIONS_UNAVAILABLE`, and a missing session store with `SUBAGENT_CONTROL_SESSION_STORE_UNAVAILABLE`. See the [background subagent tasks Agent Note](../../../.agents/notes/implemented/feature/2026-07-08-background-subagent-tasks.md), the [continuable background subagents Agent Note](../../../.agents/notes/implemented/feature/2026-07-21-continuable-background-subagents.md), the [durable catalog Agent Note](../../../.agents/notes/implemented/feature/2026-07-22-durable-subagent-catalog-and-list-agents.md), the [merged-service Agent Note](../../../.agents/notes/implemented/simplification/2026-07-26-merge-subagent-control-service.md), the [capability-seam Agent Note](../../../.agents/notes/implemented/feature/2026-06-21-subagent-capability-seam.md), and `src/types.ts` for the complete contracts.
-
-Continuable Activations await a best-effort final session flush without treating listener participation as durability confirmation. One-shot runs retain best-effort session checkpointing, so a completed one-shot child is discoverable after disposal only when its session actually reached persistence; the service does not invent a catalog entry from Task history when that checkpoint is absent.
-
+<a id="model-experience"></a>
 ## Model Experience
 
 ### Settlement notice
 
 #### What the model sees
 
-One user-role parent message opening with the outcome — `Background subagent <child-id> finished and will do no further work unless you send it more.`, or the matching line for a child that was stopped, ran out of room, declined, or failed — followed by `Its closing message:` and the child's final assistant content, or `It left no closing message.` when it produced none. This is the service's only direct parent-side contribution; delegation schemas, parent continuation and discovery, and the child-scoped `report` belong to `dsh-tool-subagent`, `dsh-tool-subagent-control`, and `dsh-tool-subagent-report`.
+Parent delivery emits a user-role status notice containing the child’s nonempty final text blocks, regardless of `send_message` availability or use. External notices also state that further messages are unsupported. Reasoning and other nontext blocks are excluded. Every parent notice includes available structured output as `Structured result: <JSON>` and the provider’s safe diagnostic as a separate text block. Empty closing text is reported as `It left no closing message.` Caller delivery emits no notice; SDK lifecycle notifications retain complete child output when cleanup succeeds.
 
 #### Token effect
 
-One notice per settled Activation in the parent's request, sized by the child's final message. A child that both reports and settles costs the parent both.
+One notice per settled activation using parent delivery. Caller delivery adds no completion message; its consumer owns result presentation.
 
 #### KV Cache effect
 
@@ -144,11 +196,32 @@ Prefix-stable within a child: the statement never changes during the child's lif
 
 ## Known Limitations and Deferred Work
 
-- **ACP children remain one-shot and are not trace-enumerable** — an ACP run has no local child session in the parent's session corpus. An ACP `prepareContinuable` requires persisting the remote session id in provider-specific descriptor data and a per-child continuation advertisement, since ACP `loadSession` support is negotiated per child rather than established by the method's presence. Remote providers also require a separate Activation ownership contract with equivalent authenticated control and child-first quiescence before they support continuable children.
-- **No host-user continuation** — `followup()` requires the exact live direct parent. Only `interrupt()` accepts a durable parent-address user authority, because stopping a turn is idempotent and delivers no content; a future host adapter needs a concrete authenticated interaction before the seam gains a user delivery capability.
-- **No current-turn steering** — continuable messages and waking reports enqueue later turns; neither redirects an open turn.
-- **Wake gap during cancellation convergence** — a waking follow-up accepted after the interrupt signal is issued but before the active driver becomes idle remains queued until another waking send. Issue #1838 owns the agent-loop wake latch, which also affects ordinary session cancellation.
-- **Process-local residency** — the Activation inbox and ownership graph do not coordinate two harness processes; concurrent access to one persistence store still requires a durable mailbox and cross-process lease protocol.
-- **No replay of accepted-but-unlogged messages** — only messages written to the child Session log are reconstructable with the source that supplied them. A crash may lose an accepted initial prompt or follow-up that never reached the log; a later authorized message can cold-resume the child, but the lost message is not replayed automatically.
-- **No durable report mailbox** — reports require a live direct parent and provide acceptance identity rather than exactly-once delivery or a read receipt.
+<a id="known-limitations-and-deferred-work"></a>
+
+
+These limits define when the seam is a poor fit or needs special operational care. They are current package constraints, not a general delegation comparison or a task backlog.
+
+- **Descendant reads are sequential** — each reachable catalog, including one-shot children, takes one observation. A cold Session without a valid prepared observation requires a full-log read; large cold trees can accumulate storage latency.
+- **External children execute once** — ACP, DSH SDK, Codex, and Claude Code have no local child Session and accept no follow-up input. Their parent-owned records remain discoverable after disposal.
+- **Adjacent model messaging only** — `sendMessage()` requires an exact live sender; every sender may target a direct continuable child, while only a sender with a resident continuable Activation may target its direct parent. Browser prompts use a separate human Queue-or-Steer control path.
+- **A direct parent must remain live for child-to-parent delivery** — the service has no durable parent mailbox; a missing parent rejects the message instead of accepting work it cannot wake.
+- **Wake gap during cancellation convergence** — a follow-up accepted after an interrupt signal but before the Agent becomes idle stays queued until another waking send.
+- **Pending injected context retains an Activation** — settlement conservatively treats every Inbox occurrence as unfinished. Context parked after the Agent becomes idle keeps the child and its live ancestors resident until a waking delivery claims it, a queue mutation removes it, or manager teardown discards it. Host completion joins active work, pending child creation, and resource cleanup, but does not wait for a subtree containing only idle parked inboxes; it neither completes those activation results nor discards their messages.
+- **Process-local residency** — the Activation inbox and ownership graph do not coordinate two harness processes; concurrent access to one persistence store needs a durable mailbox and cross-process lease protocol.
+- **No replay of accepted-but-unlogged messages** — a crash can lose an accepted prompt that never reached the child's session log; the lost message is not replayed automatically.
+- **No durable parent mailbox** — child-to-parent messages require a resident continuable child and live direct parent, and provide acceptance identity rather than exactly-once delivery.
 - **Lifecycle events are observe-only** — a run-affecting `subagent/end` continuation or decision API waits for a concrete consumer.
+
+<a id="dev-note"></a>
+### Dev Note
+
+<details>
+<summary>Working context for maintainers — click to expand</summary>
+
+This Dev Note is working context for maintainers: open questions and undecided directions. It is explicitly non-authoritative — shipped behavior and limits live in the sections above and in the package code.
+
+- **Cross-process continuation** — a durable mailbox and lease protocol would let two harness processes share one persistence store.
+- **Continuable ACP children** — requires persisting the remote session id and a per-child continuation advertisement.
+- **Host-user delivery** — a future host adapter needs a concrete authenticated interaction before the seam gains a user delivery capability.
+
+</details>

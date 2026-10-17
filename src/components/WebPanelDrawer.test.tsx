@@ -6,7 +6,7 @@ import WebPanelDrawer, { type WebPanelRequest } from './WebPanelDrawer';
 beforeEach(() => {
   window.localStorage.clear();
   // This suite retains desktop coverage; browser mode is tested explicitly below.
-  vi.stubGlobal('hpclawDesktop', {});
+  vi.stubGlobal('traceDesktop', {});
   vi.stubGlobal('fetch', vi.fn());
 });
 
@@ -29,7 +29,7 @@ function renderDrawer(panels: WebPanelRequest[], activeIndex = 0) {
 
 describe('WebPanelDrawer', () => {
   it('uses a sandboxed iframe with an external fallback in an ordinary browser', () => {
-    vi.stubGlobal('hpclawDesktop', undefined);
+    vi.stubGlobal('traceDesktop', undefined);
     renderDrawer([{ url: 'https://example.com/report' }]);
     expect(document.querySelector('webview')).toBeNull();
     const iframe = screen.getByTestId('webpanel-browser-iframe');
@@ -39,7 +39,7 @@ describe('WebPanelDrawer', () => {
   });
 
   it('uses the classic 600px opaque panel even if the redesigned width was saved', () => {
-    window.localStorage.setItem('hpclaw_web_panel_width', '760');
+    window.localStorage.setItem('trace_web_panel_width', '760');
     renderDrawer([{ url: 'https://example.com' }]);
     const drawer = screen.getByTestId('web-panel-drawer');
     expect(drawer.style.width).toBe('600px');
@@ -64,7 +64,7 @@ describe('WebPanelDrawer', () => {
     const webview = document.querySelector('webview');
     expect(webview).not.toBeNull();
     expect(webview!.getAttribute('src')).toBe('https://example.com/doc');
-    expect(webview!.getAttribute('partition')).toBe('hpclaw-webpanel');
+    expect(webview!.getAttribute('partition')).toBe('trace-webpanel');
 
     const external = screen.getByRole('link', { name: '在浏览器中打开' });
     expect(external).toHaveAttribute('href', 'https://example.com/doc');
@@ -179,5 +179,58 @@ describe('WebPanelDrawer', () => {
     ], 1);
     const external = screen.getByRole('link', { name: '在浏览器中打开' });
     expect(external).toHaveAttribute('href', 'https://example.com/b');
+  });
+});
+
+describe('WebPanelDrawer 拖拽调宽的文本选中恢复', () => {
+  afterEach(() => {
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+
+  function dragHandle() {
+    renderDrawer([{ url: 'https://example.com' }]);
+    return screen.getByRole('button', { name: '调整网页面板宽度' });
+  }
+
+  it('pointerdown 请求指针捕获并置 body userSelect，pointerup 后写回拖拽前的原值', () => {
+    document.body.style.userSelect = 'text';
+    const handle = dragHandle();
+    const capture = vi.fn();
+    (handle as any).setPointerCapture = capture;
+
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 500 });
+    expect(capture).toHaveBeenCalledWith(1);
+    expect(document.body.style.userSelect).toBe('none');
+
+    fireEvent.pointerUp(document);
+    expect(document.body.style.userSelect).toBe('text');
+  });
+
+  it('pointercancel 同样恢复 body userSelect', () => {
+    const handle = dragHandle();
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 500 });
+    expect(document.body.style.userSelect).toBe('none');
+    fireEvent.pointerCancel(document);
+    expect(document.body.style.userSelect).toBe('');
+  });
+
+  it('拖拽进行中 window 上的 pointerup 兜底不清除选中禁用（防误清），document 收到后才恢复', () => {
+    const handle = dragHandle();
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 500 });
+    // 直接派发到 window：不经过 document（模拟未冒泡到 document 的路径），拖拽仍在进行，兜底不得提前还原
+    fireEvent.pointerUp(window);
+    expect(document.body.style.userSelect).toBe('none');
+    fireEvent.pointerUp(document);
+    expect(document.body.style.userSelect).toBe('');
+  });
+
+  it('拖拽中组件卸载时通过 cleanup 恢复 body userSelect', () => {
+    renderDrawer([{ url: 'https://example.com' }]);
+    const handle = screen.getByRole('button', { name: '调整网页面板宽度' });
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 500 });
+    expect(document.body.style.userSelect).toBe('none');
+    cleanup();
+    expect(document.body.style.userSelect).toBe('');
   });
 });

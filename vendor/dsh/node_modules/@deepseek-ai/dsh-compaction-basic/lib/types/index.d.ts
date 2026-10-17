@@ -7,6 +7,7 @@ import { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compaction';
+import type { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { SummarizationInput, SummaryResult } from './summarizer.ts';
@@ -66,7 +67,7 @@ export declare class BasicCompactionEngine extends CompactionEngine {
      * @param signal - optional summarization cancellation signal.
      * @returns the successful durable compaction result.
      */
-    compactRegion(start: number, end: number, agent: Agent, signal?: AbortSignal): Promise<CompactionResult>;
+    compactRegion(start: SessionSeq, end: SessionSeq, agent: Agent, signal?: AbortSignal): Promise<CompactionResult>;
     /**
      * Force one useful idle-session compaction below the pressure threshold, and
      * resolve only after its standalone marker pair is durably checkpointed.

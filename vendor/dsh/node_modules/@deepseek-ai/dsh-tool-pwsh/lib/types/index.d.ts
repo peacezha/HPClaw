@@ -5,8 +5,9 @@
  * PowerShell-dialect: native `C:\...` paths and `$env:NAME` variables.
  *
  * Behavior mirrors `dsh-tool-bash` call-for-call: foreground and
- * `run_in_background` execution (background handles register with the
- * generic `ctx.jobs` runtime), the managed `DSH_*` environment through the
+ * `run_in_background` execution (with a job registry composed, every call
+ * registers its process with `ctx.jobs` as it starts, and a foreground call
+ * waits on its job until the timeout passes), the managed `DSH_*` environment through the
  * shared `shell-env` registry, the per-call sandbox policy resolution (the
  * calling session's mode and cwd travel to the confining executor), the
  * sandbox-denial rendering with the same-turn escalation surface
@@ -29,8 +30,21 @@ export declare const name = "tool-pwsh";
 export declare const inject: string[];
 /** Configuration for the pwsh tool. */
 export interface Config {
-    /** Expose `run_in_background` (default true); disabled calls are also rejected. */
+    /**
+     * Expose `run_in_background` while a job registry is composed (default
+     * true); disabled calls are also rejected. Without a registry the tool is
+     * foreground-only regardless.
+     */
     enableRunInBackground?: boolean;
+    /**
+     * Keep a foreground command that reaches its timeout running as a
+     * background job instead of killing it (default true). Applies only while
+     * background execution is available: with `enableRunInBackground` false or
+     * no job registry, the executor's deadline kills the command. A foreground
+     * command the registry refuses at its start (admission or a missing
+     * controller) also runs under the deadline kill.
+     */
+    promoteOnTimeout?: boolean;
 }
 /** Runtime configuration schema for the pwsh tool plugin. */
 export declare const Config: z<Config>;

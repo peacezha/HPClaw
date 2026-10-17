@@ -25,7 +25,7 @@ function comparable(value: string): string {
 }
 
 beforeEach(() => {
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-localws-'));
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-localws-'));
   fs.mkdirSync(path.join(tmpRoot, 'workspace'), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, 'outside'), { recursive: true });
   workspace = fs.realpathSync(path.join(tmpRoot, 'workspace'));

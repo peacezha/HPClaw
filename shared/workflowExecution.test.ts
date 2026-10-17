@@ -18,27 +18,27 @@ import {
 
 describe('workflow execution marker', () => {
   it('round trips a formal isolated run context', () => {
-    const line = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/hpclaw_flows/wf/runs/run-1' });
+    const line = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/trace_flows/wf/runs/run-1' });
     expect(parseWorkflowExecutionContext(`before\n${line}\nafter`)).toEqual({
-      workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/hpclaw_flows/wf/runs/run-1', policy: 'isolated-run-v1',
+      workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/trace_flows/wf/runs/run-1', policy: 'isolated-run-v1',
     });
   });
   it('strips only valid run protocol lines and uses normalized run identity for breakpoint resumes', () => {
     const marker = formatWorkflowExecutionContext({ workflowId: 'w', runId: 'r', runDir: '/home/u/runs/r/' });
     expect(stripWorkflowExecutionMarkers(marker + '\n从断点继续。')).toBe('从断点继续。');
-    expect(stripWorkflowExecutionMarkers('[HPCLAW_WORKFLOW_RUN] malformed')).toBe('[HPCLAW_WORKFLOW_RUN] malformed');
+    expect(stripWorkflowExecutionMarkers('[TRACE_WORKFLOW_RUN] malformed')).toBe('[TRACE_WORKFLOW_RUN] malformed');
     expect(workflowRunIdentity(parseWorkflowExecutionContext(marker)!)).toBe(workflowRunIdentity({
       workflowId: 'w', runId: 'r', runDir: '/home/u/runs/r', policy: 'isolated-run-v1',
     }));
   });
 
   it('rejects traversal and malformed markers', () => {
-    expect(parseWorkflowExecutionContext('[HPCLAW_WORKFLOW_RUN] nope')).toBeNull();
-    expect(parseWorkflowExecutionContext('[HPCLAW_WORKFLOW_RUN] {"workflowId":"w","runId":"r","runDir":"/x/../etc","policy":"isolated-run-v1"}')).toBeNull();
+    expect(parseWorkflowExecutionContext('[TRACE_WORKFLOW_RUN] nope')).toBeNull();
+    expect(parseWorkflowExecutionContext('[TRACE_WORKFLOW_RUN] {"workflowId":"w","runId":"r","runDir":"/x/../etc","policy":"isolated-run-v1"}')).toBeNull();
   });
 
   it('restores the formal run from full history even when the transport window would omit it', () => {
-    const marker = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/hpclaw_flows/wf/runs/run-1' });
+    const marker = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir: '/home/u/trace_flows/wf/runs/run-1' });
     const messages = [
       { content: marker },
       ...Array.from({ length: 30 }, (_, index) => ({ content: `later message ${index}` })),
@@ -48,10 +48,10 @@ describe('workflow execution marker', () => {
 
   it('validates a separately transported workflow context', () => {
     expect(normalizeWorkflowExecutionContext({
-      workflowId: 'wf-2', runId: 'r2', runDir: '/home/u/hpclaw_flows/w/03_workspace/runs/r2/', policy: 'isolated-run-v1',
-    })?.runDir).toBe('/home/u/hpclaw_flows/w/03_workspace/runs/r2');
+      workflowId: 'wf-2', runId: 'r2', runDir: '/home/u/trace_flows/w/03_workspace/runs/r2/', policy: 'isolated-run-v1',
+    })?.runDir).toBe('/home/u/trace_flows/w/03_workspace/runs/r2');
     expect(normalizeWorkflowExecutionContext({
-      workflowId: 'wf-2', runId: 'r2', runDir: '/home/u/hpclaw_flows/../etc', policy: 'isolated-run-v1',
+      workflowId: 'wf-2', runId: 'r2', runDir: '/home/u/trace_flows/../etc', policy: 'isolated-run-v1',
     })).toBeNull();
   });
 });
@@ -65,8 +65,8 @@ describe('workflow configure marker', () => {
   });
 
   it('rejects malformed and hostile directives', () => {
-    expect(parseWorkflowConfigureDirective('[HPCLAW_WORKFLOW_CONFIGURE] nope')).toBeNull();
-    expect(parseWorkflowConfigureDirective('[HPCLAW_WORKFLOW_CONFIGURE] {}')).toBeNull();
+    expect(parseWorkflowConfigureDirective('[TRACE_WORKFLOW_CONFIGURE] nope')).toBeNull();
+    expect(parseWorkflowConfigureDirective('[TRACE_WORKFLOW_CONFIGURE] {}')).toBeNull();
     expect(normalizeWorkflowConfigureDirective({ workflowId: `a\nb` })).toBeNull();
     expect(normalizeWorkflowConfigureDirective('wf-1')).toBeNull();
   });
@@ -86,10 +86,10 @@ describe('workflow configure marker', () => {
 
 describe('workflow run detached marker', () => {
   it('round trips a detached runDir', () => {
-    const line = formatWorkflowRunDetached('/home/u/hpclaw_flows/wf/03_workspace/runs/run-1');
-    expect(parseWorkflowRunDetached(`note\n${line}`)).toBe('/home/u/hpclaw_flows/wf/03_workspace/runs/run-1');
+    const line = formatWorkflowRunDetached('/home/u/trace_flows/wf/03_workspace/runs/run-1');
+    expect(parseWorkflowRunDetached(`note\n${line}`)).toBe('/home/u/trace_flows/wf/03_workspace/runs/run-1');
     expect(parseWorkflowRunDetached('no marker')).toBeNull();
-    expect(parseWorkflowRunDetached('[HPCLAW_WORKFLOW_RUN_DETACHED] nope')).toBeNull();
+    expect(parseWorkflowRunDetached('[TRACE_WORKFLOW_RUN_DETACHED] nope')).toBeNull();
   });
 
   it('strips detached marker lines for rendering', () => {
@@ -99,7 +99,7 @@ describe('workflow run detached marker', () => {
   });
 
   it('detached runs are skipped when restoring the latest workflow context', () => {
-    const runDir = '/home/u/hpclaw_flows/wf/03_workspace/runs/run-1';
+    const runDir = '/home/u/trace_flows/wf/03_workspace/runs/run-1';
     const marker = formatWorkflowExecutionContext({ workflowId: 'wf-1', runId: 'run-1', runDir });
     const messages = [
       { content: marker },
@@ -123,22 +123,22 @@ describe('workflow run detached marker', () => {
 
 describe('extractRunDirFromText（贴路径询问场景的绑定恢复，v0.4.31）', () => {
   it('从「路径+任务情况」的消息里提取 RUN 目录', () => {
-    const text = '/public/home/yxli26/hpclaw_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4任务情况';
+    const text = '/public/home/yxli26/trace_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4任务情况';
     expect(extractRunDirFromText(text))
-      .toBe('/public/home/yxli26/hpclaw_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4');
+      .toBe('/public/home/yxli26/trace_flows/DAP-seq-b66e50/03_workspace/runs/DAP-seq-b66e50-20260927-103232-4fe4');
   });
 
   it('路径带引号或换行前缀也能提取，普通目录不误判', () => {
-    expect(extractRunDirFromText('看下"/home/u/hpclaw_flows/f/03_workspace/runs/r1" 的状态'))
-      .toBe('/home/u/hpclaw_flows/f/03_workspace/runs/r1');
+    expect(extractRunDirFromText('看下"/home/u/trace_flows/f/03_workspace/runs/r1" 的状态'))
+      .toBe('/home/u/trace_flows/f/03_workspace/runs/r1');
     expect(extractRunDirFromText('/public/home/u/data 里有什么')).toBeNull();
-    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/02_reference 是什么')).toBeNull();
+    expect(extractRunDirFromText('/home/u/trace_flows/f/02_reference 是什么')).toBeNull();
     expect(extractRunDirFromText('')).toBeNull();
   });
 
   it('拒绝穿越与尾斜杠归一', () => {
-    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/03_workspace/runs/../runs/x')).toBeNull();
-    expect(extractRunDirFromText('/home/u/hpclaw_flows/f/03_workspace/runs/r1/'))
-      .toBe('/home/u/hpclaw_flows/f/03_workspace/runs/r1');
+    expect(extractRunDirFromText('/home/u/trace_flows/f/03_workspace/runs/../runs/x')).toBeNull();
+    expect(extractRunDirFromText('/home/u/trace_flows/f/03_workspace/runs/r1/'))
+      .toBe('/home/u/trace_flows/f/03_workspace/runs/r1');
   });
 });

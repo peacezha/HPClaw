@@ -3,7 +3,7 @@
 // 本脚本只用于手动刷新/调试。
 //
 // 用法（在 源码/ 目录下）：
-//   HPCLAW_DATA_ROOT=<用户数据目录> npx tsx scripts/seed-bioskills-flows.ts
+//   TRACE_DATA_ROOT=<用户数据目录> npx tsx scripts/seed-bioskills-flows.ts
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadWorkflows, mergeGeneratedBioskills, saveWorkflows } from '../server/workflows/workflowStore';

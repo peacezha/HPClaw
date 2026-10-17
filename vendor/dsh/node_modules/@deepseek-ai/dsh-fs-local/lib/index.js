@@ -1,12 +1,14 @@
 import { constants } from "node:buffer";
+import { once } from "node:events";
+import { watch } from "chokidar";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, toNamespacedPath } from "node:path";
 import { pathToFileURL } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { FileSystem, FsError, FsTargetKey, FsVersion } from "@deepseek-ai/dsh-fs";
 import { randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
-import { TextDecoder } from "node:util";
+import { createReadStream, realpath } from "node:fs";
+import { chmod, link, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { TextDecoder, promisify } from "node:util";
 //#region lib/types/win32.js
 /**
 * Windows security-descriptor helpers for atomic local-file replacement. Koffi loads lazily so
@@ -93,6 +95,7 @@ async function replaceFileWin32(replaced, replacement) {
 * @module @deepseek-ai/dsh-fs-local/fsio
 */
 const BINARY_SAMPLE_BYTES = 8192;
+const realpath$1 = promisify(realpath.native);
 const DIFF_BASIS_READ_CHUNK_BYTES = 64 * 1024;
 function isENOENT(error) {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -143,6 +146,19 @@ function versionOf(info) {
 	return FsVersion(`${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`);
 }
 /**
+* Anchor a path using native drive semantics and POSIX physical parent traversal.
+* @param cwd - provider base directory for relative paths.
+* @param path - non-empty requested path.
+* @returns absolute display spelling shared by target resolution and no-follow metadata.
+*/
+function localDisplayPath(cwd, path) {
+	const absoluteCwd = isAbsolute(cwd) ? cwd : `${process.cwd()}${sep}${cwd}`;
+	const raw = isAbsolute(path) ? path : `${absoluteCwd}${sep}${path}`;
+	const physicalSpelling = /(?:^|[\\/])\.\.(?:[\\/]|$)/u.test(raw) ? raw : resolve(cwd, path);
+	/* v8 ignore next -- Native Windows tests cover DOS drive-relative resolution; POSIX preserves physical traversal. */
+	return process.platform === "win32" ? resolve(cwd, path) : physicalSpelling;
+}
+/**
 * Resolve a path to its absolute display path and realpath identity. For a missing target,
 * realpath the nearest existing ancestor and append the missing suffix, preserving identity
 * across symlinked ancestors before and after creation.
@@ -152,11 +168,11 @@ function versionOf(info) {
 */
 async function resolveLocalTarget(cwd, path) {
 	if (path.trim().length === 0) throw new FsError("file_path must be a non-empty string", "FS_NOT_FOUND");
-	const displayPath = resolve(cwd, path);
+	const displayPath = localDisplayPath(cwd, path);
 	try {
 		return {
 			displayPath,
-			targetKey: FsTargetKey(await realpath(displayPath))
+			targetKey: FsTargetKey(await realpath$1(displayPath))
 		};
 	} catch (error) {
 		/* v8 ignore next -- Windows reports this case as ENOENT and repairs it in the ancestor walk below. */
@@ -167,7 +183,9 @@ async function resolveLocalTarget(cwd, path) {
 	const missing = [basename(displayPath)];
 	let ancestor = dirname(displayPath);
 	while (true) try {
-		const realAncestor = await realpath(ancestor);
+		const realAncestor = await realpath$1(ancestor);
+		/* v8 ignore next -- POSIX rejects this traversal; Windows normalizes parent segments before filesystem lookup. */
+		if (missing.includes("..")) throw new FsError(`cannot resolve "${displayPath}": parent traversal crosses a missing directory`, "FS_NOT_FOUND");
 		/* v8 ignore start -- native Windows coverage exercises this repair; POSIX reports ENOTDIR before this point. */
 		if (process.platform === "win32") {
 			if (!(await stat(realAncestor)).isDirectory()) throw new FsError(`cannot resolve "${displayPath}": a parent path segment is not a directory`, "FS_NOT_FOUND");
@@ -254,7 +272,7 @@ function listingIoError(displayPath, error) {
 async function resolveListedChildTarget(parent, name) {
 	const identity = await resolveLocalTarget(parent.targetKey, name);
 	return {
-		displayPath: join(parent.displayPath, name),
+		displayPath: localDisplayPath(parent.displayPath, name),
 		targetKey: identity.targetKey
 	};
 }
@@ -301,7 +319,7 @@ async function listDirectory(target, signal) {
 				...childInfo?.type === "file" ? { size: childInfo.size } : {}
 			});
 		} catch (error) {
-			throw listingIoError(join(target.displayPath, entry.name), error);
+			throw listingIoError(localDisplayPath(target.displayPath, entry.name), error);
 		}
 		throwIfAborted(signal, "list");
 	}
@@ -385,6 +403,39 @@ async function readWholeBytes(target, signal, maxBytes, internals = {}) {
 	} catch (error) {
 		/* v8 ignore next 2 -- a mid-stream abort needs cancellation racing an active read; pre-abort is deterministic. */
 		if (isAbortError(error)) throw new FsError("read aborted", "FS_ABORTED");
+		throw error;
+	}
+	return Buffer.concat(chunks, bytes);
+}
+/**
+* Read the bytes at `[offset, offset + length)` of a regular file with no
+* decoding or binary rejection. The window is the bound: the stream opens at
+* `offset` and closes after `length` bytes, so no more than the window is ever
+* buffered whatever the file's size; a window at or past the end is empty.
+* @param target - the resolved file to read.
+* @param range - `offset`, the 0-based first byte, and `length`, the largest byte count.
+* @param signal - aborts the read (`FS_ABORTED`).
+* @returns the window's bytes, at most `length` long.
+*/
+async function readByteWindow(target, range, signal) {
+	await statRegularFile(target, "read", signal);
+	if (range.length === 0) return new Uint8Array(0);
+	const stream = createReadStream(target.targetKey, {
+		start: range.offset,
+		end: range.offset + range.length - 1,
+		...signal ? { signal } : {}
+	});
+	const chunks = [];
+	let bytes = 0;
+	try {
+		for await (const chunk of stream) {
+			chunks.push(chunk);
+			bytes += chunk.length;
+		}
+	} catch (error) {
+		/* v8 ignore next 2 -- a mid-stream abort needs cancellation racing an active read; pre-abort is deterministic. */
+		if (isAbortError(error)) throw new FsError("read aborted", "FS_ABORTED");
+		/* v8 ignore next -- any other stream failure needs an I/O fault after a successful stat. */
 		throw error;
 	}
 	return Buffer.concat(chunks, bytes);
@@ -672,6 +723,31 @@ const MAX_DIFF_BASIS_BYTES = Math.min(constants.MAX_LENGTH, constants.MAX_STRING
 * containment with a stricter backend or a `tools/execute` permission plugin.
 */
 var LocalFileSystem = class extends FileSystem {
+	async watch(target, changed, signal) {
+		signal.throwIfAborted();
+		const path = resolve(this.processPath(target));
+		const directory = (await this.stat(target, signal))?.type === "directory";
+		signal.throwIfAborted();
+		const root = directory ? path : dirname(path);
+		const watcher = watch(root, {
+			ignoreInitial: true,
+			depth: 0,
+			ignored: (entry) => !directory && resolve(entry) !== root && resolve(entry) !== path
+		});
+		watcher.on("all", (_event, entry) => {
+			if (directory || resolve(entry) === path) changed();
+		});
+		watcher.on("error", (error) => {
+			changed(error instanceof Error ? error : new Error(String(error)));
+		});
+		try {
+			await once(watcher, "ready", { signal });
+			return () => watcher.close();
+		} catch (error) {
+			await watcher.close();
+			throw error;
+		}
+	}
 	static Config = z.object({
 		cwd: z.string().default(process.cwd()),
 		diffBasisMaxBytes: z.number().default(DEFAULT_DIFF_BASIS_MAX_BYTES)
@@ -713,6 +789,9 @@ var LocalFileSystem = class extends FileSystem {
 	processPath(target) {
 		return String(target.targetKey);
 	}
+	processPathFromHostPath(hostPath) {
+		return isAbsolute(hostPath) ? resolve(hostPath) : void 0;
+	}
 	fileUrl(target) {
 		return pathToFileURL(this.processPath(target)).href;
 	}
@@ -734,7 +813,7 @@ var LocalFileSystem = class extends FileSystem {
 	async lstat(path, opts, signal) {
 		if (signal?.aborted) throw new FsError("lstat aborted", "FS_ABORTED");
 		if (path.trim().length === 0) throw new FsError("file_path must be a non-empty string", "FS_NOT_FOUND");
-		const info = await probeNoFollow(resolve(opts?.cwd ?? this.config.cwd, path));
+		const info = await probeNoFollow(localDisplayPath(opts?.cwd ?? this.config.cwd, path));
 		if (signal?.aborted) throw new FsError("lstat aborted", "FS_ABORTED");
 		if (!info) return void 0;
 		return {
@@ -760,6 +839,12 @@ var LocalFileSystem = class extends FileSystem {
 			displayPath: target.displayPath,
 			targetKey: target.targetKey
 		}, signal, maxBytes, this.internals);
+	}
+	async readByteRange(target, range, signal) {
+		return readByteWindow({
+			displayPath: target.displayPath,
+			targetKey: target.targetKey
+		}, range, signal);
 	}
 	async listDir(target, signal) {
 		return (await listDirectory({

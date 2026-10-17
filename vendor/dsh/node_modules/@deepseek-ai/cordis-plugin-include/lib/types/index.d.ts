@@ -12,8 +12,7 @@ export declare const entryListSchema: yaml.Schema;
  * Apply patch lists to an entry list — THE patch semantics of this include,
  * shared by mounting (`applyPatches`) and offline config tooling
  * (`dsh --dump-config`) so a dump can never drift from what boots. The input
- * is never mutated and the result is always detached from it (even with no
- * patches): patching or mounting shared entry objects would bake earlier
+ * is never mutated: patching shared entry objects would bake earlier patch
  * values into the cached parse, so repeated application (config hot-reloads)
  * could never revert a removed or changed patch. Inserted entries are indexed
  * as they are added, so a later patch in the same list can target a row an
@@ -64,31 +63,18 @@ export declare class Include extends EntryTree {
     private writeTask?;
     private pendingWrite?;
     private writeQueue;
-    private applyQueue;
     constructor(ctx: Context, config: Include.Config);
-    /**
-     * Serialize one child-tree mutation behind every earlier one. The group's
-     * transactional `update` is not reentrant: two concurrent applies (the init
-     * apply racing an HMR-triggered refresh from the watcher's initial scan)
-     * interleave create and rollback on the same entries and strand the include
-     * fiber without settling, so every apply path funnels through this queue.
-     * A predecessor's failure is its own caller's outcome and never gates the
-     * next task.
-     */
-    private enqueue;
     private checkAccess;
     private read;
     private applyPatches;
     [Service.init](): AsyncGenerator<() => Promise<void>, void, unknown>;
     stop(): Promise<void>;
     /**
-     * Re-read the file and transactionally refresh child entries when content changed.
-     * @returns a promise resolving after the new tree commits, or immediately when unchanged.
-     * @throws when reading, parsing, validation, application, or rollback fails; the last good tree remains active when rollback succeeds.
+     * Re-read the file and refresh child entries when content changed. An
+     * unreadable or unparsable file logs a warning and keeps the last good
+     * tree: a hot-reload of a live app must never take the process down.
      */
     refresh(): Promise<void>;
-    private apply;
-    private _apply;
     private _writeFile;
     private writeFile;
     private flushWrite;

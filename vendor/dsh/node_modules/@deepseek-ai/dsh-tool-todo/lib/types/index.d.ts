@@ -23,9 +23,9 @@ export interface Config {
 /** Schemastery configuration for the todo tool consumer. */
 export declare const Config: z<Config>;
 /**
- * Register the `todo_write` tool on `ctx.tools` and, when the session-projection seam is composed,
- * the `todos` unit.
- * @param ctx - registrant context carrying the tool registry.
+ * Register the `todo_write` tool on `ctx.tools` and the `todos` unit on
+ * `ctx.sessionProjections`.
+ * @param ctx - registrant context carrying the tool and session-projection registries.
  * @param config - deployment's explicit todo policy.
  */
 export declare function apply(ctx: Context, config: Config): void;

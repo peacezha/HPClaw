@@ -24,7 +24,8 @@ interface UpdateSettings {
   autoCheck: boolean;
 }
 
-interface HpclawDesktop {
+interface TraceDesktop {
+  editing?: { setFocusScope(scope: 'text' | 'terminal' | 'files'): void };
   locale?: {
     get(): Promise<'zh-CN' | 'en-US'>;
     set(locale: 'zh-CN' | 'en-US'): Promise<'zh-CN' | 'en-US'>;
@@ -120,8 +121,8 @@ interface HpclawDesktop {
 
 declare global {
   interface Window {
-    hpclawDesktop?: HpclawDesktop;
+    traceDesktop?: TraceDesktop;
   }
 }
 
-export type { HpclawDesktop, UpdatePhase, UpdateSettings, UpdateState };
+export type { TraceDesktop, UpdatePhase, UpdateSettings, UpdateState };

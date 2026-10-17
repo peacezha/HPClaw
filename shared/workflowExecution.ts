@@ -1,4 +1,4 @@
-export const WORKFLOW_RUN_MARKER = '[HPCLAW_WORKFLOW_RUN]';
+export const WORKFLOW_RUN_MARKER = '[TRACE_WORKFLOW_RUN]';
 
 export interface WorkflowExecutionContext {
   workflowId: string;
@@ -23,13 +23,13 @@ export function normalizeWorkflowExecutionContext(value: unknown): WorkflowExecu
 
 /**
  * 从用户消息里提取 RUN 目录路径（用户直接贴路径询问「这个任务什么情况」的场景）。
- * 只匹配 hpclaw_flows/<flow>/03_workspace/runs/<runId> 形态的绝对路径，避免误绑普通目录。
+ * 只匹配 trace_flows/<flow>/03_workspace/runs/<runId> 形态的绝对路径，避免误绑普通目录。
  */
 export function extractRunDirFromText(text: string): string | null {
   // runId 段只允许 ASCII slug 字符（<slug>-<时间戳>-<哈希>），避免把紧随路径的
   // 中文问句（如「…4fe4任务情况」）吞进路径。
   const match = String(text || '')
-    .match(/(\/[^\s"'()]*\/hpclaw_flows\/[^\s/"']+\/03_workspace\/runs\/[A-Za-z0-9._-]+)/);
+    .match(/(\/[^\s"'()]*\/(?:trace|hpclaw)_flows\/[^\s/"']+\/03_workspace\/runs\/[A-Za-z0-9._-]+)/);
   const runDir = match?.[1]?.replace(/\/+$/, '') || '';
   if (!runDir || runDir.includes('..')) return null;
   return runDir;
@@ -40,10 +40,10 @@ export function formatWorkflowExecutionContext(context: Omit<WorkflowExecutionCo
 }
 
 export function parseWorkflowExecutionContext(text: string): WorkflowExecutionContext | null {
-  const line = String(text || '').split(/\r?\n/).find(item => item.startsWith(`${WORKFLOW_RUN_MARKER} `));
+  const line = String(text || '').split(/\r?\n/).find(item => /^\[(?:TRACE|HPCLAW)_WORKFLOW_RUN\] /.test(item));
   if (!line) return null;
   try {
-    return normalizeWorkflowExecutionContext(JSON.parse(line.slice(WORKFLOW_RUN_MARKER.length).trim()));
+    return normalizeWorkflowExecutionContext(JSON.parse(line.slice(line.indexOf(']') + 1).trim()));
   } catch {
     return null;
   }
@@ -81,7 +81,7 @@ export function findLatestWorkflowExecutionContext(
 // ─── 流程运行解绑标记 ─────────────────────────────────────────────────
 // 集群上的 RUN 目录被删除/移动后，服务端回发 workflow_run_missing，前端把该标记
 // 随系统消息写入对话存档：从后往前扫描时先遇到解绑标记即跳过对应运行上下文。
-export const WORKFLOW_RUN_DETACHED_MARKER = '[HPCLAW_WORKFLOW_RUN_DETACHED]';
+export const WORKFLOW_RUN_DETACHED_MARKER = '[TRACE_WORKFLOW_RUN_DETACHED]';
 
 export function formatWorkflowRunDetached(runDir: string): string {
   return `${WORKFLOW_RUN_DETACHED_MARKER} ${JSON.stringify({ runDir: String(runDir || '') })}`;
@@ -89,10 +89,10 @@ export function formatWorkflowRunDetached(runDir: string): string {
 
 /** 解析消息里的运行解绑标记，返回 runDir；没有则返回 null。 */
 export function parseWorkflowRunDetached(text: string): string | null {
-  const line = String(text || '').split(/\r?\n/).find(item => item.startsWith(`${WORKFLOW_RUN_DETACHED_MARKER} `));
+  const line = String(text || '').split(/\r?\n/).find(item => /^\[(?:TRACE|HPCLAW)_WORKFLOW_RUN_DETACHED\] /.test(item));
   if (!line) return null;
   try {
-    const parsed = JSON.parse(line.slice(WORKFLOW_RUN_DETACHED_MARKER.length).trim());
+    const parsed = JSON.parse(line.slice(line.indexOf(']') + 1).trim());
     const runDir = typeof parsed?.runDir === 'string' ? parsed.runDir.trim() : '';
     return runDir || null;
   } catch {
@@ -104,7 +104,7 @@ export function parseWorkflowRunDetached(text: string): string | null {
 export function stripWorkflowRunDetachedMarkers(text: string): string {
   return String(text || '')
     .split(/\r?\n/)
-    .filter(line => !line.trim().startsWith(WORKFLOW_RUN_DETACHED_MARKER))
+    .filter(line => !/^\[(?:TRACE|HPCLAW)_WORKFLOW_RUN_DETACHED\]/.test(line.trim()))
     .join('\n')
     .trim();
 }
@@ -112,7 +112,7 @@ export function stripWorkflowRunDetachedMarkers(text: string): string {
 // ─── 对话内流程配置卡标记 ─────────────────────────────────────────────
 // AI（或前端流程匹配 chips）在消息中输出该标记时，前端不显示原始标记文本，
 // 改渲染 WorkflowConfigCard 表单卡片，让用户点点点配置参数/输入后直接运行。
-export const WORKFLOW_CONFIGURE_MARKER = '[HPCLAW_WORKFLOW_CONFIGURE]';
+export const WORKFLOW_CONFIGURE_MARKER = '[TRACE_WORKFLOW_CONFIGURE]';
 
 export interface WorkflowConfigureDirective {
   workflowId: string;
@@ -131,10 +131,10 @@ export function formatWorkflowConfigureDirective(directive: WorkflowConfigureDir
 
 /** 解析消息里的流程配置标记（单行独立标记；只取第一条）。 */
 export function parseWorkflowConfigureDirective(text: string): WorkflowConfigureDirective | null {
-  const line = String(text || '').split(/\r?\n/).find(item => item.trim().startsWith(WORKFLOW_CONFIGURE_MARKER));
+  const line = String(text || '').split(/\r?\n/).find(item => /^\[(?:TRACE|HPCLAW)_WORKFLOW_CONFIGURE\]/.test(item.trim()));
   if (!line) return null;
   try {
-    return normalizeWorkflowConfigureDirective(JSON.parse(line.trim().slice(WORKFLOW_CONFIGURE_MARKER.length).trim()));
+    return normalizeWorkflowConfigureDirective(JSON.parse(line.trim().slice(line.trim().indexOf(']') + 1).trim()));
   } catch {
     return null;
   }
@@ -144,7 +144,7 @@ export function parseWorkflowConfigureDirective(text: string): WorkflowConfigure
 export function stripWorkflowConfigureDirectives(text: string): string {
   return String(text || '')
     .split(/\r?\n/)
-    .filter(line => !line.trim().startsWith(WORKFLOW_CONFIGURE_MARKER))
+    .filter(line => !/^\[(?:TRACE|HPCLAW)_WORKFLOW_CONFIGURE\]/.test(line.trim()))
     .join('\n')
     .trim();
 }

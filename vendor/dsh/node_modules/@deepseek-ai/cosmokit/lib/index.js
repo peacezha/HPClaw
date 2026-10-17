@@ -78,6 +78,78 @@ function makeArray(source) {
 	return Array.isArray(source) ? source : isNullable(source) ? [] : [source];
 }
 //#endregion
+//#region lib/types/volatile.js
+/** Shared config references used by schema validators and plugin runtimes. */
+const write = Symbol.for("cosmokit.volatile.write");
+function snapshot(value, ancestors = /* @__PURE__ */ new Set()) {
+	if (typeof value === "function") throw new TypeError("volatile config cannot contain functions");
+	if (value === null || typeof value !== "object") return value;
+	if (ancestors.has(value)) throw new TypeError("volatile config cannot contain cycles");
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) return Object.freeze(value.map((item) => snapshot(item, ancestors)));
+		if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new TypeError("volatile config objects must be plain objects or arrays");
+		return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item, ancestors)])));
+	} finally {
+		ancestors.delete(value);
+	}
+}
+/**
+* Create a detached reference containing an immutable copy of the supplied data.
+* @param value - validated config data; class instances and functions are unsupported.
+* @returns a reference whose value is updated only by its owning runtime.
+*/
+function createVolatile(value) {
+	let current = snapshot(value);
+	return Object.freeze({
+		get: () => current,
+		[write]: (value) => {
+			current = value;
+		}
+	});
+}
+/**
+* Identify references across ESM/CJS copies of the shared library.
+* @param value - a parsed config value.
+* @returns whether the value implements the shared reference protocol.
+*/
+function isVolatile(value) {
+	return typeof value === "object" && value !== null && write in value;
+}
+/**
+* Collect config references without descending into their snapshots or opaque objects.
+* @internal
+* @param value - parsed config; cyclic ordinary fields are visited once per path.
+* @returns references and their object-key paths, including an empty path for a root reference.
+*/
+function volatileEntries(value) {
+	const ancestors = /* @__PURE__ */ new Set();
+	function visit(value, path) {
+		if (isVolatile(value)) return [{
+			path,
+			ref: value
+		}];
+		if (!value || typeof value !== "object" || ancestors.has(value)) return [];
+		if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) return [];
+		ancestors.add(value);
+		try {
+			return Object.entries(value).flatMap(([key, child]) => visit(child, [...path, key]));
+		} finally {
+			ancestors.delete(value);
+		}
+	}
+	return visit(value, []);
+}
+/**
+* Commit an already validated immutable snapshot from another reference.
+* @internal
+* @param target - the owning plugin's stable reference.
+* @param source - a newly parsed candidate reference.
+*/
+function updateVolatile(target, source) {
+	target[write](source.get());
+}
+//#endregion
 //#region lib/types/types.js
 /** Test values using `instanceof` with a `toStringTag` fallback. */
 function is(type, value) {
@@ -163,26 +235,47 @@ function clone(source, refs = /* @__PURE__ */ new Map()) {
 	}
 	return result;
 }
-/** Deeply compare arrays, dates, regexps, buffers, and plain object fields. */
+/**
+* Compare values recursively, treating two volatile references as equal regardless of value.
+* Strict comparison distinguishes null/undefined, treats opaque objects by identity,
+* compares URLs by normalized href, treats array holes as undefined, and considers distinct cyclic structures unequal.
+* @param a - first value.
+* @param b - second value.
+* @param strict - whether to require strict data equality outside volatile references.
+* @returns whether the values compare equal.
+*/
 function deepEqual(a, b, strict) {
-	if (a === b) return true;
-	if (!strict && isNullable(a) && isNullable(b)) return true;
-	if (typeof a !== typeof b) return false;
-	if (typeof a !== "object") return false;
-	if (!a || !b) return false;
-	function check(test, then) {
-		return test(a) ? test(b) ? then(a, b) : false : test(b) ? false : void 0;
+	const ancestors = /* @__PURE__ */ new Set();
+	function compare(a, b) {
+		if (a === b) return true;
+		if (isVolatile(a) || isVolatile(b)) return isVolatile(a) && isVolatile(b);
+		if (!strict && isNullable(a) && isNullable(b)) return true;
+		if (typeof a !== typeof b || typeof a !== "object" || !a || !b) return false;
+		if (ancestors.has(a)) return false;
+		function check(test, then) {
+			return test(a) ? test(b) ? then(a, b) : false : test(b) ? false : void 0;
+		}
+		ancestors.add(a);
+		try {
+			return check(Array.isArray, (a, b) => {
+				if (a.length !== b.length) return false;
+				for (let index = 0; index < a.length; index++) if (!compare(a[index], b[index])) return false;
+				return true;
+			}) ?? check(is("Date"), (a, b) => a.valueOf() === b.valueOf()) ?? check(is("URL"), (a, b) => a.href === b.href) ?? check(is("RegExp"), (a, b) => a.source === b.source && a.flags === b.flags) ?? check(isArrayBufferLike, (a, b) => {
+				if (a.byteLength !== b.byteLength) return false;
+				const viewA = new Uint8Array(a);
+				const viewB = new Uint8Array(b);
+				for (let i = 0; i < viewA.length; i++) if (viewA[i] !== viewB[i]) return false;
+				return true;
+			}) ?? ((!strict || [a, b].every((value) => Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) && Object.keys({
+				...a,
+				...b
+			}).every((key) => compare(a[key], b[key])));
+		} finally {
+			ancestors.delete(a);
+		}
 	}
-	return check(Array.isArray, (a, b) => a.length === b.length && a.every((item, index) => deepEqual(item, b[index]))) ?? check(is("Date"), (a, b) => a.valueOf() === b.valueOf()) ?? check(is("RegExp"), (a, b) => a.source === b.source && a.flags === b.flags) ?? check(isArrayBufferLike, (a, b) => {
-		if (a.byteLength !== b.byteLength) return false;
-		const viewA = new Uint8Array(a);
-		const viewB = new Uint8Array(b);
-		for (let i = 0; i < viewA.length; i++) if (viewA[i] !== viewB[i]) return false;
-		return true;
-	}) ?? Object.keys({
-		...a,
-		...b
-	}).every((key) => deepEqual(a[key], b[key], strict));
+	return compare(a, b);
 }
 //#endregion
 //#region lib/types/string.js
@@ -322,4 +415,4 @@ var Time;
 	Time.template = template;
 })(Time || (Time = {}));
 //#endregion
-export { Binary, Time, arrayBufferToBase64, arrayBufferToHex, base64ToArrayBuffer, camelCase, camelize, capitalize, clone, contain, deduplicate, deepEqual, defineProperty, difference, filterKeys, formatProperty, hexToArrayBuffer, hyphenate, intersection, is, isNonNullable, isNullable, isPlainObject, makeArray, mapValues, mapValues as valueMap, noop, omit, paramCase, pick, remove, sanitize, snakeCase, trimSlash, uncapitalize, union };
+export { Binary, Time, arrayBufferToBase64, arrayBufferToHex, base64ToArrayBuffer, camelCase, camelize, capitalize, clone, contain, createVolatile, deduplicate, deepEqual, defineProperty, difference, filterKeys, formatProperty, hexToArrayBuffer, hyphenate, intersection, is, isNonNullable, isNullable, isPlainObject, isVolatile, makeArray, mapValues, mapValues as valueMap, noop, omit, paramCase, pick, remove, sanitize, snakeCase, trimSlash, uncapitalize, union, updateVolatile, volatileEntries };

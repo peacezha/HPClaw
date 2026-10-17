@@ -3,7 +3,8 @@
  * @module @deepseek-ai/dsh-cordis-host-runner/types
  */
 import type { Branded } from '@deepseek-ai/dsh-brand';
-import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session/types';
+import type { SessionId } from '@deepseek-ai/dsh-session/types';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 /** Stable identity of one dynamic plugin instance. */
 export type CordisDynamicPluginId = Branded<'CordisDynamicPluginId'>;
 /** Identity of one immutable package version belonging to a dynamic plugin. */
@@ -70,7 +71,10 @@ export interface CordisInspectQueryResolved {
 }
 /** Whether a Client answer claimed the still-pending query. */
 export interface CordisInspectResolveAck {
-    /** False for unknown, cancelled, stale, or late answers. */
+    /**
+     * True only for a valid success that settles the query;
+     * false for retained failures and unknown, timed out, cancelled, or late answers.
+     */
     accepted: boolean;
 }
 /** Whether a package starts the current version or replaces it. */

@@ -1,4 +1,4 @@
-// Publish HPClaw release to GitHub (peacezha/HPClaw).
+// Publish TRACE release to GitHub (peacezha/TRACE).
 // Use a scoped CI job token or the local credential manager; never print either.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -8,17 +8,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const OWNER = 'peacezha';
-const REPO = 'HPClaw';
-const TAG = process.env.HPCLAW_RELEASE_TAG || `v${JSON.parse(fs.readFileSync('package.json', 'utf8')).version}`;
-const NAME = `HPClaw ${TAG}`;
+const REPO = 'TRACE';
+const TAG = process.env.TRACE_RELEASE_TAG || `v${JSON.parse(fs.readFileSync('package.json', 'utf8')).version}`;
+const NAME = `TRACE ${TAG}`;
 const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const UPLOAD = `https://uploads.github.com/repos/${OWNER}/${REPO}`;
 
 const releaseDir = process.argv[2];
 if (!releaseDir) throw new Error('usage: node publish-github-release.mjs <releaseDir>');
 const artifacts = [
-  { file: `HPClaw-Setup-${TAG.slice(1)}-x64.exe`, type: 'application/octet-stream' },
-  { file: `HPClaw-Setup-${TAG.slice(1)}-x64.exe.blockmap`, type: 'application/octet-stream' },
+  { file: `TRACE-Setup-${TAG.slice(1)}-x64.exe`, type: 'application/octet-stream' },
+  { file: `TRACE-Setup-${TAG.slice(1)}-x64.exe.blockmap`, type: 'application/octet-stream' },
   // Publish update metadata last, after the installer and blockmap are present.
   { file: 'latest.yml', type: 'text/yaml' },
 ];
@@ -41,7 +41,7 @@ const headers = {
   Authorization: `Bearer ${TOKEN}`,
   Accept: 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28',
-  'User-Agent': 'hpclaw-release-script',
+  'User-Agent': 'trace-release-script',
 };
 
 async function apiJson(url, options = {}) {
@@ -69,9 +69,9 @@ async function main() {
     throw new Error('latest.yml does not match the version, filename, size and SHA-512 of this installer');
   }
   console.log('verified update manifest:', metadata.version, installerName);
-  const notesFile = process.env.HPCLAW_RELEASE_NOTES
+  const notesFile = process.env.TRACE_RELEASE_NOTES
     || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', `v${TAG.slice(1)}_更新说明.md`);
-  let body = `HPClaw ${TAG} 更新。`;
+  let body = `TRACE ${TAG} 更新。`;
     try { body = fs.readFileSync(notesFile, 'utf8').split('## 验证')[0].trim(); } catch { /* 无说明文件时用占位 */ }
 
   // 1) create or reuse release by tag
@@ -147,7 +147,7 @@ async function main() {
     const asset = uploaded.json.find(item => item.name === file);
     if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(path.join(releaseDir, file)).size) throw new Error(`Uploaded asset incomplete: ${file}`);
   }
-  if (release.draft && process.env.HPCLAW_KEEP_RELEASE_DRAFT !== '1') {
+  if (release.draft && process.env.TRACE_KEEP_RELEASE_DRAFT !== '1') {
     const published = await apiJson(`${API}/releases/${release.id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tag_name: TAG, draft: false, make_latest: 'true' }),

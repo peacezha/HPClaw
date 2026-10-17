@@ -1,7 +1,10 @@
-import { ZodArrayDef, ZodFirstPartyTypeKind } from 'zod/v3';
-import { ErrorMessages, setResponseValueAndErrors } from '../errorMessages';
-import { JsonSchema7Type, parseDef } from '../parseDef';
-import { Refs } from '../Refs';
+import type { ZodArrayDef } from 'zod/v3';
+import { ZodFirstPartyTypeKind } from 'zod/v3';
+import type { ErrorMessages } from '../errorMessages';
+import { setResponseValueAndErrors } from '../errorMessages';
+import type { JsonSchema7Type } from '../parseDef';
+import { parseDef } from '../parseDef';
+import type { Refs } from '../Refs';
 
 export type JsonSchema7ArrayType = {
   type: 'array';
@@ -15,7 +18,7 @@ export function parseArrayDef(def: ZodArrayDef, refs: Refs) {
   const res: JsonSchema7ArrayType = {
     type: 'array',
   };
-  if (def.type?._def?.typeName !== ZodFirstPartyTypeKind.ZodAny) {
+  if (def.type?._def?.typeName !== ZodFirstPartyTypeKind.ZodAny || refs.openaiStrictMode) {
     res.items = parseDef(def.type._def, {
       ...refs,
       currentPath: [...refs.currentPath, 'items'],

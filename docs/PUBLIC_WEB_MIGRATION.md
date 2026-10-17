@@ -14,7 +14,7 @@
 
 ## 已确认的现有边界
 
-- `ClusterConversationStore` 已支持远程 `~/hpclaw_conversations/`，集群对话读写可以沿用。
+- `ClusterConversationStore` 已支持远程 `~/trace_conversations/`，集群对话读写可以沿用。
 - `server.ts` 的 SSH 会话表是进程全局状态；会话解析只验证 ID 存在，未验证其属于当前浏览器用户。
 - 当前不指定目标的退出操作关闭所有 SSH 会话，不能作为公共服务行为。
 - AI 配置、私人流程、文献学习草稿、部分任务恢复信息使用网页服务器的共享数据路径。

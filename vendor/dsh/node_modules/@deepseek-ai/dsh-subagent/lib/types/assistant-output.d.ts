@@ -9,7 +9,7 @@
  *
  * @module @deepseek-ai/dsh-subagent/assistant-output
  */
-import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { type ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 /**
  * Incremental fold of the selection rule, for backends that observe a child's
@@ -22,8 +22,8 @@ export declare class AssistantOutputFold {
     private partial;
     /**
      * Fold one session event: a non-empty assistant message becomes the
-     * candidate final answer, and a `text-delta` chunk extends the streamed
-     * fallback; every other event contributes nothing.
+     * candidate final answer, while its embedded stream and any log-only attempt
+     * extend the streamed fallback; every other event contributes nothing.
      * @param event - the next observed session event.
      */
     push(event: SessionEvent): void;
@@ -37,12 +37,12 @@ export declare class AssistantOutputFold {
      * @returns the last non-empty assistant message, else the accumulated
      *   streamed text, or `undefined` when the child produced neither.
      */
-    collect(): ContentBlock[] | undefined;
+    collect(): readonly ContentBlock[] | undefined;
 }
 /**
  * Apply the selection rule to one complete child-owned event suffix.
  * @param events - the child-owned events (after any seed or epoch boundary).
  * @returns the selected output, or `undefined` when the child produced none.
  */
-export declare function finalAssistantOutput(events: readonly SessionEvent[]): ContentBlock[] | undefined;
+export declare function finalAssistantOutput(events: readonly SessionEvent[]): readonly ContentBlock[] | undefined;
 //# sourceMappingURL=assistant-output.d.ts.map

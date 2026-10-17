@@ -20,7 +20,7 @@ function SpillLocator(locator) {
 //#region lib/types/index.js
 /**
 * Service Definition for the spill storage capability seam (`ctx.spillStore`): an abstract service defining WHAT a
-* spill backend does — persist a tool's oversized text and return a model-facing
+* spill backend does — persist oversized text and return a model-facing
 * locator plus retrieval guidance — without saying HOW. Implementations
 * subclass {@link SpillStore} and register as the `spillStore` service;
 * `@deepseek-ai/dsh-spill-local` (host filesystem) is the first.

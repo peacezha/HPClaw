@@ -12,6 +12,7 @@ export type AgentPlanningPolicy = 'auto' | 'always';
 export type AgentConfirmationPolicy = 'never' | 'dangerous' | 'state_changes' | 'every_command';
 export type AgentPathPolicy = 'full_access' | 'scoped';
 export type AgentEnginePreference = 'auto' | 'native' | 'dsh';
+export type AgentPlanReviewPolicy = 'auto' | 'always';
 
 export interface AgentSettings {
   engine: AgentEnginePreference;
@@ -20,10 +21,12 @@ export interface AgentSettings {
   pathPolicy: AgentPathPolicy;
   maxCommands: number;
   maxSteps: number;
+  /** 计划审批：auto = 计划步数 ≥3 或含作业提交/写文件类步骤才审；always = 逢计划必审。 */
+  planReview: AgentPlanReviewPolicy;
 }
 
-const STORAGE_KEY = 'hpclaw_agent_settings';
-const STORAGE_VERSION = 4;
+const STORAGE_KEY = 'trace_agent_settings';
+const STORAGE_VERSION = 6;
 const LEGACY_DEFAULT_MAX_STEPS = 50;
 
 export function normalizeAgentSettings(value: unknown): AgentSettings {
@@ -31,12 +34,13 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
   return {
     engine: raw.engine === 'native' || raw.engine === 'dsh' ? raw.engine : 'auto',
     planningPolicy: raw.planningPolicy === 'always' ? 'always' : 'auto',
-    confirmationPolicy: raw.confirmationPolicy === 'dangerous' || raw.confirmationPolicy === 'state_changes' || raw.confirmationPolicy === 'every_command'
+    confirmationPolicy: raw.confirmationPolicy === 'never' || raw.confirmationPolicy === 'state_changes' || raw.confirmationPolicy === 'every_command'
       ? raw.confirmationPolicy
-      : 'never',
+      : 'dangerous',
     pathPolicy: raw.pathPolicy === 'scoped' ? 'scoped' : 'full_access',
     maxCommands: Math.max(MIN_AGENT_COMMANDS, Math.min(MAX_AGENT_COMMANDS, Number(raw.maxCommands) || DEFAULT_AGENT_COMMANDS)),
     maxSteps: Math.max(MIN_AGENT_STEPS, Math.min(MAX_AGENT_STEPS, Number(raw.maxSteps) || DEFAULT_AGENT_STEPS)),
+    planReview: raw.planReview === 'always' ? 'always' : 'auto',
   };
 }
 
@@ -51,12 +55,15 @@ export function loadAgentSettings(): AgentSettings {
       && Number(stored.maxSteps) === LEGACY_DEFAULT_MAX_STEPS) {
       migrated.maxSteps = DEFAULT_AGENT_STEPS;
     }
-    // 0.4.16 及更早版本的默认“仅危险操作确认”会让升级用户继续频繁手工接管。
-    // 仅迁移旧版本的默认值；用户在本版主动切回 dangerous 后会随 version=4 保留。
+    // v0.4.57 起默认确认策略恢复为“仅危险操作确认”(dangerous)：0.4.16-0.4.56
+    // 期间默认/迁移成的 never 让 Agent 不做任何确认就执行写操作与作业提交，
+    // 用户反馈“一股脑干活不听指挥”。仅迁移旧版本存储；用户在本版主动选择
+    // never 后会随 version=6 保留。
+    // planReview 是 v6 新增字段：旧存储没有它，normalize 时落入默认 auto，无需额外迁移。
     if (stored && typeof stored === 'object'
       && stored.version !== STORAGE_VERSION
-      && (stored.confirmationPolicy === undefined || stored.confirmationPolicy === 'dangerous')) {
-      migrated.confirmationPolicy = 'never';
+      && (stored.confirmationPolicy === undefined || stored.confirmationPolicy === 'never' || stored.confirmationPolicy === 'dangerous')) {
+      migrated.confirmationPolicy = 'dangerous';
     }
     return normalizeAgentSettings(migrated);
   } catch {

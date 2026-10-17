@@ -45,13 +45,13 @@ function makeDeps(overrides: Partial<LegacyResumeDeps> = {}): LegacyResumeDeps &
 }
 
 afterEach(() => {
-  delete process.env.HPCLAW_JOB_RESUME;
+  delete process.env.TRACE_JOB_RESUME;
 });
 
 describe('maybeResumeLegacyAgent', () => {
-  it('does nothing when HPCLAW_JOB_RESUME=off', async () => {
+  it('does nothing when TRACE_JOB_RESUME=off', async () => {
     const deps = makeDeps();
-    process.env.HPCLAW_JOB_RESUME = 'off';
+    process.env.TRACE_JOB_RESUME = 'off';
     await maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
     expect(deps.getBinding).not.toHaveBeenCalled();
     expect(deps.runAgent).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe('maybeResumeLegacyAgent', () => {
     const deps = makeDeps({
       loadConversation: vi.fn(async () => ({ messages: [
         { role: 'user' as const, content: '从 FASTQ 分析到报告，MAPQ=20。' },
-        { role: 'system' as const, content: '[HPCLAW_AGENT_PLAN] ' + JSON.stringify(plan) },
+        { role: 'system' as const, content: '[TRACE_AGENT_PLAN] ' + JSON.stringify(plan) },
       ] })),
       runAgent: vi.fn<RunAgentMock>(async (ctx, cb, messages) => {
         expect(ctx.resumePlan).toEqual(plan);

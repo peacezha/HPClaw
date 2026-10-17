@@ -1,9 +1,9 @@
-// HPClaw v2 live test — 右键菜单位置 / 新建文件 / 整文件夹传输
+// TRACE v2 live test — 右键菜单位置 / 新建文件 / 整文件夹传输
 const http = require('http');
 const fs = require('fs');
 const port = process.argv[2] || '9222';
 
-const LOCAL_BASE = 'E:\\0612hpclaw\\hpclaw_v2\\tmp-folder-test';
+const LOCAL_BASE = 'E:\\0612trace\\trace_v2\\tmp-folder-test';
 const REMOTE_DIR = '/public/home/hpzhang';
 const results = [];
 const ok = (name, pass, detail = '') => {
@@ -122,7 +122,7 @@ function getJson(path) {
     && Math.abs(menuCheck.menuY - menuCheck.clickY) <= 4
     && menuCheck.inBody;
   ok('右键菜单出现在鼠标位置', menuOk, JSON.stringify(menuCheck));
-  await shot('E:/0612hpclaw/hpclaw_v2/smoke-contextmenu.png');
+  await shot('E:/0612trace/trace_v2/smoke-contextmenu.png');
   await evalJs(`document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
 
   // 菜单内容包含"新建文件"
@@ -141,20 +141,20 @@ function getJson(path) {
 
   // ── 2. 新建文件 ──────────────────────────────────────────────────────────
   // 远端
-  const touch = await api('POST', '/api/remote/touch', { path: `${REMOTE_DIR}/hpclaw-newfile.txt` });
+  const touch = await api('POST', '/api/remote/touch', { path: `${REMOTE_DIR}/trace-newfile.txt` });
   const remoteList = await api('GET', '/api/remote/files?path=' + encodeURIComponent(REMOTE_DIR));
-  const remoteFileExists = (remoteList.data.entries || []).some(e => e.name === 'hpclaw-newfile.txt');
+  const remoteFileExists = (remoteList.data.entries || []).some(e => e.name === 'trace-newfile.txt');
   ok('新建文件：远端 touch 成功且可见', touch.status === 201 && remoteFileExists, `touch=${touch.status}`);
-  const touchDup = await api('POST', '/api/remote/touch', { path: `${REMOTE_DIR}/hpclaw-newfile.txt` });
+  const touchDup = await api('POST', '/api/remote/touch', { path: `${REMOTE_DIR}/trace-newfile.txt` });
   ok('新建文件：同名重复被拒绝（不覆盖）', touchDup.status >= 400, `dup status=${touchDup.status}`);
   // 本地
-  const localNew = `${LOCAL_BASE}\\hpclaw-newfile-local.txt`;
+  const localNew = `${LOCAL_BASE}\\trace-newfile-local.txt`;
   try { fs.unlinkSync(localNew); } catch {}
-  await evalJs(`window.hpclawDesktop.localFiles.createFile('${localNew.replace(/\\/g, '\\\\')}')`);
+  await evalJs(`window.traceDesktop.localFiles.createFile('${localNew.replace(/\\/g, '\\\\')}')`);
   ok('新建文件：本地创建成功', fs.existsSync(localNew));
 
   // ── 3. 整文件夹上传 ─────────────────────────────────────────────────────
-  const walkLocal = await evalJs(`window.hpclawDesktop.localFiles.walk('${(LOCAL_BASE + '\\folder-upload').replace(/\\/g, '\\\\')}')`);
+  const walkLocal = await evalJs(`window.traceDesktop.localFiles.walk('${(LOCAL_BASE + '\\folder-upload').replace(/\\/g, '\\\\')}')`);
   ok('本地 walk：递归列出全部文件和目录',
     walkLocal.files.length === 3 && walkLocal.dirs.length === 3,
     `files=${walkLocal.files.length} dirs=${walkLocal.dirs.length}`);
@@ -198,7 +198,7 @@ function getJson(path) {
   const dlBase = `${LOCAL_BASE}\\folder-download`;
   try { fs.rmSync(dlBase, { recursive: true }); } catch {}
   const dlDirs = [dlBase, `${dlBase}\\sub1`, `${dlBase}\\sub2`, `${dlBase}\\sub2\\deep`];
-  for (const d of dlDirs) { await evalJs(`window.hpclawDesktop.localFiles.mkdir('${d.replace(/\\/g, '\\\\')}')`); }
+  for (const d of dlDirs) { await evalJs(`window.traceDesktop.localFiles.mkdir('${d.replace(/\\/g, '\\\\')}')`); }
   let downloadsOk = true;
   for (const f of remoteWalk.data.files) {
     const rel = f.path.split('folder-upload/').pop();
@@ -223,7 +223,7 @@ function getJson(path) {
 
   // ── 清理 ────────────────────────────────────────────────────────────────
   await api('POST', '/api/remote/remove', { path: remoteRoot, recursive: true });
-  await api('POST', '/api/remote/remove', { path: `${REMOTE_DIR}/hpclaw-newfile.txt`, recursive: false });
+  await api('POST', '/api/remote/remove', { path: `${REMOTE_DIR}/trace-newfile.txt`, recursive: false });
   await api('DELETE', '/api/transfers/completed');
   console.log('---');
   const failed = results.filter(r => !r.pass);

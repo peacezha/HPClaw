@@ -76,7 +76,7 @@ function sample(id: string, title: string, updatedAt: number): ConversationRecor
 }
 
 function makeLocalStore(): LocalConversationStore {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-local-conv-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-local-conv-'));
   tempDirs.push(dir);
   return new LocalConversationStore(dir);
 }

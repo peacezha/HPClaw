@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { Workflow, WorkflowPaperImport, WorkflowParam, WorkflowStep } from '@/shared/workflow';
 import { WORKFLOW_CATEGORIES } from '@/shared/workflow';
+import { currentProductText } from '@/shared/branding';
 import { isPendingDisposal, workflowDisposalReason, WORKFLOW_CATALOG_CHANGED } from '@/shared/workflowCatalog';
 import WorkflowCatalogActionDialog, { type WorkflowCatalogAction } from './WorkflowCatalogActionDialog';
 import WorkflowStepDependencies from './WorkflowStepDependencies';
@@ -255,7 +256,7 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
       '',
       '请直接修复，不用先报方案等我确认：优先 module load 或安装到流程家目录（或你判断的合适位置）；下载和安装只能在登录节点进行（计算节点无网络）。',
       '每项修复后用一条精确命令验证，全部完成后重新核查并更新预检结果；只有确实需要我抉择时才 ask_user。',
-      `流程家目录：~/hpclaw_flows/（软件清单见 01_software/manifest.json，参考数据清单见 02_reference/manifest.json）`,
+      `流程家目录：~/trace_flows/（软件清单见 01_software/manifest.json，参考数据清单见 02_reference/manifest.json）`,
     ];
     onUseWorkflow(lines.join('\n'));
   };
@@ -1232,14 +1233,14 @@ export default function WorkflowPanel({ onUseWorkflow, onOpenRunner, aiProfile, 
                     <span className="text-[10px] text-scholar-300 flex-1">专属目录 · 每次运行独立 RUN</span>
                     <span className="text-[9px] text-emerald-500">禁止全局扫描</span>
                   </div>
-                  <code className="block mt-1 text-[9px] text-scholar-500 break-all">~/hpclaw_flows/{workflowSlug(w.name)}/</code>
+                  <code className="block mt-1 text-[9px] text-scholar-500 break-all">~/trace_flows/{workflowSlug(w.name)}/</code>
                 </div>
                 {w.provenance?.sourceUrl && (
                   <div className="rounded-md border border-sky-500/20 bg-sky-500/5 px-2 py-1.5 text-[9px] text-scholar-400">
                     <p className="flex items-center gap-1">
                       <BookOpen className="w-3 h-3 text-sky-500 shrink-0" />
                       <span className="text-scholar-300">{workflowSourceLabel(w)}</span>
-                      <a href={w.provenance.sourceUrl} target="_blank" rel="noreferrer" className="ml-auto text-accent hover:underline">查看上游源码</a>
+                      <a href={currentProductText(w.provenance.sourceUrl)} target="_blank" rel="noreferrer" className="ml-auto text-accent hover:underline">查看上游源码</a>
                     </p>
                     <p className="mt-0.5 break-all">固定版本：{w.provenance.sourceRef || '未记录'}</p>
                     {w.provenance.upstreamWorkflow && <p className="break-all">入口：{w.provenance.upstreamWorkflow}</p>}

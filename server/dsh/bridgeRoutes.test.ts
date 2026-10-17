@@ -65,8 +65,8 @@ async function post(base: string, urlPath: string, body: unknown, token?: string
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { 'X-HPClaw-Bridge': token } : {}),
-      ...(dshSession ? { 'X-HPClaw-Dsh-Session': dshSession } : {}),
+      ...(token ? { 'X-TRACE-Bridge': token } : {}),
+      ...(dshSession ? { 'X-TRACE-Dsh-Session': dshSession } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -74,6 +74,17 @@ async function post(base: string, urlPath: string, body: unknown, token?: string
 }
 
 describe('bridgeRoutes', () => {
+  it('enforces explanation-only mode even when a command is marked confirmed', async () => {
+    const exec = vi.fn(async () => 'read-only log');
+    const binding = makeDeps().getDshSessionBinding(DSH_SESSION)!;
+    const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }), getDshSessionBinding: () => ({ ...binding, readOnly: true }) }));
+    for (const command of ['bsub < job.sh', 'bkill 75741556', 'echo changed > /home/u/config']) {
+      expect((await post(base, '/api/bridge/exec', { command, confirmed: true }, TOKEN)).body.error).toBe('clarification_read_only');
+    }
+    expect(exec).not.toHaveBeenCalled();
+    expect((await post(base, '/api/bridge/exec', { command: 'bjobs -l 75741556' }, TOKEN)).body.ok).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
   it('rejects requests without the bridge token with 403', async () => {
     const base = await startApp(makeDeps());
     const missing = await post(base, '/api/bridge/exec', { command: 'ls' });
@@ -162,9 +173,9 @@ describe('bridgeRoutes', () => {
       }),
     }));
 
-    const cleanup = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/hpclaw-old-output' }, TOKEN);
+    const cleanup = await post(base, '/api/bridge/exec', { command: 'rm -rf /tmp/trace-old-output' }, TOKEN);
     expect(cleanup.status).toBe(200);
-    expect(exec).toHaveBeenCalledWith('rm -rf /tmp/hpclaw-old-output', 30_000);
+    expect(exec).toHaveBeenCalledWith('rm -rf /tmp/trace-old-output', 30_000);
     for (const command of ['bkill 123', 'scancel 123', 'qdel 123']) {
       expect((await post(base, '/api/bridge/exec', { command }, TOKEN)).status).toBe(428);
       expect(exec).not.toHaveBeenCalledWith(command, 30_000);
@@ -222,11 +233,11 @@ describe('bridgeRoutes', () => {
 
   it('reports SSH connectivity on the status endpoint', async () => {
     const connected = await startApp(makeDeps({ getSession: () => makeSession() }));
-    const okRes = await fetch(`${connected}/api/bridge/status`, { headers: { 'X-HPClaw-Bridge': TOKEN, 'X-HPClaw-Dsh-Session': DSH_SESSION } });
+    const okRes = await fetch(`${connected}/api/bridge/status`, { headers: { 'X-TRACE-Bridge': TOKEN, 'X-TRACE-Dsh-Session': DSH_SESSION } });
     expect(await okRes.json()).toEqual({ ok: true, sshConnected: true, host: 'hpc.test' });
 
     const none = await startApp(makeDeps());
-    const noRes = await fetch(`${none}/api/bridge/status`, { headers: { 'X-HPClaw-Bridge': TOKEN, 'X-HPClaw-Dsh-Session': DSH_SESSION } });
+    const noRes = await fetch(`${none}/api/bridge/status`, { headers: { 'X-TRACE-Bridge': TOKEN, 'X-TRACE-Dsh-Session': DSH_SESSION } });
     expect(await noRes.json()).toEqual({ ok: true, sshConnected: false });
   });
 });
@@ -237,41 +248,28 @@ describe('bridgeRoutes exec waitForJobs', () => {
     setJobPollIntervalMs(15_000);
   });
 
-  it('waits for the submitted job until it leaves bjobs and returns its tail', async () => {
-    setJobPollIntervalMs(1);
-    const bjobsRun = 'JOBID USER STAT QUEUE FROM_HOST EXEC_HOST JOB_NAME SUBMIT_TIME\n424242 u RUN normal h1 h2 sleep Jan 1 00:00';
-    const exec = vi.fn()
-      .mockResolvedValueOnce('Job <424242> is submitted to queue <normal>.\n') // bsub
-      .mockResolvedValueOnce(bjobsRun) // bjobs #1: RUN
-      .mockResolvedValueOnce(bjobsRun) // bjobs #2: RUN
-      .mockRejectedValueOnce(new Error('Job <424242> is not found')) // bjobs #3: 已离开列表
-      .mockResolvedValueOnce('final output line\n'); // bpeek
-    const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }) }));
-
-    const res = await post(base, '/api/bridge/exec', { command: 'bsub sleep 300', waitForJobs: 5 }, TOKEN);
-
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.exitCode).toBe(0);
-    expect(res.body.waitedJobs).toEqual([
-      { jobId: '424242', finalState: 'disappeared', tail: 'final output line\n' },
-    ]);
-    expect(exec).toHaveBeenCalledTimes(5);
-    expect(exec).toHaveBeenNthCalledWith(2, 'bjobs 424242', 15_000);
-    expect(exec).toHaveBeenNthCalledWith(5, 'bpeek 424242 | tail -60', 20_000);
+  it('returns a receipt immediately even when the model requests a 30-minute inline wait', async () => {
+    const exec = vi.fn(async () => 'Job <424242> is submitted to queue <normal>.\n');
+    const onJobsSubmitted = vi.fn();
+    const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }), onJobsSubmitted }));
+    const res = await post(base, '/api/bridge/exec', { command: 'bsub sleep 300', waitForJobs: 30 }, TOKEN);
+    expect(res.status).toBe(200); expect(res.body.ok).toBe(true);
+    expect(res.body.output).toContain('TRACE_BACKGROUND_JOB');
+    expect(res.body.output).toContain('Submitted does not mean completed');
+    expect(res.body.waitedJobs).toBeUndefined();
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(onJobsSubmitted).toHaveBeenCalledWith(expect.objectContaining({ sshSessionId: 'ssh-1' }), ['424242']);
   });
 
-  it('detects DONE directly from bjobs output', async () => {
-    setJobPollIntervalMs(1);
-    const exec = vi.fn()
-      .mockResolvedValueOnce('Submitted batch job 777\n')
-      .mockResolvedValueOnce('JOBID USER STAT QUEUE\n777 u DONE normal')
-      .mockResolvedValueOnce('done tail\n');
+  it('does not poll another scheduler after a submission receipt', async () => {
+    const exec = vi.fn(async () => 'Submitted batch job 777\n');
     const base = await startApp(makeDeps({ getSession: () => makeSession({ exec }) }));
 
     const res = await post(base, '/api/bridge/exec', { command: 'bsub < job.sh', waitForJobs: 1 }, TOKEN);
 
-    expect(res.body.waitedJobs).toEqual([{ jobId: '777', finalState: 'DONE', tail: 'done tail\n' }]);
+    expect(res.body.output).toContain('777');
+    expect(res.body.waitedJobs).toBeUndefined();
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it('does not wait when no job id appears in the output', async () => {
@@ -375,5 +373,62 @@ describe('bridge /api/bridge/webapi', () => {
       service: 'uniprot', endpoint: 'entry', params: { accession: 'P69905' },
     }, TOKEN);
     expect(upstream.body).toMatchObject({ ok: false, status: 500, error: { code: 'http_server_error' } });
+  });
+});
+
+describe('bridge interaction endpoints (sdk channel)', () => {
+  it('forwards approvals to the registered session handler and fails closed without one', async () => {
+    const onApproval = vi.fn(async () => 'allowed-once' as const);
+    const base = await startApp(makeDeps({
+      getDshInteractionHandler: id => (id === 'dsh-1' ? { onApproval, onQuestions: async () => null } : undefined),
+    }));
+    const granted = await post(base, '/api/bridge/interaction/approval', {
+      sessionId: 'dsh-1', requestId: 'r-1', toolName: 'run_command', callId: 'c-1', reason: 'HPClaw 命令确认\n风险级: destructive\n命令: bkill 1',
+    }, TOKEN);
+    expect(granted.status).toBe(200);
+    expect(granted.body).toEqual({ outcome: 'allowed-once' });
+    expect(onApproval).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'dsh-1', toolName: 'run_command' }));
+
+    const orphan = await post(base, '/api/bridge/interaction/approval', { sessionId: 'dsh-orphan', requestId: 'r-2', toolName: 'pwsh' }, TOKEN);
+    expect(orphan.body).toEqual({ outcome: 'unavailable' });
+
+    const forbidden = await post(base, '/api/bridge/interaction/approval', { sessionId: 'dsh-1', requestId: 'r-3' }, 'wrong-token');
+    expect(forbidden.status).toBe(403);
+  });
+
+  it('fails closed when the approval handler throws', async () => {
+    const base = await startApp(makeDeps({
+      getDshInteractionHandler: () => ({ onApproval: async () => { throw new Error('ui gone'); }, onQuestions: async () => null }),
+    }));
+    const res = await post(base, '/api/bridge/interaction/approval', { sessionId: 'dsh-1', requestId: 'r-x', toolName: 'pwsh' }, TOKEN);
+    expect(res.body).toEqual({ outcome: 'unavailable' });
+  });
+
+  it('forwards questions and maps a null answer to 409 (plugin falls through the waterfall)', async () => {
+    const onQuestions = vi.fn(async () => ({ answers: [{ id: 'q1', selected: ['A'] }] }));
+    const base = await startApp(makeDeps({
+      getDshInteractionHandler: id => (id === 'dsh-1' ? { onApproval: async () => 'unavailable' as const, onQuestions } : undefined),
+    }));
+    const answered = await post(base, '/api/bridge/interaction/questions', {
+      sessionId: 'dsh-1', requestId: 'q-1', callId: 'c-9',
+      questions: [{ id: 'q1', question: 'Which?', options: [{ label: 'A' }] }],
+    }, TOKEN);
+    expect(answered.status).toBe(200);
+    expect(answered.body).toEqual({ answer: { answers: [{ id: 'q1', selected: ['A'] }] } });
+    expect(onQuestions).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'dsh-1',
+      questions: [{ id: 'q1', question: 'Which?', options: [{ label: 'A' }] }],
+    }));
+
+    const orphan = await post(base, '/api/bridge/interaction/questions', { sessionId: 'dsh-orphan', requestId: 'q-2', questions: [] }, TOKEN);
+    expect(orphan.status).toBe(409);
+  });
+
+  it('maps a null handler answer (user dismissed) to 409', async () => {
+    const base = await startApp(makeDeps({
+      getDshInteractionHandler: () => ({ onApproval: async () => 'unavailable' as const, onQuestions: async () => null }),
+    }));
+    const res = await post(base, '/api/bridge/interaction/questions', { sessionId: 'dsh-1', requestId: 'q-3', questions: [{ id: 'x', question: '?' }] }, TOKEN);
+    expect(res.status).toBe(409);
   });
 });

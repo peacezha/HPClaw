@@ -1,6 +1,5 @@
 import z from "@deepseek-ai/schemastery";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
 import { WebError } from "@deepseek-ai/dsh-web";
 //#region lib/types/provider.js
@@ -14,10 +13,9 @@ import { WebError } from "@deepseek-ai/dsh-web";
 /** Stable id this provider registers under. */
 const DEEPSEEK_PROVIDER_ID = "deepseek-official";
 /**
-* Default endpoint: DeepSeek's Anthropic-compatible API, `/v1` included
-* (`/messages` is appended). This is NOT the chat-completions base
-* (`https://api.deepseek.com`) `@deepseek-ai/dsh-llm-deepseek` uses, so this
-* provider does NOT reuse `$DEEPSEEK_BASE_URL` — only the API key is shared.
+* Default auxiliary-search endpoint, including `/v1`; `/messages` is appended.
+* `$DEEPSEEK_SEARCH_BASE_URL` overrides it independently of the conversation
+* adapter's endpoint. Both providers share the API key.
 */
 const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic/v1";
 /** Default Anthropic-format model name (aligned with the repo's DeepSeek model vocabulary). */
@@ -81,7 +79,10 @@ function mapAnthropicResponse(response) {
 		truncated: false
 	};
 }
-/** The DeepSeek-backed search provider; HTTP redirects fail as `WEB_PROVIDER_ERROR`. */
+/**
+* The DeepSeek-backed search provider. HTTP redirects fail as `WEB_PROVIDER_ERROR`;
+* failures after dispatch name the endpoint and tell the model how the user can configure it.
+*/
 var DeepSeekSearchProvider = class {
 	resolveOptions;
 	id = DEEPSEEK_PROVIDER_ID;
@@ -97,13 +98,13 @@ var DeepSeekSearchProvider = class {
 	}
 	available() {
 		const options = this.resolveOptions();
-		return ((options.apiKey?.length ?? 0) > 0 || options.resolveApiKey !== void 0) && URL.canParse(options.baseURL) && isPositiveInteger(options.maxTokens) && isPositiveInteger(options.maxUses);
+		return ((options.apiKey?.length ?? 0) > 0 || options.resolveApiKey !== void 0 || options.resolveAccountToken !== void 0) && URL.canParse(options.baseURL) && isPositiveInteger(options.maxTokens) && isPositiveInteger(options.maxUses);
 	}
 	async search(request, signal) {
 		const options = this.resolveOptions();
-		const apiKey = await this.apiKey(options, signal);
-		throwIfSearchAborted(signal);
 		const endpoint = `${options.baseURL}/messages`;
+		const auth = await this.authHeaders(options, endpoint, signal);
+		throwIfSearchAborted(signal);
 		const body = {
 			model: options.model,
 			max_tokens: options.maxTokens,
@@ -132,8 +133,7 @@ var DeepSeekSearchProvider = class {
 				method: "POST",
 				redirect: "error",
 				headers: {
-					"x-api-key": apiKey,
-					"authorization": `Bearer ${apiKey}`,
+					...auth.headers,
 					"anthropic-version": options.apiVersion,
 					"content-type": "application/json",
 					"accept": "application/json",
@@ -144,29 +144,53 @@ var DeepSeekSearchProvider = class {
 			});
 		} catch (error) {
 			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
-			throw new WebError(`DeepSeek search request failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+			throw searchEndpointError(endpoint, `DeepSeek search request failed: ${String(error)}`, error);
 		}
 		if (!response.ok) {
-			let message = `DeepSeek API error (HTTP ${response.status})`;
+			const status = response.status;
+			let message = `DeepSeek API error (HTTP ${status})`;
 			try {
 				const parsed = await response.json();
 				const detail = typeof parsed.error === "string" ? parsed.error : parsed.error?.message ?? parsed.message;
-				if (detail !== void 0 && detail.length > 0) message = detail;
+				if (detail !== void 0 && detail.length > 0) message += `: ${detail}`;
 			} catch (error) {
 				if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
 			}
-			throw new WebError(message, "WEB_PROVIDER_ERROR");
+			if (status === 401 && auth.kind === "account") throw accountRejectedError(message);
+			throw searchEndpointError(endpoint, message);
 		}
 		try {
 			return mapAnthropicResponse(await response.json());
 		} catch (error) {
 			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
-			if (error instanceof WebError) throw error;
-			throw new WebError(`DeepSeek returned an unprocessable response body: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+			throw searchEndpointError(endpoint, error instanceof WebError ? error.message : `DeepSeek returned an unprocessable response body: ${String(error)}`, error);
 		}
 	}
 	/**
-	* Resolve one operation's credential without retaining it on the provider.
+	* Resolve one operation's authentication headers without retaining a credential on the provider.
+	* @param options - the caller's snapshot, so the credential and the endpoint it is sent to come from one section.
+	* @param endpoint - the Messages endpoint this operation dispatches to.
+	* @param signal - abort signal for the surrounding search.
+	* @returns the account-token header when one resolves, otherwise the API-key headers, tagged by credential kind.
+	*/
+	async authHeaders(options, endpoint, signal) {
+		const { resolveAccountToken } = options;
+		const token = resolveAccountToken === void 0 ? void 0 : await resolveCredential(() => resolveAccountToken(endpoint), signal);
+		if (token !== void 0 && token.length > 0) return {
+			kind: "account",
+			headers: { "x-dsh-auth-token": token }
+		};
+		const apiKey = await this.apiKey(options, signal);
+		return {
+			kind: "api-key",
+			headers: {
+				"x-api-key": apiKey,
+				"authorization": `Bearer ${apiKey}`
+			}
+		};
+	}
+	/**
+	* Resolve one operation's API key without retaining it on the provider.
 	* @param options - the caller's snapshot, so the key and the endpoint it is sent to come from one section.
 	* @param signal - abort signal for the surrounding search.
 	* @returns the resolved key.
@@ -174,17 +198,37 @@ var DeepSeekSearchProvider = class {
 	async apiKey(options, signal) {
 		throwIfSearchAborted(signal);
 		if (options.apiKey !== void 0 && options.apiKey.length > 0) return options.apiKey;
-		let resolved;
-		try {
-			resolved = await abortable(options.resolveApiKey?.() ?? Promise.resolve(void 0), signal);
-		} catch (error) {
-			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
-			throw new WebError(`DeepSeek search credential resolution failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
-		}
+		const { resolveApiKey } = options;
+		const resolved = resolveApiKey === void 0 ? void 0 : await resolveCredential(resolveApiKey, signal);
 		if (resolved !== void 0 && resolved.length > 0) return resolved;
-		throw new WebError(`DeepSeek search has no API key for "${options.apiKeyEnv ?? "DEEPSEEK_API_KEY"}"; store it through the credentials service (the web Models page writes it), export it in the launching environment, or set a literal "apiKey" in the web-search-deepseek config`, "WEB_PROVIDER_CREDENTIAL_MISSING");
+		throw new WebError(`DeepSeek search has no API key for "${options.apiKeyEnv ?? "DEEPSEEK_API_KEY"}"; store it through the credentials service (the web Models page writes it), export it in the launching environment, or set a literal "apiKey" in the web-search-deepseek config; a conversation using a DeepSeek Account model searches with the account sign-in instead`, "WEB_PROVIDER_CREDENTIAL_MISSING");
 	}
 };
+/**
+* Run one credential resolver under the search's cancellation signal. An
+* already-cancelled search never starts the resolver.
+* @param resolve - the resolver; a synchronous throw is mapped like a rejection.
+* @param signal - abort signal for the surrounding search.
+* @returns the resolved credential, or undefined when the resolver supplied none.
+* @throws {@link WebError} `WEB_ABORTED` on cancellation, `WEB_PROVIDER_ERROR` when the resolver fails.
+*/
+async function resolveCredential(resolve, signal) {
+	throwIfSearchAborted(signal);
+	try {
+		return await abortable(resolve(), signal);
+	} catch (error) {
+		if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
+		throw new WebError(`DeepSeek search credential resolution failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+	}
+}
+/** Replace endpoint guidance with sign-in guidance when DeepSeek rejects the account token. */
+function accountRejectedError(message) {
+	return new WebError(`${message}\n\nDeepSeek rejected the account sign-in used for this web search. Guide the user to sign in to DeepSeek again; the search endpoint does not need changing.`, "WEB_PROVIDER_ERROR");
+}
+/** Add endpoint recovery instructions to failures that occur after request dispatch begins. */
+function searchEndpointError(endpoint, message, cause) {
+	return new WebError(`${message}\n\nThe web search request used endpoint ${JSON.stringify(endpoint)}. Search endpoint configuration is separate from chat. If that endpoint is not intended, guide the user to Settings > Plugins > Plugin configuration > Web search, where they can change and save Endpoint. If that settings page is unavailable, the user can set DEEPSEEK_SEARCH_BASE_URL or configure web-search-deepseek.baseURL to a trusted Anthropic-compatible Messages API base. Only the user should choose or change the endpoint.`, "WEB_PROVIDER_ERROR", cause === void 0 ? void 0 : { cause });
+}
 /**
 * Race a same-process asynchronous preflight against caller cancellation. The
 * attached settlement handlers keep observing an uncooperative operation after
@@ -225,35 +269,28 @@ function isPositiveInteger(value) {
 }
 //#endregion
 //#region lib/types/index.js
-/**
-* Register a DeepSeek-backed provider in `ctx.web`. It calls the Anthropic-compatible Messages API
-* with native `web_search_20250305`. The provider reuses `DEEPSEEK_API_KEY` but not
-* `DEEPSEEK_BASE_URL`, because search and chat-completions use different bases.
-* @module @deepseek-ai/dsh-web-search-deepseek
-*/
 /** Cordis plugin name used by loader diagnostics. */
 const name = "web-search-deepseek";
 /** The web seam this provider registers into. */
 const inject = ["web"];
-const DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY";
 const Config = z.object({
-	apiKey: z.string().role("secret"),
-	apiKeyEnv: z.string().role("credential-ref").default(DEFAULT_API_KEY_ENV),
-	baseURL: z.string(),
-	model: z.string().default(DEEPSEEK_DEFAULT_MODEL),
-	apiVersion: z.string().default(DEEPSEEK_DEFAULT_API_VERSION),
-	maxTokens: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_TOKENS),
-	maxUses: z.number().step(1).min(1).default(5)
+	apiKey: z.string().role("secret").volatile(),
+	apiKeyEnv: z.string().role("credential-ref").default("DEEPSEEK_API_KEY").volatile(),
+	baseURL: z.string().volatile(),
+	model: z.string().default(DEEPSEEK_DEFAULT_MODEL).volatile(),
+	apiVersion: z.string().default(DEEPSEEK_DEFAULT_API_VERSION).volatile(),
+	maxTokens: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_TOKENS).volatile(),
+	maxUses: z.number().step(1).min(1).default(5).volatile()
 });
 /**
-* Environment variable naming this provider's endpoint. Deliberately distinct
-* from `$DEEPSEEK_BASE_URL`, which belongs to the chat-completions adapter:
-* search speaks the Anthropic-compatible Messages API, so one variable cannot
-* serve both.
+* Auxiliary-search endpoint, independent of the conversation adapter's
+* `$DEEPSEEK_BASE_URL` and selected protocol.
 */
 const SEARCH_BASE_URL_ENV = "DEEPSEEK_SEARCH_BASE_URL";
+/** Provider route id `dsh-llm-deepseek-account` registers; `request/context` events record it per Session. */
+const ACCOUNT_PROVIDER = "deepseek-account";
 /** Settings namespace carrying this provider's endpoint, model, and key reference. */
-const WEB_SEARCH_DEEPSEEK_SETTINGS_NAMESPACE = settingsNamespace("web-search-deepseek");
+const WEB_SEARCH_DEEPSEEK_SETTINGS_NAMESPACE = "web-search-deepseek";
 /**
 * Project one resolved section into the options the provider serves its next
 * search with. Environment fallbacks stay here rather than in the provider:
@@ -263,10 +300,14 @@ const WEB_SEARCH_DEEPSEEK_SETTINGS_NAMESPACE = settingsNamespace("web-search-dee
 * @returns options for one search.
 */
 function resolveOptions(ctx, config) {
-	const apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV);
+	const apiKeyEnv = credentialRef(config.apiKeyEnv);
 	const literalApiKey = config.apiKey !== void 0 && config.apiKey.length > 0 ? config.apiKey : void 0;
 	return {
 		...literalApiKey === void 0 ? {} : { apiKey: literalApiKey },
+		resolveAccountToken: async (endpoint) => {
+			if (ctx.get("agents")?.currentInitiator()?.session.requestContext()?.provider !== ACCOUNT_PROVIDER) return void 0;
+			return await ctx.get("deepseekAccount")?.resolveToken(endpoint);
+		},
 		resolveApiKey: async () => {
 			const credentials = ctx.get("credentials");
 			if (credentials !== void 0) return (await credentials.resolve(apiKeyEnv))?.value;
@@ -275,10 +316,10 @@ function resolveOptions(ctx, config) {
 		},
 		apiKeyEnv,
 		baseURL: config.baseURL ?? launchEnvironmentOf(ctx).get(SEARCH_BASE_URL_ENV)?.value ?? "https://api.deepseek.com/anthropic/v1",
-		model: config.model ?? "deepseek-v4-flash",
-		apiVersion: config.apiVersion ?? "2023-06-01",
-		maxTokens: config.maxTokens ?? 4096,
-		maxUses: config.maxUses ?? 5,
+		model: config.model,
+		apiVersion: config.apiVersion,
+		maxTokens: config.maxTokens,
+		maxUses: config.maxUses,
 		recordRequest: (request) => {
 			ctx.get("agents")?.currentInitiator()?.session.append("web/deepseek-search-llm-request", request);
 		}
@@ -286,14 +327,15 @@ function resolveOptions(ctx, config) {
 }
 /** Register the DeepSeek search provider with `ctx.web`. */
 function apply(ctx, config) {
-	let current = () => config;
-	installSettingsSection(ctx, WEB_SEARCH_DEEPSEEK_SETTINGS_NAMESPACE, Config, config, {
-		setSource: (source) => {
-			current = source;
-		},
-		onChange: () => {}
-	});
-	ctx.web.registerSearchProvider(new DeepSeekSearchProvider(() => resolveOptions(ctx, current())));
+	ctx.web.registerSearchProvider(new DeepSeekSearchProvider(() => resolveOptions(ctx, {
+		apiKey: config.apiKey.get(),
+		apiKeyEnv: config.apiKeyEnv.get(),
+		baseURL: config.baseURL.get(),
+		model: config.model.get(),
+		apiVersion: config.apiVersion.get(),
+		maxTokens: config.maxTokens.get(),
+		maxUses: config.maxUses.get()
+	})));
 }
 //#endregion
 export { Config, DEEPSEEK_DEFAULT_API_VERSION, DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MAX_TOKENS, DEEPSEEK_DEFAULT_MAX_USES, DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PROVIDER_ID, DeepSeekSearchProvider, WEB_SEARCH_DEEPSEEK_SETTINGS_NAMESPACE, apply, inject, name };

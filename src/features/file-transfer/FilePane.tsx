@@ -27,6 +27,8 @@ import type { PaneState } from './controller';
 import { LOCAL_DRIVES_ROOT, isLocalDrivesRoot, isWindowsDriveRoot } from './localDrives';
 import { isPermissionDeniedError, toDisplayError } from '../../utils/displayError';
 import { useContextMenuPosition } from '../../components/useContextMenuPosition';
+import { writeClipboardText } from '../../services/clipboard';
+import { isTextEditingTarget } from '../../services/editingShortcuts';
 
 // ---- Types ----
 
@@ -97,7 +99,7 @@ const MIN_COLUMN_WIDTHS: FileTableColumnWidths = {
 };
 
 const MAX_COLUMN_WIDTH = 2000;
-const COLUMN_WIDTH_STORAGE_PREFIX = 'hpclaw:file-table-column-widths:v1:';
+const COLUMN_WIDTH_STORAGE_PREFIX = 'trace:file-table-column-widths:v1:';
 
 function clampColumnWidth(column: FileTableColumn, width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_COLUMN_WIDTHS[column];
@@ -632,9 +634,9 @@ export default function FilePane({
     return () => {
       controller.abort();
     };
-    // adapter is stable per-pane, path changes trigger reloads
+    // adapter is stable per-pane, path / refreshToken changes trigger reloads
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, fallbackFromDeniedPath]);
+  }, [path, fallbackFromDeniedPath, refreshToken]);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -1038,7 +1040,7 @@ export default function FilePane({
   }, [deleteConfirm, selected, adapter, onDeselectAll, handleRefresh]);
 
   const handleCopyPath = useCallback((entry: FileEntry) => {
-    navigator.clipboard.writeText(entry.path).catch(() => {});
+    void writeClipboardText(entry.path).catch(() => {});
     setContextMenu(null);
   }, []);
 
@@ -1078,7 +1080,7 @@ export default function FilePane({
         ? Array.from(currentSelected)
         : [entry.path];
       e.dataTransfer.setData(
-        'application/x-hpclaw-files',
+        'application/x-trace-files',
         JSON.stringify({ sourcePaths: paths, sourceSide: adapter.side, sourceEndpoint: endpointId }),
       );
       e.dataTransfer.effectAllowed = 'copyMove';
@@ -1091,7 +1093,7 @@ export default function FilePane({
     sourceSide: FileSide;
     sourceEndpoint?: string;
   } | null => {
-    const data = e.dataTransfer.getData('application/x-hpclaw-files');
+    const data = e.dataTransfer.getData('application/x-trace-files');
     if (!data) return null;
     try {
       const parsed = JSON.parse(data) as {
@@ -1158,43 +1160,48 @@ export default function FilePane({
     }
   }, [adapter.side, endpointId, handleRefresh, onDeselectAll, onDrop, readDraggedFiles, readOnly]);
 
-  // Keyboard shortcuts
+  const paneRootRef = useRef<HTMLDivElement>(null);
+  // Only the focused pane owns file shortcuts; never steal text editing keys.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      )
-        return;
+      const target = e.target instanceof Node ? e.target : document.activeElement;
+      if (e.defaultPrevented || e.altKey || !paneRootRef.current?.contains(target)
+        || isTextEditingTarget(target) || (target instanceof Element && target.closest('.xterm'))) return;
+      const key = e.key.toLowerCase();
+      if ((key === 'c' || key === 'x') && document.getSelection()?.toString()) return;
+      let handled = false;
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selected.size > 0) {
           handleDelete();
+          handled = true;
         }
       } else if (e.key === 'F2') {
         if (selected.size === 1) {
           const entry = entries.find((e) => selected.has(e.path));
           if (entry) handleRenameStart(entry);
+          handled = Boolean(entry);
         }
-      } else if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
+      } else if (key === 'a' && (e.ctrlKey || e.metaKey)) {
+        handled = true;
         onSelect(entries.map((e) => e.path));
-      } else if (e.key === 'c' && (e.ctrlKey || e.metaKey)) {
+      } else if (key === 'c' && (e.ctrlKey || e.metaKey)) {
         if (selected.size > 0 && onCopyFiles) {
-          e.preventDefault();
+          handled = true;
           onCopyFiles(Array.from(selected));
         }
-      } else if (e.key === 'x' && (e.ctrlKey || e.metaKey)) {
+      } else if (key === 'x' && (e.ctrlKey || e.metaKey)) {
         if (!readOnly && selected.size > 0 && onCutFiles) {
-          e.preventDefault();
+          handled = true;
           onCutFiles(Array.from(selected));
         }
-      } else if (e.key === 'v' && (e.ctrlKey || e.metaKey)) {
+      } else if (key === 'v' && (e.ctrlKey || e.metaKey)) {
         if (!readOnly && onPasteFiles && clipboardAvailable) {
-          e.preventDefault();
-          Promise.resolve(onPasteFiles(path)).then(handleRefresh).catch(() => {});
+          handled = true;
+          if (!e.repeat) Promise.resolve(onPasteFiles(path)).then(handleRefresh).catch(() => {});
         }
       }
+      if (handled) { e.preventDefault(); e.stopPropagation(); }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -1227,6 +1234,12 @@ export default function FilePane({
 
   return (
     <div
+      ref={paneRootRef}
+      tabIndex={0}
+      data-shortcut-scope="files"
+      onPointerDownCapture={event => {
+        if (!isTextEditingTarget(event.target)) event.currentTarget.focus({ preventScroll: true });
+      }}
       className="file-transfer-pane"
       onDragOver={handleDragOver}
       onDrop={handleDrop}

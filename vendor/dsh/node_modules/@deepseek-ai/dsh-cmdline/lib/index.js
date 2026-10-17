@@ -17,22 +17,59 @@
 * @module @deepseek-ai/dsh-cmdline
 */
 /**
-* Provide the command line and the exit request on a host context before any
-* tree entry mounts. Both are launcher facts, not config: an embedding host
-* with no command line provides an empty argument list.
+* Provide launcher facts on a host context before any tree entry mounts: the
+* command line, bounded exit request, and optional successful-startup signal.
+* An embedding host with no command line provides an empty argument list; a
+* host that mounts a stdio application also provides readiness.
 * @param ctx - the host context the tree will mount under.
-* @param host - the invocation's arguments and its exit request.
+* @param host - the invocation's arguments, exit request, and optional readiness signal.
 */
 function provideCmdline(ctx, host) {
 	const snapshot = Object.freeze([...host.args]);
 	ctx.provide("cmdlineArgs", { get: () => snapshot });
 	ctx.provide("appExit", host.exit);
+	if (host.ready !== void 0) ctx.provide("appReady", host.ready);
 }
-/** The process streams commander output is written to; production writes to the process. */
+/** Process streams used by app command lines and stdio lifetime binding; tests substitute them. */
 const internals = {
+	stdin: process.stdin,
 	stdout: process.stdout,
 	stderr: process.stderr
 };
+/**
+* Make stdin EOF request the launcher's bounded successful shutdown after
+* {@link AppReady} commits. A startup rejection therefore remains the process
+* outcome when it races EOF. The caller invokes this only after its command
+* action accepts the invocation, so help and usage failures start no transport
+* lifecycle. This listener does not read or resume stdin: the protocol
+* transport owns input and receives bytes buffered before it mounts. Disposal
+* removes the EOF and readiness listeners.
+* @param ctx - app plugin context carrying the launcher's exit request.
+* @param label - effect label naming the owning application.
+*/
+function exitOnStdinEnd(ctx, label) {
+	const exit = ctx.get("appExit");
+	const ready = ctx.get("appReady");
+	if (exit === void 0 || ready === void 0) throw new Error("stdio app: the launcher must provide ctx.appExit and ctx.appReady before the tree mounts");
+	const stdin = internals.stdin;
+	let active = true;
+	let ended = false;
+	let cancelReady = () => {};
+	const onEnd = () => {
+		if (!active || ended) return;
+		ended = true;
+		cancelReady = ready.onReady(() => {
+			exit(0);
+		});
+	};
+	ctx.effect(() => () => {
+		active = false;
+		cancelReady();
+		stdin.off("end", onEnd);
+	}, label);
+	stdin.once("end", onEnd);
+	if (stdin.readableEnded) queueMicrotask(onEnd);
+}
 /**
 * Parse the launcher's immutable argument snapshot with an app's commander
 * program. Commander runs the program's own synchronous action handler on a
@@ -112,4 +149,4 @@ function isCommanderError(error) {
 	return typeof candidate.code === "string" && candidate.code.startsWith("commander.") && typeof candidate.exitCode === "number";
 }
 //#endregion
-export { internals, parseCmdline, provideCmdline };
+export { exitOnStdinEnd, internals, parseCmdline, provideCmdline };

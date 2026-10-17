@@ -197,15 +197,15 @@ export default function App() {
 
   // ─── 主题（白天/黑夜）───
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
-    localStorage.getItem('hpclaw_theme') === 'light' ? 'light' : 'dark');
+    localStorage.getItem('trace_theme') === 'light' ? 'light' : 'dark');
   useEffect(() => {
     const notify = (event: Event) => window.alert((event as CustomEvent).detail || '集群设置保存失败，请重新登录后重试');
-    window.addEventListener('hpclaw-persistence-error', notify);
-    return () => window.removeEventListener('hpclaw-persistence-error', notify);
+    window.addEventListener('trace-persistence-error', notify);
+    return () => window.removeEventListener('trace-persistence-error', notify);
   }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : '';
-    localStorage.setItem('hpclaw_theme', theme);
+    localStorage.setItem('trace_theme', theme);
   }, [theme]);
   const handleToggleTheme = useCallback(() => {
     setTheme(t => (t === 'dark' ? 'light' : 'dark'));

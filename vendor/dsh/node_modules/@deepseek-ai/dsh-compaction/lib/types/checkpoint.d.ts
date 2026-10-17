@@ -1,5 +1,5 @@
 /**
- * Compaction checkpoint provenance: the correlated source constructor and type
+ * Compaction checkpoint source: the correlated constructor and type
  * every backend uses for its replacement user message, plus the predicate that
  * recognizes persisted checkpoints.
  *
@@ -15,16 +15,15 @@ import type { MessageSource } from '@deepseek-ai/dsh-llm/message';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { CompactionId } from './brand.ts';
 declare const COMPACT_CHECKPOINT_MARKER: Readonly<{
-    readonly kind: "plugin";
-    readonly plugin: "compact";
+    readonly kind: "compact-checkpoint";
 }>;
-/** Message provenance carried by a concrete compaction checkpoint. */
+/** Message source carried by a concrete compaction checkpoint. */
 export type CompactionCheckpointSource = typeof COMPACT_CHECKPOINT_MARKER & {
     readonly compactionId: CompactionId;
     readonly sourceCommandId?: CommandId;
 };
 /**
- * Create checkpoint provenance correlated with one compaction transaction.
+ * Create a checkpoint source correlated with one compaction transaction.
  * @param compactionId - owning compaction identity.
  * @param sourceCommandId - initiating manual command, when present.
  * @returns immutable checkpoint source.
@@ -35,6 +34,6 @@ export declare function compactCheckpointSource(compactionId: CompactionId, sour
  * @param source - source restored from a surface user message.
  * @returns whether the source carries the backend-independent checkpoint marker.
  */
-export declare function isCompactCheckpointSource(source: MessageSource): boolean;
+export declare function isCompactCheckpointSource(source: MessageSource): source is CompactionCheckpointSource;
 export {};
 //# sourceMappingURL=checkpoint.d.ts.map

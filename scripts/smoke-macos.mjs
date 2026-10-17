@@ -7,7 +7,7 @@ import * as asar from '@electron/asar';
 
 if (process.platform !== 'darwin' || !process.env.CI) throw new Error('Run the Mac package smoke test only on the isolated CI runner');
 const output = path.resolve(`release-mac-${process.arch}`);
-const app = path.join(output, process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'HPClaw.app');
+const app = path.join(output, process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'TRACE.app');
 const resources = path.join(app, 'Contents', 'Resources');
 const bundledNode = path.join(resources, 'app.asar.unpacked', 'vendor', 'node-runtime', 'node');
 const dshBin = path.join(resources, 'app.asar.unpacked', 'vendor', 'dsh', 'lib', 'bin.js');
@@ -28,9 +28,9 @@ const port = await new Promise(resolve => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)); });
 });
-const appEnv = { ...process.env, PORT: String(port), HPCLAW_WEB_MODE: '', HPCLAW_HOST: '' };
+const appEnv = { ...process.env, PORT: String(port), TRACE_WEB_MODE: '', TRACE_HOST: '' };
 delete appEnv.ELECTRON_RUN_AS_NODE;
-const child = spawn(path.join(app, 'Contents', 'MacOS', 'HPClaw'), [], {
+const child = spawn(path.join(app, 'Contents', 'MacOS', 'TRACE'), [], {
   env: appEnv,
   stdio: ['ignore', 'pipe', 'pipe'],
 });

@@ -1,7 +1,8 @@
 /**
- * JSON storage backend: one human-readable file per unit under a configured
- * root, published by atomic whole-file rewrite. Registers as backend `json`
- * on the storage hub.
+ * JSON storage backend: one human-readable document per unit under a
+ * configured root — a whole-unit file (`single` layout) or one document per
+ * record (`per-record` layout), published by atomic rewrite. Registers as
+ * backend `json` on the storage hub.
  * @module @deepseek-ai/dsh-storage-json
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -18,7 +19,7 @@ export declare const inject: string[];
  * location explicitly.
  */
 export interface Config {
-    /** Directory holding one `<unit>.json` file per unit. */
+    /** Directory holding one `<unit>.json` file (or `<unit>/` tree) per unit. */
     root: string;
 }
 /** Config schema. */

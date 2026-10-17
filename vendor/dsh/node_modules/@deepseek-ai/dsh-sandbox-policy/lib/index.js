@@ -1,13 +1,13 @@
-import { resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { Service } from "@deepseek-ai/cordis";
-import z from "@deepseek-ai/schemastery";
-import { canonicalPath } from "@deepseek-ai/dsh-sandbox";
+import { z } from "zod";
+import z$1 from "@deepseek-ai/schemastery";
 //#region lib/types/session-mode.js
 /**
 * Per-session sandbox-mode override: the session log as the store. A runtime
 * switch (a UI policy control or test scenario) is recorded as one
 * `sandbox/mode` event on the session it applies to;
-* `effective = fold(events) ?? the deployment default`, so an override
+* `effective = projection state ?? the deployment default`, so an override
 * survives restart by replay, two sessions can never see each other's state,
 * and there is no external config store. The event is log-only (the
 * `approval/*` precedent): the policy owner projects the fold into each model
@@ -29,24 +29,10 @@ const SANDBOX_MODES = [
 	"danger-full-access"
 ];
 /**
-* The session's sandbox-mode override: the last `sandbox/mode` event in the
-* log, or undefined when the session never switched (callers apply the
-* deployment default). The pure fold — resume needs no catch-up machinery
-* because replaying the log IS the state.
-* @param events - session events in log order (other event types are skipped).
-* @returns the mode of the last switch event, or undefined without one.
-*/
-function effectiveSandboxMode(events) {
-	for (let index = events.length - 1; index >= 0; index -= 1) {
-		const event = events[index];
-		if (event.type === "sandbox/mode") return event.data.mode;
-	}
-}
-/**
 * THE write path for a session's sandbox-mode override: appends exactly one
 * `sandbox/mode` event — the switch IS its event; nothing mutates mode state
 * out of band. Takes effect on the session's next confined call (bash or fs)
-* — the consumers fold on every read.
+* — consumers read the shared projection state.
 * @param session - the session the override belongs to.
 * @param mode - the mode every subsequent confined call in this session runs
 *   under (until the next switch).
@@ -60,7 +46,9 @@ function setSandboxMode(session, mode) {
 * The sandbox POLICY home (`ctx.sandboxPolicy`): the single owner of the
 * deployment's sandbox fallbacks plus per-session resolution: the file-effect
 * {@link SandboxMode}, the `workspace-write` root, and the override kit (the
-* `sandbox/mode` event, its fold, and its write path, from `./session-mode.ts`).
+* `sandbox/mode` event, its fold, and its write path; the fold is the
+* `sandboxMode` session-projection unit registered here, while the event and
+* write path come from `./session-mode.ts`).
 * Before each agent request, the owner also contributes the resolved policy to
 * the cache-safe runtime-context snapshot. The agent loop logs that snapshot as
 * model history, so replay reconstructs the same mode and root the enforcing
@@ -75,9 +63,10 @@ function setSandboxMode(session, mode) {
 *
 * @module @deepseek-ai/dsh-sandbox-policy
 */
-/** Resolve filesystem identity before lexical normalization can erase symlink-sensitive components. */
+/** Preserve execution-world spelling; enforcing providers resolve filesystem identity on their host. */
 function resolveWorkspaceRoot(path) {
-	return resolve(canonicalPath(path));
+	if (!isAbsolute(path)) throw new Error("sandbox-policy: workspace root must be an absolute execution-world path");
+	return path;
 }
 /** Render the policy without claiming which capabilities are mounted. */
 function renderPolicyContext(policy) {
@@ -92,6 +81,12 @@ function renderPolicyContext(policy) {
 		}
 	}
 }
+/** The sandbox-mode projection's state schema (state equals the public shape). */
+const sandboxModeStateSchema = z.union([
+	z.literal("read-only"),
+	z.literal("workspace-write"),
+	z.literal("danger-full-access")
+]).nullable();
 /**
 * The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment
 * default mode, fallback workspace root, and current request-time policy
@@ -99,14 +94,15 @@ function renderPolicyContext(policy) {
 * mode log and immutable cwd travel together to every enforcing capability.
 */
 var SandboxPolicyService = class extends Service {
-	static Config = z.object({
-		mode: z.union([
+	static Config = z$1.object({
+		mode: z$1.union([
 			"read-only",
 			"workspace-write",
 			"danger-full-access"
 		]).default("read-only"),
-		workspaceRoot: z.string()
+		workspaceRoot: z$1.string()
 	});
+	static inject = ["sessionProjections"];
 	/** The deployment default mode — the fallback beneath a session override. */
 	defaultMode;
 	/** The absolute `workspace-write` fallback root for calls without a session cwd. */
@@ -115,10 +111,17 @@ var SandboxPolicyService = class extends Service {
 		super(ctx, "sandboxPolicy");
 		this.defaultMode = config.mode;
 		this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd());
+		ctx.sessionProjections.register({
+			key: "sandboxMode",
+			stateVersion: 1,
+			stateSchema: sandboxModeStateSchema,
+			init: () => null,
+			apply: (state, event) => event.type === "sandbox/mode" ? event.data.mode : state
+		});
 		ctx.inject(["systemPrompt"], (scope) => {
 			scope.systemPrompt.context({
 				name: "sandbox:policy",
-				order: 110,
+				order: scope.systemPrompt.getContextOrder("SANDBOX_POLICY"),
 				text: (context) => {
 					const session = context.agent?.session;
 					return session === void 0 ? "" : renderPolicyContext(this.resolve({ session }));
@@ -149,8 +152,8 @@ var SandboxPolicyService = class extends Service {
 	* @returns the last logged mode, or `undefined` without one.
 	*/
 	overrideOf(session) {
-		return effectiveSandboxMode(session.events);
+		return this.ctx.sessionProjections.stateOf(session, "sandboxMode") ?? void 0;
 	}
 };
 //#endregion
-export { SANDBOX_MODES, SandboxPolicyService, SandboxPolicyService as default, effectiveSandboxMode, setSandboxMode };
+export { SANDBOX_MODES, SandboxPolicyService, SandboxPolicyService as default, setSandboxMode };

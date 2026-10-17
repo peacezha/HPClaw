@@ -2,16 +2,13 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { GoalView } from '@deepseek-ai/dsh-goal';
-import type { SessionEvent } from '@deepseek-ai/dsh-session';
+import type { SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session';
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
-type TurnStartEvent = Extract<SessionEvent, {
-    type: 'turn/start';
-}>;
-/** Current open turn plus the events accepted after its start boundary. */
+/** The calling agent plus the immutable event cut and open-turn start seq used for authority checks. */
 export interface GoalToolExecution {
     readonly agent: Agent;
-    readonly start: TurnStartEvent;
     readonly events: readonly SessionEvent[];
+    readonly openTurnStartSeq: SessionSeq;
 }
 /** Hard authority granted to one state-changing call. */
 export type GoalToolAuthority = {
@@ -24,7 +21,7 @@ export type GoalToolAuthority = {
  * Resolve and authenticate the calling agent and its driver boundary.
  * @param ctx - Context carrying the live agent registry.
  * @param exec - Tool execution metadata supplied by the registry.
- * @returns The authenticated agent and its current turn window.
+ * @returns The authenticated agent, immutable event cut, and open-turn boundary.
  */
 export declare function goalToolExecution(ctx: Context, exec: ToolRunContext): GoalToolExecution;
 /**
@@ -40,5 +37,4 @@ export declare function requireDirectHuman(ctx: Context, execution: GoalToolExec
  * @returns The direct-human or exact-goal-round authority grant.
  */
 export declare function completionAuthority(ctx: Context, execution: GoalToolExecution): GoalToolAuthority;
-export {};
 //# sourceMappingURL=authority.d.ts.map

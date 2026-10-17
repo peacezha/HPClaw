@@ -49,8 +49,10 @@ export interface Config extends SessionQueryConfig {
     maxLimit?: number;
     /** Maximum snippet length in Unicode code points. Defaults to 240. */
     snippetChars?: number;
-    /** Maximum concurrent persisted-log inspections in one inherited batch read. Defaults to 4. */
-    persistedInspectConcurrency?: number;
+    /** Maximum concurrent persisted-log reads in one inherited batch read. Defaults to 4. */
+    persistedReadConcurrency?: number;
+    /** Maximum cold prepared-Session observations the inherited reader retains for reuse. Defaults to 5. */
+    preparedSessionCacheSize?: number;
 }
 interface ResolvedConfig {
     path: string;
@@ -60,7 +62,8 @@ interface ResolvedConfig {
     maxLimit: number;
     snippetChars: number;
     readWindowMax: number;
-    persistedInspectConcurrency: number;
+    persistedReadConcurrency: number;
+    preparedSessionCacheSize: number;
 }
 /** Concrete SQLite owner of the combined `ctx.sessionQuery` service. */
 export declare class SqliteSessionQueryEngine extends SessionQueryEngine {

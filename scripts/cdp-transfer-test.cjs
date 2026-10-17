@@ -1,11 +1,11 @@
-// HPClaw v2 live transfer test — drives the real app via CDP against the real cluster.
+// TRACE v2 live transfer test — drives the real app via CDP against the real cluster.
 // Usage: node scripts/cdp-transfer-test.cjs [port]
 const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
 const port = process.argv[2] || '9222';
 
-const LOCAL_DIR = 'E:\\0612hpclaw\\hpclaw_v2\\tmp-live-test';
+const LOCAL_DIR = 'E:\\0612trace\\trace_v2\\tmp-live-test';
 const REMOTE_DIR = '/public/home/hpzhang';
 const results = [];
 const ok = (name, pass, detail = '') => {
@@ -112,8 +112,8 @@ function getJson(path) {
   const up1 = await api('POST', '/api/transfers', {
     profileId: 'live-test', sessionId, direction: 'upload',
     localPath: smallLocal,
-    remotePath: `${REMOTE_DIR}/hpclaw-test-small.txt`,
-    temporaryPath: `${REMOTE_DIR}/.hpclaw-test-small.txt.lt1.part`,
+    remotePath: `${REMOTE_DIR}/trace-test-small.txt`,
+    temporaryPath: `${REMOTE_DIR}/.trace-test-small.txt.lt1.part`,
     totalBytes: smallSize, transferredBytes: 0,
     conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
   });
@@ -125,12 +125,12 @@ function getJson(path) {
     ok('上传：小文件 → 集群', done?.state === 'completed', done ? `state=${done.state}${done.error ? ' err=' + done.error : ''}` : '超时未完成');
     // 远端校验
     const stat = await api('GET', '/api/remote/files?path=' + encodeURIComponent(REMOTE_DIR));
-    const found = (stat.data.entries || []).find(e => e.name === 'hpclaw-test-small.txt');
+    const found = (stat.data.entries || []).find(e => e.name === 'trace-test-small.txt');
     ok('上传：远端文件存在且大小一致', !!found && found.size === smallSize, found ? `remote size=${found.size} local=${smallSize}` : '远端未找到');
   }
 
   // ── 2. 预览远端文件 ──────────────────────────────────────────────────────
-  const prev = await api('GET', '/api/remote/preview?path=' + encodeURIComponent(`${REMOTE_DIR}/hpclaw-test-small.txt`));
+  const prev = await api('GET', '/api/remote/preview?path=' + encodeURIComponent(`${REMOTE_DIR}/trace-test-small.txt`));
   const prevPayload = prev.data;
   let previewText = '';
   if (prevPayload && prevPayload.content) {
@@ -148,7 +148,7 @@ function getJson(path) {
   const dl1 = await api('POST', '/api/transfers', {
     profileId: 'live-test', sessionId, direction: 'download',
     localPath: dlLocal,
-    remotePath: `${REMOTE_DIR}/hpclaw-test-small.txt`,
+    remotePath: `${REMOTE_DIR}/trace-test-small.txt`,
     temporaryPath: dlLocal + '.lt2.part',
     totalBytes: smallSize, transferredBytes: 0,
     conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
@@ -166,8 +166,8 @@ function getJson(path) {
   const up2 = await api('POST', '/api/transfers', {
     profileId: 'live-test', sessionId, direction: 'upload',
     localPath: bigLocal,
-    remotePath: `${REMOTE_DIR}/hpclaw-test-big.bin`,
-    temporaryPath: `${REMOTE_DIR}/.hpclaw-test-big.bin.lt3.part`,
+    remotePath: `${REMOTE_DIR}/trace-test-big.bin`,
+    temporaryPath: `${REMOTE_DIR}/.trace-test-big.bin.lt3.part`,
     totalBytes: bigSize, transferredBytes: 0,
     conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
   });
@@ -196,8 +196,8 @@ function getJson(path) {
   const up3 = await api('POST', '/api/transfers', {
     profileId: 'live-test', sessionId, direction: 'upload',
     localPath: bigLocal,
-    remotePath: `${REMOTE_DIR}/hpclaw-test-cancel.bin`,
-    temporaryPath: `${REMOTE_DIR}/.hpclaw-test-cancel.bin.lt4.part`,
+    remotePath: `${REMOTE_DIR}/trace-test-cancel.bin`,
+    temporaryPath: `${REMOTE_DIR}/.trace-test-cancel.bin.lt4.part`,
     totalBytes: bigSize, transferredBytes: 0,
     conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
   });
@@ -223,15 +223,15 @@ function getJson(path) {
   await api('POST', '/api/transfers', {
     profileId: 'live-test', sessionId, direction: 'upload',
     localPath: smallLocal,
-    remotePath: `${REMOTE_DIR}/hpclaw-test-edit.txt`,
-    temporaryPath: `${REMOTE_DIR}/.hpclaw-test-edit.txt.lt5.part`,
+    remotePath: `${REMOTE_DIR}/trace-test-edit.txt`,
+    temporaryPath: `${REMOTE_DIR}/.trace-test-edit.txt.lt5.part`,
     totalBytes: smallSize, transferredBytes: 0,
     conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
   }).then(r => waitTask(r.data.transfer.id, ['completed', 'failed'], 20000));
 
-  const editPrep = await evalJs(`window.hpclawDesktop.remoteEdits.prepare({
+  const editPrep = await evalJs(`window.traceDesktop.remoteEdits.prepare({
     profileId: 'live-test', sshSessionId: '${sessionId}',
-    remotePath: '${REMOTE_DIR}/hpclaw-test-edit.txt', fileName: 'hpclaw-test-edit.txt',
+    remotePath: '${REMOTE_DIR}/trace-test-edit.txt', fileName: 'trace-test-edit.txt',
   })`);
   let editOk = false, editDetail = '';
   if (editPrep?.id) {
@@ -239,7 +239,7 @@ function getJson(path) {
     const dlEdit = await api('POST', '/api/transfers', {
       profileId: 'live-test', sessionId, direction: 'download',
       localPath: editPrep.localPath,
-      remotePath: `${REMOTE_DIR}/hpclaw-test-edit.txt`,
+      remotePath: `${REMOTE_DIR}/trace-test-edit.txt`,
       temporaryPath: editPrep.localPath + '.lt6.part',
       totalBytes: smallSize, transferredBytes: 0,
       conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
@@ -248,19 +248,19 @@ function getJson(path) {
     if (dlEditDone?.state !== 'completed') {
       editDetail = '编辑下载失败: ' + (dlEditDone?.error || 'timeout');
     } else {
-      await evalJs(`window.hpclawDesktop.remoteEdits.markDownloaded('${editPrep.id}')`);
+      await evalJs(`window.traceDesktop.remoteEdits.markDownloaded('${editPrep.id}')`);
       // 模拟用户编辑：直接改写本地缓存文件
       const newContent = localText + '\n[edited by live test ' + Date.now() + ']\n';
       fs.writeFileSync(editPrep.localPath.replace(/\//g, '\\'), newContent);
       const fingerprint = crypto.createHash('sha256').update(fs.readFileSync(editPrep.localPath.replace(/\//g, '\\'))).digest('hex');
       // 上传阶段（与 queueEditUpload 同路径）
-      await evalJs(`window.hpclawDesktop.remoteEdits.markUploading('${editPrep.id}', '${fingerprint}')`);
+      await evalJs(`window.traceDesktop.remoteEdits.markUploading('${editPrep.id}', '${fingerprint}')`);
       const newSize = fs.statSync(editPrep.localPath.replace(/\//g, '\\')).size;
       const upEdit = await api('POST', '/api/transfers', {
         profileId: 'live-test', sessionId, direction: 'upload',
         localPath: editPrep.localPath,
-        remotePath: `${REMOTE_DIR}/hpclaw-test-edit.txt`,
-        temporaryPath: `${REMOTE_DIR}/.hpclaw-test-edit.txt.lt7.part`,
+        remotePath: `${REMOTE_DIR}/trace-test-edit.txt`,
+        temporaryPath: `${REMOTE_DIR}/.trace-test-edit.txt.lt7.part`,
         totalBytes: newSize, transferredBytes: 0,
         conflictPolicy: 'overwrite', verificationMode: 'size', retryCount: 0,
       });
@@ -268,9 +268,9 @@ function getJson(path) {
       if (upEditDone?.state !== 'completed') {
         editDetail = '编辑上传失败: ' + (upEditDone?.error || JSON.stringify(upEdit.data).slice(0, 150) || 'timeout');
       } else {
-        await evalJs(`window.hpclawDesktop.remoteEdits.markSynced('${editPrep.id}', '${fingerprint}')`);
+        await evalJs(`window.traceDesktop.remoteEdits.markSynced('${editPrep.id}', '${fingerprint}')`);
         // 远端内容校验
-        const chk = await api('GET', '/api/remote/preview?path=' + encodeURIComponent(`${REMOTE_DIR}/hpclaw-test-edit.txt`));
+        const chk = await api('GET', '/api/remote/preview?path=' + encodeURIComponent(`${REMOTE_DIR}/trace-test-edit.txt`));
         const remoteText = chk.data?.content
           ? (chk.data.encoding === 'base64' ? Buffer.from(chk.data.content, 'base64').toString('utf8') : String(chk.data.content))
           : '';
@@ -279,19 +279,19 @@ function getJson(path) {
       }
     }
     // 清理编辑会话
-    await evalJs(`window.hpclawDesktop.remoteEdits.discard('${editPrep.id}')`);
+    await evalJs(`window.traceDesktop.remoteEdits.discard('${editPrep.id}')`);
   } else {
     editDetail = 'prepare 失败: ' + JSON.stringify(editPrep).slice(0, 150);
   }
   ok('编辑会话：下载→编辑→上传→远端内容正确', editOk, editDetail);
 
   // ── 8. discard 后会话列表为空 ────────────────────────────────────────────
-  const editList = await evalJs(`window.hpclawDesktop.remoteEdits.list()`);
-  const liveTestSessions = (editList || []).filter(s => s.remotePath?.includes('hpclaw-test-'));
+  const editList = await evalJs(`window.traceDesktop.remoteEdits.list()`);
+  const liveTestSessions = (editList || []).filter(s => s.remotePath?.includes('trace-test-'));
   ok('编辑会话：discard 生效', liveTestSessions.length === 0, `剩余=${liveTestSessions.length}`);
 
   // ── 清理远端测试文件 ─────────────────────────────────────────────────────
-  for (const f of ['hpclaw-test-small.txt', 'hpclaw-test-big.bin', 'hpclaw-test-cancel.bin', 'hpclaw-test-edit.txt']) {
+  for (const f of ['trace-test-small.txt', 'trace-test-big.bin', 'trace-test-cancel.bin', 'trace-test-edit.txt']) {
     await api('POST', '/api/remote/remove', { path: `${REMOTE_DIR}/${f}`, recursive: false });
   }
   console.log('---');

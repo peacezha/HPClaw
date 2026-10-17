@@ -10,6 +10,25 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 describe('数据准备引导', () => {
+  it('localizes the whole guide, including JSON notes, without altering paths or TSV columns', () => {
+    const workflow = makeWorkflow({ params: [
+      { name: 'SAMPLE_SHEET', label: '样本表', type: 'path' },
+      { name: 'CONTROL_DIR', label: '对照', type: 'path' },
+      { name: 'INPUT_JSON', label: '输入 JSON', type: 'path' },
+      { name: 'INPUT_YAML', label: '输入 YAML', type: 'path' },
+      { name: 'CONFIG_FILE', label: '配置', type: 'path' },
+    ] });
+    const zh = buildDataPrepGuide(workflow, 'zh-CN');
+    const en = buildDataPrepGuide(workflow, 'en-US');
+    expect(JSON.stringify(en)).not.toMatch(/[\u3400-\u9fff]/);
+    expect(en.templates[0].content).toBe(zh.templates[0].content);
+    const json = JSON.parse(en.templates[1].content);
+    const zhJson = JSON.parse(zh.templates[1].content);
+    expect(Object.keys(json)).toEqual(Object.keys(zhJson));
+    expect(json['wf_test.genome_tsv']).toBe(zhJson['wf_test.genome_tsv']);
+    expect(json._note).toContain('Remove note fields');
+    expect(buildDataPrepGuide(workflow, 'zh-CN')).toEqual(zh);
+  });
   it('样本表流程给出 TSV 模板与成对规则', () => {
     const guide = buildDataPrepGuide(makeWorkflow({
       params: [{ name: 'SAMPLE_SHEET', label: '样本表 TSV', type: 'path' }],

@@ -215,6 +215,22 @@ export async function enqueueTransfer(
   return data.transfer || data;
 }
 
+/** 文件夹展开后的批量入队：一次请求代替逐条 POST（服务端单次上限 500） */
+export async function enqueueTransfersBatch(
+  sessionId: string,
+  inputs: Omit<
+    TransferTask,
+    'id' | 'state' | 'createdAt' | 'updatedAt' | 'bytesPerSecond'
+  >[],
+): Promise<TransferTask[]> {
+  const res = await request('/api/transfers/batch', sessionId, {
+    method: 'POST',
+    body: JSON.stringify(inputs),
+  });
+  const data = await handleResponse(res);
+  return data.transfers || data;
+}
+
 export async function preflightRemoteCopy(
   sourceSessionId: string,
   sourcePath: string,

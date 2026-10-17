@@ -29,8 +29,8 @@ function file(name: string, size = 100): FileEntry {
 
 function desktopWithPreview(payload: Record<string, unknown>, writeFile = vi.fn().mockResolvedValue(undefined)) {
   const preview = vi.fn().mockResolvedValue(payload);
-  vi.stubGlobal('hpclawDesktop', undefined);
-  Object.defineProperty(window, 'hpclawDesktop', {
+  vi.stubGlobal('traceDesktop', undefined);
+  Object.defineProperty(window, 'traceDesktop', {
     configurable: true,
     value: { localFiles: { preview, writeFile }, remoteEdits: {} },
   });

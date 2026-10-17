@@ -1,5 +1,5 @@
 import { Service } from "@deepseek-ai/cordis";
-import { assertNever } from "@deepseek-ai/dsh-llm";
+import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { NamedEntries, ScopedLayers, scopeChainOf, scopeOf } from "@deepseek-ai/dsh-scope";
 import z from "@deepseek-ai/schemastery";
 //#region lib/types/index.js
@@ -492,6 +492,7 @@ function toSummary(skill) {
 	const { name, description, whenToUse, invocation, source, provider, resourceBase } = skill;
 	return {
 		name,
+		...skill.path === void 0 ? {} : { path: skill.path },
 		description,
 		...whenToUse !== void 0 ? { whenToUse } : {},
 		invocation,

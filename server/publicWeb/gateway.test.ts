@@ -15,9 +15,9 @@ async function setup() {
       const app = express(); app.use(express.json());
       const id = `cluster-${workers.length}`;
       const token = `private-${id}`;
-      app.use((req, res, next) => req.get('X-HPClaw-Worker') === token ? next() : res.sendStatus(403));
+      app.use((req, res, next) => req.get('X-TRACE-Worker') === token ? next() : res.sendStatus(403));
       app.post('/api/login', (_req, res) => res.json({ success: true, sessionId: id, home: `/home/${id}` }));
-      app.all('/api/*', (req, res) => res.json({ worker: id, url: req.originalUrl, body: req.body, reportAccess: req.get('X-HPClaw-Report-Access'), host: req.get('host') }));
+      app.all('/api/*', (req, res) => res.json({ worker: id, url: req.originalUrl, body: req.body, reportAccess: req.get('X-TRACE-Report-Access'), host: req.get('host') }));
       app.all('/socket.io/*', (_req, res) => res.send(id));
       const server = createServer(app); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const worker = { identity, sessionId: id, port: (server.address() as any).port, token,
@@ -51,11 +51,11 @@ describe('public cluster portal boundaries', () => {
     const own = await fetch(base + '/api/conversations', { headers: { Cookie: a.cookie, 'X-SSH-Session-Id': a.sessionId } });
     expect((await own.json()).worker).toBe(a.sessionId);
     for (const url of ['/api/conversations?scope=' + b.sessionId,
-      '/api/files/html-assets/' + b.sessionId + '/token/index.css', '/socket.io/?hpclawCluster=' + b.sessionId]) {
+      '/api/files/html-assets/' + b.sessionId + '/token/index.css', '/socket.io/?traceCluster=' + b.sessionId]) {
       expect((await fetch(base + url, { headers: { Cookie: a.cookie } })).status).toBe(401);
     }
     expect((await fetch(base + '/api/conversations', { headers: { Cookie: a.cookie, 'X-SSH-Session-Id': b.sessionId } })).status).toBe(401);
-    expect((await fetch(base + '/socket.io/?hpclawCluster=' + a.sessionId, { headers: { Cookie: a.cookie } })).status).toBe(200);
+    expect((await fetch(base + '/socket.io/?traceCluster=' + a.sessionId, { headers: { Cookie: a.cookie } })).status).toBe(200);
     await fetch(base + '/api/logout', { method: 'POST', headers: { Cookie: a.cookie } });
     expect(workers[0].stop).toHaveBeenCalledOnce(); expect(workers[1].stop).not.toHaveBeenCalled();
     expect((await fetch(base + '/api/jobs', { headers: { Cookie: b.cookie } })).status).toBe(200);
@@ -86,7 +86,7 @@ describe('public cluster portal boundaries', () => {
     const prefix = base + '/api/public/report-assets/' + reportAccess + '/';
     const asset = await fetch(prefix + 'data/chart.json');
     expect(asset.status).toBe(200); expect((await asset.json()).url).toContain('/data/chart.json');
-    for (const privatePath of ['.ssh/id_rsa', 'hpclaw_web/state.json', '%2e%2e%2foutside.json']) expect((await fetch(prefix + privatePath)).status).toBe(403);
+    for (const privatePath of ['.ssh/id_rsa', 'trace_web/state.json', '%2e%2e%2foutside.json']) expect((await fetch(prefix + privatePath)).status).toBe(403);
     expect((await fetch(base + '/api/jobs?reportAccess=' + reportAccess)).status).toBe(401);
     await fetch(base + '/api/logout', { method: 'POST', headers: { Cookie: a.cookie } });
     expect((await fetch(prefix + 'data/chart.json')).status).toBe(401);

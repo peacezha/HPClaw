@@ -1,54 +1,42 @@
-/**
- * Disposable live timer projection for one exact root agent.
- * @module @deepseek-ai/dsh-schedule
- */
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'schedule': {
+            kind: 'schedule';
+        } & ContextFormed;
+    }
+}
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent } from '@deepseek-ai/dsh-agent';
-/** Largest delay that Node timers represent without clamping. */
+import type { DeliveryRetentionBounds } from './types.ts';
+import type { ScheduleTask } from './storage.ts';
+/** Largest delay Node timers represent without clamping. */
 export declare const MAX_TIMER_DELAY_MS = 2147483647;
-/** One process-local, disposable projection of an exact agent's durable schedules. */
+/** Owns at most one timer across recomputations; delivery and management share the serialized operation. */
 export declare class ScheduleRuntime {
     private readonly ctx;
-    private readonly agent;
-    private readonly stop;
+    private readonly tasks;
+    private readonly transact;
+    private readonly commit;
+    private readonly retention;
     private timer;
-    private idleWait;
-    private run;
-    private requested;
+    private running;
     private stopping;
-    private faulted;
-    private disposal;
+    private requested;
     /**
-     * Construct an inactive runtime; {@link start} begins the first preflight.
-     * @param ctx - Global service context.
-     * @param agent - Exact live root agent.
+     * @param ctx - Host services used to resume and enqueue.
+     * @param tasks - Current durable tasks.
+     * @param transact - Serialize delivery against management writes.
+     * @param commit - Persist task status, target, receipt, and history together after durable inbox delivery.
      */
-    constructor(ctx: Context, agent: Agent);
-    /** Begin the initial durability preflight and timer derivation. */
-    start(): void;
-    /** Recompute the live projection after a committed mutation or idle transition. */
+    constructor(ctx: Context, tasks: () => readonly ScheduleTask[], transact: (work: () => Promise<void>) => Promise<void>, commit: (task: ScheduleTask) => Promise<void>, retention: DeliveryRetentionBounds);
+    /**
+     * Recompute the nearest obligation after startup or a durable change.
+     * Dispatch failures are logged; refused admission does not retry automatically.
+     */
     requestDrive(): void;
-    /** Stop future work, cancel timers, and await every outstanding runtime promise. */
+    /** Stop the timer and drain an accepted delivery before storage closes. */
     dispose(): Promise<void>;
-    /** Drain coalesced triggers serially. */
-    private runRequested;
-    /** Retire one exact run and honor a trigger that landed during its final microtask. */
-    private retire;
-    /** Whether this exact root lifecycle remains authoritative. */
-    private isLive;
-    /** Whether this runtime may start or continue Schedule work. */
-    private isRunnable;
-    /** Cancel the currently armed timer, if any. */
     private clearTimer;
-    /** Arm one bounded timer segment; every wake rechecks the wall clock. */
-    private arm;
-    /** Await one public idle boundary without holding admission or creating a retry timer. */
-    private waitForIdle;
-    /** Fold the current exact runtime suffix and contain a corrupt durable stream. */
-    private readFolded;
-    /** Contain an invalid wall-clock decision without permanently faulting this runtime. */
-    private decide;
-    /** Preflight, fold, arm, or dispatch the next one-shot or fixed-rate batch. */
-    private driveOnce;
+    private drive;
 }
 //# sourceMappingURL=runtime.d.ts.map

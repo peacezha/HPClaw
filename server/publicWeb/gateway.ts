@@ -20,18 +20,18 @@ export interface GatewayOptions {
 }
 
 export async function spawnPrivateWorker(root: string, identity: string, host: string, address: string): Promise<PrivateWorker> {
-  const temporaryBase = process.env.HPCLAW_RUNTIME_TMPDIR || (process.platform === 'linux' && fs.existsSync('/dev/shm') ? '/dev/shm' : os.tmpdir());
-  const directory = fs.mkdtempSync(path.join(temporaryBase, 'hpclaw-public-'));
+  const temporaryBase = process.env.TRACE_RUNTIME_TMPDIR || (process.platform === 'linux' && fs.existsSync('/dev/shm') ? '/dev/shm' : os.tmpdir());
+  const directory = fs.mkdtempSync(path.join(temporaryBase, 'trace-public-'));
   fs.chmodSync(directory, 0o700);
   const token = crypto.randomBytes(32).toString('hex');
   const child = fork(path.join(root, 'dist-electron/server.cjs'), [], {
-    env: { ...process.env, NODE_ENV: 'production', PORT: '0', HPCLAW_WEB_MODE: '',
-      HPCLAW_PUBLIC_WORKER: '1', HPCLAW_PUBLIC_WORKER_TOKEN: token,
-      HPCLAW_PUBLIC_SSH_HOST: host, HPCLAW_PUBLIC_SSH_ADDRESS: address,
-      HPCLAW_APP_ROOT: root, HPCLAW_STATIC_ROOT: root, HPCLAW_DATA_ROOT: directory,
-      HPCLAW_AI_ENGINE: 'legacy', SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
-      HPCLAW_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
-      HPCLAW_PARENT_PID: String(process.pid), QQ_BOT_APP_ID: '', QQ_BOT_APP_SECRET: '',
+    env: { ...process.env, NODE_ENV: 'production', PORT: '0', TRACE_WEB_MODE: '',
+      TRACE_PUBLIC_WORKER: '1', TRACE_PUBLIC_WORKER_TOKEN: token,
+      TRACE_PUBLIC_SSH_HOST: host, TRACE_PUBLIC_SSH_ADDRESS: address,
+      TRACE_APP_ROOT: root, TRACE_STATIC_ROOT: root, TRACE_DATA_ROOT: directory,
+      TRACE_AI_ENGINE: 'legacy', SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      TRACE_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
+      TRACE_PARENT_PID: String(process.pid), QQ_BOT_APP_ID: '', QQ_BOT_APP_SECRET: '',
     },
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
@@ -70,18 +70,18 @@ export function createPublicGateway(options: GatewayOptions) {
   if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 256) throw new Error('并发集群连接数须为 1–256');
   const origin = new URL(options.origin);
   if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
-    throw new Error('HPCLAW_WEB_ORIGIN 必须是网站的完整 origin，不含路径或密码');
+    throw new Error('TRACE_WEB_ORIGIN 必须是网站的完整 origin，不含路径或密码');
   }
   if (origin.protocol !== 'https:' && !['127.0.0.1', 'localhost'].includes(origin.hostname)
-    && process.env.HPCLAW_INSECURE_INTERNAL_HTTP !== '1') throw new Error('公共网页须使用 HTTPS；受控内网测试才可明确启用 HTTP');
+    && process.env.TRACE_INSECURE_INTERNAL_HTTP !== '1') throw new Error('公共网页须使用 HTTPS；受控内网测试才可明确启用 HTTP');
   const visitors = new Map<string, Visitor>();
   const reportAccess = new Map<string, { worker: PrivateWorker; visitor: Visitor; rootToken: string; expires: number }>();
   const attempts = new Map<string, { count: number; since: number }>();
   let reserved = 0;
   const app = express();
-  if (process.env.HPCLAW_TRUST_PROXY === '1') app.set('trust proxy', 1);
+  if (process.env.TRACE_TRUST_PROXY === '1') app.set('trust proxy', 1);
   const server = http.createServer(app);
-  const cookieName = origin.protocol === 'https:' ? '__Host-hpclaw-public' : 'hpclaw-public';
+  const cookieName = origin.protocol === 'https:' ? '__Host-trace-public' : 'trace-public';
   const originAllowed = (header?: string) => !header || header === origin.origin;
   const cookies = (req: http.IncomingMessage) => req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith(cookieName + '='))?.slice(cookieName.length + 1);
   const visitorFor = (req: http.IncomingMessage) => {
@@ -106,7 +106,7 @@ export function createPublicGateway(options: GatewayOptions) {
     if (!visitor) return;
     const url = new URL((req as express.Request).originalUrl || req.url || '/', 'http://localhost');
     const embedded = url.pathname.match(/^\/api\/files\/html-assets\/([^/]+)\//)?.[1];
-    const candidates = [req.headers['x-ssh-session-id'], url.searchParams.get('hpclawCluster'),
+    const candidates = [req.headers['x-ssh-session-id'], url.searchParams.get('traceCluster'),
       url.searchParams.get('sessionId'), url.searchParams.get('scope'), embedded,
       (req as express.Request).body?.sessionId, (req as express.Request).body?.scopeKey].filter(Boolean);
     // An explicit foreign/expired target is never allowed to fall back to the current cluster.
@@ -120,12 +120,12 @@ export function createPublicGateway(options: GatewayOptions) {
   const upstreamHeaders = (req: http.IncomingMessage, worker: PrivateWorker) => ({
     ...req.headers, host: origin.host, cookie: worker.cookie || '',
     'x-forwarded-proto': origin.protocol.slice(0, -1), 'x-forwarded-host': origin.host,
-    'x-hpclaw-worker': worker.token, 'x-ssh-session-id': worker.sessionId || '',
-    authorization: '', 'x-hpclaw-bridge': '',
+    'x-trace-worker': worker.token, 'x-ssh-session-id': worker.sessionId || '',
+    authorization: '', 'x-trace-bridge': '',
   });
   const proxy = (req: express.Request, res: express.Response, worker: PrivateWorker) => {
     const headers: any = upstreamHeaders(req, worker);
-    headers['x-hpclaw-report-access'] = '';
+    headers['x-trace-report-access'] = '';
     if (req.method === 'GET' && new URL(req.originalUrl, origin).pathname === '/api/files/html/document') {
       const visitor = visitorFor(req)!;
       const remotePath = new URL(req.originalUrl, origin).searchParams.get('path');
@@ -133,7 +133,7 @@ export function createPublicGateway(options: GatewayOptions) {
         const access = crypto.randomBytes(32).toString('hex');
         if (reportAccess.size >= 2048) reportAccess.delete(reportAccess.keys().next().value!);
         reportAccess.set(access, { worker, visitor, rootToken: Buffer.from(path.posix.dirname(path.posix.normalize(remotePath))).toString('base64url'), expires: Date.now() + 30 * 60000 });
-        headers['x-hpclaw-report-access'] = access;
+        headers['x-trace-report-access'] = access;
       }
     }
     let payload: string | undefined;
@@ -203,7 +203,7 @@ export function createPublicGateway(options: GatewayOptions) {
         visitor.pending = worker;
       }
       const response = await fetch(`http://127.0.0.1:${worker.port}/api/login`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HPClaw-Worker': worker.token },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TRACE-Worker': worker.token },
         body: JSON.stringify(req.body), signal: AbortSignal.timeout(180000),
       });
       const result = await response.json();
@@ -226,7 +226,7 @@ export function createPublicGateway(options: GatewayOptions) {
     if (!access || access.expires < Date.now() || access.visitor.workers.get(access.worker.sessionId!) !== access.worker) return res.sendStatus(401);
     const relative = String(req.params[0] || '');
     const segments = relative.replace(/\\/g, '/').split('/');
-    if (segments.some(part => part.startsWith('.') || ['hpclaw_web', 'hpclaw_conversations', 'hpclaw_skills'].includes(part))) return res.sendStatus(403);
+    if (segments.some(part => part.startsWith('.') || ['trace_web', 'trace_conversations', 'trace_skills'].includes(part))) return res.sendStatus(403);
     req.originalUrl = `/api/files/html-assets/${access.worker.sessionId}/${access.rootToken}/${relative.split('/').map(encodeURIComponent).join('/')}`;
     proxy(req, res, access.worker);
   });
@@ -270,7 +270,7 @@ export function createPublicGateway(options: GatewayOptions) {
   const index = (_req: express.Request, res: express.Response) => {
     const html = fs.readFileSync(path.join(options.root, 'dist/index.html'), 'utf8');
     res.setHeader('Cache-Control', 'no-store');
-    res.type('html').send(html.replace('<head>', '<head><script>window.hpclawPublicWeb=true;</script>'));
+    res.type('html').send(html.replace('<head>', '<head><script>window.tracePublicWeb=true;</script>'));
   };
   app.get(['/', '/index.html'], index);
   app.use(express.static(path.join(options.root, 'dist'), { index: false }));

@@ -3,7 +3,7 @@
  * plugin's apply-world change listener is the only writer; the row component
  * reads via props.useStore.
  */
-import { type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client';
+import { type EngineStoreHandle } from '@deepseek-ai/dsh-client-store';
 /** One selectable locale row (id + self-described label). */
 export interface LanguageOptionRow {
     /** Locale id (the setLocale argument). */

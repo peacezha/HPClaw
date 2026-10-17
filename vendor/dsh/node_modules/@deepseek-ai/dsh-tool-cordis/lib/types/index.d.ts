@@ -1,10 +1,10 @@
-/**
- * Model-facing Cordis runtime/package inspection, define, run, stop, and remove tools.
- * @module @deepseek-ai/dsh-tool-cordis
- */
+/** Read-only Host and Client runtime API discovery for plugin development. */
 import type { Context } from '@deepseek-ai/cordis';
 export declare const name = "tool-cordis";
 export declare const inject: string[];
-/** Register the Cordis tools and explicit `@pluginId` context injection. */
+/** Register read-only runtime inspection tools over the Host providers that
+ * `@deepseek-ai/dsh-tool-cordis/host` registers once per process.
+ * @param ctx Agent-scoped registration context.
+ */
 export declare function apply(ctx: Context): void;
 //# sourceMappingURL=index.d.ts.map

@@ -190,7 +190,7 @@ const MarkdownMessage = React.memo(function MarkdownMessage({ content, onOpenWeb
   // 文件图全屏放大（http 图保持"侧边打开"，不进 lightbox）
   const [lightbox, setLightbox] = useState<{ src: string; title?: string } | null>(null);
   return (
-    <div className="hpclaw-markdown text-sm leading-6 break-words">
+    <div className="trace-markdown text-sm leading-6 break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={chatUrlTransform}

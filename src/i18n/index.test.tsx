@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { LanguageToggle, LocaleProvider, getStoredLocale, hydrateDesktopLocale, translateUiText } from './index';
 import { BIOINFORMATICS_PHRASES } from './bioinformatics';
 
-afterEach(() => { cleanup(); delete window.hpclawDesktop; });
+afterEach(() => { cleanup(); delete window.traceDesktop; });
 
 describe('global bilingual UI', () => {
   beforeEach(() => {
@@ -49,7 +49,7 @@ describe('global bilingual UI', () => {
     expect(screen.getByTitle('Open File Transfer Workspace')).toBeTruthy();
     expect(screen.getByLabelText('Search files')).toBeTruthy();
     expect(screen.getByPlaceholderText('Enter search terms…')).toBeTruthy();
-    expect(window.localStorage.getItem('hpclaw_language')).toBe('en-US');
+    expect(window.localStorage.getItem('trace_language')).toBe('en-US');
     expect(document.documentElement.lang).toBe('en-US');
     expect(screen.getByRole('button', { name: '切换到中文' })).toBeTruthy();
   });
@@ -94,7 +94,7 @@ describe('global bilingual UI', () => {
 
   it('hydrates the Windows installer choice and persists an explicit in-app switch', async () => {
     const set = vi.fn(async () => 'zh-CN' as const);
-    window.hpclawDesktop = { locale: { get: async () => 'en-US', set } } as any;
+    window.traceDesktop = { locale: { get: async () => 'en-US', set } } as any;
     await hydrateDesktopLocale();
     render(<LocaleProvider><LanguageToggle /><span>正式流程</span></LocaleProvider>);
     expect(screen.getByText('Saved workflows')).toBeTruthy();

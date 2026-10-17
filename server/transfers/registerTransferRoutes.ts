@@ -70,6 +70,28 @@ export function createTransferAdapter(resolveSession: ResolveTransferSession): T
     openLocalWrite: (localPath, offset) =>
       fs.createWriteStream(localPath, { start: offset }),
 
+    // fastPut/fastGet：ssh2 自带的并行块传输（默认 64 并发 × 32KB），
+    // 全新传输的吞吐远高于 createReadStream/createWriteStream 单流一问一答
+    fastPut: (localPath, remotePath, sessionId, onProgress) =>
+      new Promise<void>((resolve, reject) => {
+        getSftp(sessionId).fastPut(
+          localPath,
+          remotePath,
+          { step: (total) => onProgress(total) },
+          (err) => (err ? reject(err) : resolve()),
+        );
+      }),
+
+    fastGet: (remotePath, localPath, sessionId, onProgress) =>
+      new Promise<void>((resolve, reject) => {
+        getSftp(sessionId).fastGet(
+          remotePath,
+          localPath,
+          { step: (total) => onProgress(total) },
+          (err) => (err ? reject(err) : resolve()),
+        );
+      }),
+
     verify: async (localPath, remotePath, mode, context) => {
       if (mode === 'size') {
         const localStat = await fs.promises.stat(localPath);
@@ -267,7 +289,7 @@ export async function registerTransferRoutes(
   const adapter = createTransferAdapter(resolveSession);
 
   const engine = new TransferEngine(adapter, {
-    concurrency: 2,
+    concurrency: 4,
     emit: (event, data) => {
       if (event === 'transfer:updated') {
         io.emit('transfer:updated', data);
@@ -312,7 +334,7 @@ export async function registerTransferRoutes(
       if (!resolveSession(sourceSessionId)) throw new Error('源集群 SSH 会话已失效');
       await adapter.prepareRemoteCopy!({
         sourcePath,
-        destinationPath: path.posix.join(targetDirectory, '.hpclaw-permission-check'),
+        destinationPath: path.posix.join(targetDirectory, '.trace-permission-check'),
         sourceSessionId,
         destinationSessionId,
       });
@@ -336,6 +358,50 @@ export async function registerTransferRoutes(
     return task;
   };
 
+  // 单任务入队参数的解析与校验（POST /api/transfers 与 /api/transfers/batch 共用）
+  const parseTransferInput = (
+    body: any,
+  ): Omit<TransferTask, 'id' | 'state' | 'createdAt' | 'updatedAt' | 'bytesPerSecond' | 'sessionId'> => {
+    const direction = requiredString(body?.direction, 'direction');
+    if (direction !== 'upload' && direction !== 'download' && direction !== 'remote-copy') {
+      throw new Error('direction must be "upload", "download" or "remote-copy"');
+    }
+    const localPath = requiredString(body?.localPath, 'localPath');
+    const remotePath = requiredString(body?.remotePath, 'remotePath');
+    const totalBytes = optionalNumber(body?.totalBytes) ?? 0;
+    const transferredBytes = optionalNumber(body?.transferredBytes) ?? 0;
+    const conflictPolicy = (body?.conflictPolicy as string) || 'ask';
+    const verificationMode = (body?.verificationMode as string) || 'size';
+    // remote-copy：源集群会话（读取侧）；sessionId（body/路由解析）为目标写入侧
+    const sourceSessionId = typeof body?.sourceSessionId === 'string' ? body.sourceSessionId : undefined;
+    if (direction === 'remote-copy' && !sourceSessionId) {
+      throw new Error('remote-copy requires sourceSessionId');
+    }
+    return {
+      profileId: requiredString(body?.profileId, 'profileId'),
+      direction: direction as 'upload' | 'download' | 'remote-copy',
+      sourceSessionId,
+      localPath,
+      remotePath,
+      temporaryPath: requiredString(body?.temporaryPath, 'temporaryPath'),
+      totalBytes,
+      transferredBytes,
+      conflictPolicy: conflictPolicy as ConflictPolicy,
+      verificationMode: verificationMode as VerificationMode,
+      retryCount: 0,
+    };
+  };
+
+  const enqueueParsed = async (
+    input: ReturnType<typeof parseTransferInput>,
+    sessionId: string,
+  ): Promise<TransferTask> => {
+    const task = engine.enqueue(input);
+    // Auto-resume (starts immediately if capacity available)
+    await engine.resume(task.id, sessionId);
+    return task;
+  };
+
   // -----------------------------------------------------------------------
   //  GET /api/transfers — list tasks (?sessionId= 只返回该集群的任务，多标签页隔离)
   // -----------------------------------------------------------------------
@@ -356,38 +422,7 @@ export async function registerTransferRoutes(
     if (!session) return;
 
     try {
-      const direction = requiredString(req.body?.direction, 'direction');
-      if (direction !== 'upload' && direction !== 'download' && direction !== 'remote-copy') {
-        throw new Error('direction must be "upload", "download" or "remote-copy"');
-      }
-      const localPath = requiredString(req.body?.localPath, 'localPath');
-      const remotePath = requiredString(req.body?.remotePath, 'remotePath');
-      const totalBytes = optionalNumber(req.body?.totalBytes) ?? 0;
-      const transferredBytes = optionalNumber(req.body?.transferredBytes) ?? 0;
-      const conflictPolicy = (req.body?.conflictPolicy as string) || 'ask';
-      const verificationMode = (req.body?.verificationMode as string) || 'size';
-      // remote-copy：源集群会话（读取侧）；sessionId（body/路由解析）为目标写入侧
-      const sourceSessionId = typeof req.body?.sourceSessionId === 'string' ? req.body.sourceSessionId : undefined;
-      if (direction === 'remote-copy' && !sourceSessionId) {
-        throw new Error('remote-copy requires sourceSessionId');
-      }
-
-      const task = engine.enqueue({
-        profileId: requiredString(req.body?.profileId, 'profileId'),
-        direction: direction as 'upload' | 'download' | 'remote-copy',
-        sourceSessionId,
-        localPath,
-        remotePath,
-        temporaryPath: requiredString(req.body?.temporaryPath, 'temporaryPath'),
-        totalBytes,
-        transferredBytes,
-        conflictPolicy: conflictPolicy as ConflictPolicy,
-        verificationMode: verificationMode as VerificationMode,
-        retryCount: 0,
-      });
-
-      // Auto-resume (starts immediately if capacity available)
-      await engine.resume(task.id, requestSessionId(req) || '');
+      const task = await enqueueParsed(parseTransferInput(req.body), requestSessionId(req) || '');
 
       // Broadcast summary
       io.emit('transfer:summary', { total: engine.list().length });
@@ -396,6 +431,48 @@ export async function registerTransferRoutes(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/is required|must be/.test(message)) {
+        sendError(res, 400, 'INVALID_TRANSFER_REQUEST', message);
+      } else {
+        sendError(res, 500, 'TRANSFER_OPERATION_FAILED', message);
+      }
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  //  POST /api/transfers/batch — 批量入队（文件夹展开后一次提交，上限 500）
+  // -----------------------------------------------------------------------
+  app.post('/api/transfers/batch', async (req, res) => {
+    const session = withSession(req, res);
+    if (!session) return;
+
+    try {
+      const items = Array.isArray(req.body) ? req.body : req.body?.transfers;
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new Error('transfers must be a non-empty array');
+      }
+      if (items.length > 500) {
+        throw new Error('transfers must contain at most 500 items');
+      }
+      // 先整体校验：任一无效则全部不入队，错误信息带上索引便于定位
+      const inputs = items.map((item, index) => {
+        try {
+          return parseTransferInput(item);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`transfers[${index}]: ${message}`);
+        }
+      });
+      const tasks: TransferTask[] = [];
+      for (const input of inputs) {
+        tasks.push(await enqueueParsed(input, requestSessionId(req) || ''));
+      }
+
+      io.emit('transfer:summary', { total: engine.list().length });
+
+      res.status(201).json({ transfers: tasks });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/is required|must be|must contain|non-empty/.test(message)) {
         sendError(res, 400, 'INVALID_TRANSFER_REQUEST', message);
       } else {
         sendError(res, 500, 'TRANSFER_OPERATION_FAILED', message);
@@ -508,8 +585,8 @@ export async function registerTransferRoutes(
       const concurrency = req.body?.concurrency;
       if (concurrency !== undefined) {
         const c = Number(concurrency);
-        if (![1, 2, 3, 4].includes(c)) throw new Error('concurrency must be 1-4');
-        engine.setConcurrency(c as 1 | 2 | 3 | 4);
+        if (!Number.isInteger(c) || c < 1 || c > 8) throw new Error('concurrency must be 1-8');
+        engine.setConcurrency(c);
       }
       const bandwidthLimit = req.body?.bandwidthLimit;
       if (bandwidthLimit !== undefined) {

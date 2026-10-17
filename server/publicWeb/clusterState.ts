@@ -6,7 +6,7 @@ import type { SftpFileService } from '../files/sftpFileService';
 const LIMIT = 16 * 1024 * 1024;
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 const hash = (value?: string) => value === undefined ? '' : crypto.createHash('sha256').update(value).digest('hex');
-const BINARY_PREFIX = 'hpclaw-binary-base64:';
+const BINARY_PREFIX = 'trace-binary-base64:';
 const binary = (name: string) => /\.(?:png|jpg|jpeg|gif|pdf)$/i.test(name);
 const accepted = (name: string) => /^(?:ai-profile\.json|browser-preferences\.json|notify-config\.json|scheduler-config\.json|scheduler-tags\.json|job-events\.json|job-agent-bindings\.json|formal-workflow-continuations\.json|job-submission[^/]*\.json|workflows\/[\w.-]+\.json|skills\/[^\x00-\x1f\\]+\.(?:md|txt|json|yaml|yml|toml|sh|py|js|ts|R|png|jpg|jpeg|gif|svg|pdf))$/i.test(name)
   && !name.split('/').some(part => !part || part === '.' || part === '..') && !name.includes('.skill-index');
@@ -21,12 +21,12 @@ export class ClusterWebState {
   private pending: Promise<void> = Promise.resolve();
   constructor(private readonly root: string) {}
 
-  private get directory() { return path.posix.join(this.home, 'hpclaw_web'); }
+  private get directory() { return path.posix.join(this.home, 'trace_web'); }
   private get file() { return path.posix.join(this.directory, 'state.json'); }
 
-  private async read(): Promise<State | undefined> {
+  private async read(filename = this.file): Promise<State | undefined> {
     try {
-      const raw = await this.service!.readPreview(this.file, LIMIT);
+      const raw = await this.service!.readPreview(filename, LIMIT);
       const parsed = JSON.parse(raw.toString('utf8'));
       if (parsed.version !== 1 || !/^[a-f0-9]{64}$/.test(parsed.key) || !parsed.files
         || typeof parsed.files !== 'object' || Array.isArray(parsed.files)
@@ -43,17 +43,18 @@ export class ClusterWebState {
   async attach(service: SftpFileService, home: string, exec: (command: string, timeout?: number) => Promise<string>) {
     this.service = service; this.home = home; this.exec = exec;
     await exec(`umask 077; mkdir -p ${quote(this.directory)} && chmod 700 ${quote(this.directory)}`, 15000);
-    const state = await this.read();
+    const state = await this.read() || await this.read(path.posix.join(home, 'hpclaw_web/state.json'));
     if (state) {
-      process.env.HPCLAW_ENCRYPTION_KEY = state.key;
+      process.env.TRACE_ENCRYPTION_KEY = state.key;
       for (const [name, content] of Object.entries(state.files)) {
         const target = path.join(this.root, name);
         fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
         let data: string | Buffer = content;
         if (binary(name)) {
-          if (!content.startsWith(BINARY_PREFIX)) throw new Error('私人技能二进制附件编码无效，不会覆盖集群数据');
-          data = Buffer.from(content.slice(BINARY_PREFIX.length), 'base64');
-          if (data.toString('base64') !== content.slice(BINARY_PREFIX.length)) throw new Error('私人技能附件已损坏');
+          const prefix = content.startsWith(BINARY_PREFIX) ? BINARY_PREFIX : 'hpclaw-binary-base64:';
+          if (!content.startsWith(prefix)) throw new Error('私人技能二进制附件编码无效，不会覆盖集群数据');
+          data = Buffer.from(content.slice(prefix.length), 'base64');
+          if (data.toString('base64') !== content.slice(prefix.length)) throw new Error('私人技能附件已损坏');
         }
         fs.writeFileSync(target, data, { mode: 0o600 });
       }
@@ -87,17 +88,17 @@ export class ClusterWebState {
         .filter(name => hash(next[name]) !== hash(this.baseline[name]));
       if (!changed.length) return;
       const lock = path.posix.join(this.directory, 'state.lock');
-      const acquired = await this.exec(`if mkdir ${quote(lock)} 2>/dev/null; then printf HPCLAW_LOCK_OK; fi`, 10000);
-      if (!acquired.includes('HPCLAW_LOCK_OK')) throw new Error('同一集群账号正在保存设置，请稍后重试');
+      const acquired = await this.exec(`if mkdir ${quote(lock)} 2>/dev/null; then printf TRACE_LOCK_OK; fi`, 10000);
+      if (!acquired.includes('TRACE_LOCK_OK')) throw new Error('同一集群账号正在保存设置，请稍后重试');
       try {
-        const remote = await this.read();
-        if (remote && remote.key !== process.env.HPCLAW_ENCRYPTION_KEY) throw new Error('该账号的网页设置已由另一会话初始化，请重新登录；不会覆盖密钥');
+        const remote = await this.read() || await this.read(path.posix.join(this.home, 'hpclaw_web/state.json'));
+        if (remote && remote.key !== process.env.TRACE_ENCRYPTION_KEY) throw new Error('该账号的网页设置已由另一会话初始化，请重新登录；不会覆盖密钥');
         const files = { ...(remote?.files || {}) };
         for (const name of changed) {
           if (hash(files[name]) !== hash(this.baseline[name])) throw new Error(`集群设置已被其他会话更新：${name}；请重新登录，不会覆盖其他会话`);
           if (next[name] === undefined) delete files[name]; else files[name] = next[name];
         }
-        const content = JSON.stringify({ version: 1, key: process.env.HPCLAW_ENCRYPTION_KEY, files });
+        const content = JSON.stringify({ version: 1, key: process.env.TRACE_ENCRYPTION_KEY, files });
         if (Buffer.byteLength(content) > LIMIT) throw new Error('私人设置总大小超过 16 MiB，请拆分自定义技能');
         const temporary = path.posix.join(this.directory, `state-${crypto.randomUUID()}.tmp`);
         await this.service.writeFile(temporary, content);

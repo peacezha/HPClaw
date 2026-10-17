@@ -9,14 +9,15 @@ export declare function parseRecommendedLabel(label: string): {
     recommended: boolean;
 };
 /**
- * Composer takeover boundary; the carrier key keys local drafts, so a
- * same-request replay (same key, new carrier object) preserves them.
+ * Composer takeover router. Generic-question drafts live in this entry's
+ * Session-scoped Slot store, keyed by the pending carrier, so a strict Session
+ * entry remount restores the same request without exposing it to another one.
  *
- * One takeover, two shapes: a request that declares a presentation intent this
- * package renders takes that shape (a plan review is one decision over one
+ * One takeover, two presentations: a request that declares a presentation intent this
+ * package renders uses that presentation (a plan review is one decision over one
  * plan, not a question set), and every other request takes the generic flow.
  * The routing lives here, at the one entry that owns the composer seat, so
- * neither shape can claim a request the other is already rendering.
+ * neither presentation can claim a request the other is already rendering.
  *
  * @param props - the selector-matched pending question carrier plus the framework standard kit.
  * @returns The question flow, or the intent's own surface, for this request.

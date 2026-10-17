@@ -25,21 +25,16 @@ function eventDelta(event) {
 		default: return 0;
 	}
 }
-/** Read and validate the event named by a surface sequence. */
-function eventForSeq(events, seq) {
-	const event = events[seq];
-	if (event === void 0 || event.seq !== seq) throw new Error(`tool-pairing balance: surface seq ${seq} has no matching session event (corrupt surface)`);
-	return event;
-}
 /** Fold surface sequences not yet in the cache into its balance state. */
 function extendCache(session, cache, seqs) {
 	const processed = cache.cutBalanced.length - 1;
 	const tail = seqs.slice(processed);
-	const events = session.events;
 	const pendingCuts = [];
 	let inProgressToolCalls = cache.inProgressToolCalls;
 	for (const seq of tail) {
-		inProgressToolCalls += eventDelta(eventForSeq(events, seq));
+		const event = session.eventAt(seq);
+		if (event === void 0 || event.seq !== seq) throw new Error(`tool-pairing balance: surface seq ${seq} has no matching session event (corrupt surface)`);
+		inProgressToolCalls += eventDelta(event);
 		if (inProgressToolCalls < 0) throw new Error(`tool-pairing balance: tool/result at surface seq ${seq} has no matching tool-call (corrupt surface)`);
 		pendingCuts.push(inProgressToolCalls === 0);
 	}
@@ -99,7 +94,7 @@ function toolPairingBalancedAfter(session, seq) {
 //#endregion
 //#region lib/types/checkpoint.js
 /**
-* Compaction checkpoint provenance: the correlated source constructor and type
+* Compaction checkpoint source: the correlated constructor and type
 * every backend uses for its replacement user message, plus the predicate that
 * recognizes persisted checkpoints.
 *
@@ -111,12 +106,9 @@ function toolPairingBalancedAfter(session, seq) {
 *
 * @module @deepseek-ai/dsh-compaction/checkpoint
 */
-const COMPACT_CHECKPOINT_MARKER = Object.freeze({
-	kind: "plugin",
-	plugin: "compact"
-});
+const COMPACT_CHECKPOINT_MARKER = Object.freeze({ kind: "compact-checkpoint" });
 /**
-* Create checkpoint provenance correlated with one compaction transaction.
+* Create a checkpoint source correlated with one compaction transaction.
 * @param compactionId - owning compaction identity.
 * @param sourceCommandId - initiating manual command, when present.
 * @returns immutable checkpoint source.
@@ -134,7 +126,7 @@ function compactCheckpointSource(compactionId, sourceCommandId) {
 * @returns whether the source carries the backend-independent checkpoint marker.
 */
 function isCompactCheckpointSource(source) {
-	return source.kind === "plugin" && source.plugin === COMPACT_CHECKPOINT_MARKER.plugin;
+	return source.kind === "compact-checkpoint";
 }
 //#endregion
 //#region lib/types/index.js
@@ -142,8 +134,8 @@ function isCompactCheckpointSource(source) {
 * Compaction Service Definition (`ctx.compaction`): providers decide when to
 * compact and replace a history range with one summary node by subclassing
 * {@link CompactionEngine}. This interface necessarily depends on session and LLM
-* vocabulary; the rationale is in the
-* [compaction Agent Note](../../../../.agents/notes/implemented/feature/2026-06-18-compaction-capability-seam.md).
+* vocabulary; the dependency rule is documented in the
+* [compaction reference](../README.md#understand-the-implementation).
 * @module @deepseek-ai/dsh-compaction
 */
 /**

@@ -3,12 +3,12 @@ import type { PendingQuestion, PlanReview, QuestionComposerProps } from './contr
 export type PlanReviewPanelProps = {
     pending: PendingQuestion;
     review: PlanReview;
-} & Pick<QuestionComposerProps, 't'>;
+} & Pick<QuestionComposerProps, 't' | 'renderSlot'>;
 /**
- * Render a plan review as a decision card.
+ * Render plan review controls; the submitted document opens in the sidebar.
  *
  * @param props - the question domain face, the narrowed plan review, and `t`.
  * @returns The plan-review takeover for this request.
  */
-export declare function PlanReviewPanel({ pending, review, t }: PlanReviewPanelProps): import("react").JSX.Element;
+export declare function PlanReviewPanel({ pending, review, t, renderSlot }: PlanReviewPanelProps): import("react").JSX.Element;
 //# sourceMappingURL=PlanReviewPanel.d.ts.map

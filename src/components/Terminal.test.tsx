@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
-import type { Terminal } from 'xterm';
+import { Terminal } from 'xterm';
 import { io, type Socket } from 'socket.io-client';
 import TerminalComponent, { createTerminalKeyHandler } from './Terminal';
 
 afterEach(() => {
-  delete (window as any).hpclawDesktop;
+  delete (window as any).traceDesktop;
 });
 
 // 与组件内接线一致：xtermRef.current 与 attachCustomKeyEventHandler 的
-// term 是同一个实例，socket 独立；剪贴板走 hpclawDesktop 通道。
+// term 是同一个实例，socket 独立；剪贴板走 traceDesktop 通道。
 function createKeyHandler(options?: { selection?: string; xtermAvailable?: boolean }) {
   const term = {
     hasSelection: vi.fn(() => Boolean(options?.selection)),
@@ -22,7 +22,7 @@ function createKeyHandler(options?: { selection?: string; xtermAvailable?: boole
     readText: vi.fn(async () => 'clipboard-content'),
     writeText: vi.fn(async (_text: string) => {}),
   };
-  (window as any).hpclawDesktop = { clipboard };
+  (window as any).traceDesktop = { clipboard };
 
   const handler = createTerminalKeyHandler({
     term: term as unknown as Terminal,
@@ -37,6 +37,26 @@ function createKeyHandler(options?: { selection?: string; xtermAvailable?: boole
 const flushPaste = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('createTerminalKeyHandler', () => {
+  it('handles Caps Lock copy while preserving Ctrl+C interrupt without a selection', () => {
+    const selected = createKeyHandler({ selection: 'text' });
+    const event = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, cancelable: true });
+    expect(selected.handler(event)).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+    expect(selected.clipboard.writeText).toHaveBeenCalledWith('text');
+    expect(createKeyHandler().handler(new KeyboardEvent('keydown', { key: 'C', ctrlKey: true }))).toBe(true);
+  });
+  it('uses native browser paste even when the permission-gated Clipboard API exists', () => {
+    const { handler, term } = createKeyHandler();
+    delete window.traceDesktop;
+    const readText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText } });
+    const event = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true });
+    expect(handler(event)).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
+    expect(readText).not.toHaveBeenCalled();
+    expect(term.paste).not.toHaveBeenCalled();
+    delete (navigator as any).clipboard;
+  });
   it('supports Mac Command+C and Command+V without duplicate paste', async () => {
     const { handler, term, clipboard } = createKeyHandler({ selection: 'selected' });
     expect(handler(new KeyboardEvent('keydown', { key: 'c', metaKey: true }))).toBe(false);
@@ -49,7 +69,7 @@ describe('createTerminalKeyHandler', () => {
 
   it('leaves paste to the browser when an HTTP page has no Clipboard API', () => {
     const { handler, clipboard } = createKeyHandler();
-    delete (window as any).hpclawDesktop;
+    delete (window as any).traceDesktop;
     expect(handler(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }))).toBe(true);
     expect(clipboard.readText).not.toHaveBeenCalled();
   });
@@ -278,5 +298,68 @@ describe('TerminalComponent 容器尺寸观察', () => {
     await act(async () => { vi.advanceTimersByTime(500); });
     expect(terminalMocks.fit).not.toHaveBeenCalled();
     expect(terminalMocks.socket.emit).not.toHaveBeenCalled();
+  });
+});
+
+// ─── shell:ready 焦点策略：自动重连不得从聊天输入框抢焦点 ───
+// jsdom 不支持 contenteditable（isContentEditable 恒 undefined），只覆盖 input/textarea。
+describe('TerminalComponent shell:ready 焦点策略', () => {
+  beforeEach(() => {
+    MockResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  async function initTerminalAndGetShellReady() {
+    vi.useFakeTimers();
+    const utils = renderTerminal();
+    setContainerSize(getTermEl(utils.container), 800, 400);
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(vi.mocked(io)).toHaveBeenCalledTimes(1);
+    const shellReady = terminalMocks.socket.on.mock.calls.find(call => call[0] === 'shell:ready')?.[1] as (() => void) | undefined;
+    expect(shellReady).toBeTypeOf('function');
+    return { ...utils, shellReady: shellReady! };
+  }
+
+  /** 组件内创建的 xterm 实例（mock 构造器的第一次产物） */
+  function xtermInstance(): { focus: ReturnType<typeof vi.fn> } {
+    const results = vi.mocked(Terminal).mock.results;
+    return results[results.length - 1].value as { focus: ReturnType<typeof vi.fn> };
+  }
+
+  it('焦点在 textarea（聊天输入框）时 shell:ready 不抢焦点；焦点离开后恢复聚焦终端', async () => {
+    const { shellReady } = await initTerminalAndGetShellReady();
+    const term = xtermInstance();
+    term.focus.mockClear();
+
+    const textarea = document.body.appendChild(document.createElement('textarea'));
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+    act(() => shellReady());
+    expect(term.focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(textarea);
+
+    textarea.remove();
+    act(() => shellReady());
+    expect(term.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('焦点在 input 元素上时 shell:ready 不抢焦点', async () => {
+    const { shellReady } = await initTerminalAndGetShellReady();
+    const term = xtermInstance();
+    term.focus.mockClear();
+
+    const input = document.body.appendChild(document.createElement('input'));
+    input.focus();
+    act(() => shellReady());
+    expect(term.focus).not.toHaveBeenCalled();
+    input.remove();
   });
 });

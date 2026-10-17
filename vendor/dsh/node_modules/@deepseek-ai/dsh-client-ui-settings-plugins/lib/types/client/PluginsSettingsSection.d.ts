@@ -16,11 +16,11 @@ export interface PluginsSettingsSectionInjected {
 }
 /** Props the renderer binds for the section. */
 export type PluginsSettingsSectionProps = PropsRuntime<'settings.section'> & PropsLocale<'settings.plugins'> & PropsRenderSlots<'settings.plugins.tab'> & InjectFace<PluginsSettingsSectionInjected>;
-/** Render one Plugins page whose contents arrive from feature-owned tabs. */
+/** Render one Plugins page whose contents arrive from feature-owned tabs; one contribution shows as the page itself. */
 export declare function PluginsSettingsSection({ t, renderSlot, useTabs }: PluginsSettingsSectionProps): import("react").JSX.Element;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
-        /** Plugins section, configurable-tab, and card copy. */
+        /** Built-in plugins section and plugin configuration page copy. */
         'settings.plugins': PluginsSettingsLocaleKey;
     }
 }

@@ -21,7 +21,7 @@ import {
  type LoginProfile,
 } from "../services/loginProfiles";
 import { useI18n } from '../i18n';
-import { HPCLAW_DISPLAY_NAME, IS_COMPETITION_EDITION } from '../edition';
+import { TRACE_DISPLAY_NAME, IS_COMPETITION_EDITION } from '../edition';
 
 interface LoginFormProps {
  onLogin: (info: { host: string; port: string; username: string; password: string; verificationCode: string }) => Promise<string | null | void>;
@@ -326,7 +326,7 @@ export default function LoginForm({ onLogin, isLoggingIn, loginError, embedded =
  <div className="bg-accent/10 p-3.5 rounded-lg mb-4">
  <TerminalIcon className="w-8 h-8 text-accent" />
  </div>
-  <h2 className="text-3xl font-sans font-semibold text-center tracking-wide text-scholar-50">{HPCLAW_DISPLAY_NAME}</h2>
+  <h2 className="text-3xl font-sans font-semibold text-center tracking-wide text-scholar-50">{TRACE_DISPLAY_NAME}</h2>
   {IS_COMPETITION_EDITION && (
     <span className="mt-2 rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-[11px] font-medium text-accent">
       轻量竞赛版 · 不含 DSH

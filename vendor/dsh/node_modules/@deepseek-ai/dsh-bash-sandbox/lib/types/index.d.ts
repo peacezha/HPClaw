@@ -1,14 +1,15 @@
 /**
  * Sandbox-consuming bash executor. It wraps the exact local bash argv through
  * `ctx.sandbox`, inherits local process mechanics, and reports the selected
- * mode, enforcement, and denial facts. Positive runner-launch evidence means
- * the command never ran: foreground calls throw `SANDBOX_UNAVAILABLE`, while
- * background processes carry `runnerFailed`; other spawn rejections retain
- * local-executor semantics. The tool owns approval and passes a complete per-call policy.
+ * mode, enforcement, and denial facts. Positive runner-executable evidence
+ * identifies a broken confinement runner: foreground calls throw
+ * `SANDBOX_UNAVAILABLE`, while background processes carry `runnerFailed`;
+ * other provider rejections retain stage-neutral local-executor semantics. The
+ * tool owns approval and passes a complete per-call policy.
  * @module @deepseek-ai/dsh-bash-sandbox
  */
 import { Context } from '@deepseek-ai/cordis';
-import type { ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult } from '@deepseek-ai/dsh-shell';
+import type { ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess } from '@deepseek-ai/dsh-shell';
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox';
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local';
 import type { Config as LocalConfig } from '@deepseek-ai/dsh-bash-local';
@@ -46,19 +47,25 @@ export declare class SandboxBashExecutor extends LocalBashExecutor {
      * the deployment policy.
      */
     resolve(request: ShellExecRequest): ShellExecSpec;
-    run(spec: ShellExecSpec): Promise<ShellRunResult>;
-    start(spec: ShellExecSpec): ShellProcess;
+    execute(spec: ShellExecSpec): Promise<ShellExecution>;
+    /**
+     * Decorate the handle's foreground projection in place, memoized once. The
+     * handle keeps its identity (never wrapped in a second object) because the
+     * per-process facts and `onProcessDone` key on the exact instance.
+     */
+    private static decorateResult;
     /**
      * Stamp per-process sandbox facts before `done` settles. Full-access processes
      * have no facts; signal deaths are not denials.
      */
-    protected onProcessDone(proc: ShellProcess, stderr: string, spawnFailed: boolean, spawnError?: unknown): void;
+    protected onProcessDone(proc: ShellProcess, stderr: string, providerRejected: boolean, providerError?: unknown): void;
     /**
      * Wrap one shell command via the `ctx.sandbox` provider. Provider errors
      * propagate unchanged; the returned argv is handed directly to the local
      * executor's subprocess path.
      * @param command - shell source for the confined inner `bash -c`.
      * @param policy - resolved confined execution policy.
+     * @param signal - cancellation of confinement preparation.
      * @returns the provider's exact argv and settlement-classification facts.
      */
     private confine;

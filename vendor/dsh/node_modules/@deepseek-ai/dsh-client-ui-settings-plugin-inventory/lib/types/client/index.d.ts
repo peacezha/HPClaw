@@ -1,5 +1,5 @@
 /** Read-only Host plugin inventory registered into Web Settings. */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import { type PluginInventoryLocaleKey } from './locales.ts';
 export type { PluginInventorySettingsTabInjected, PluginInventorySettingsTabProps } from './PluginInventorySettingsTab.tsx';
 export type { PluginInventoryLocaleKey } from './locales.ts';

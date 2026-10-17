@@ -13,7 +13,7 @@ const IDS = [
 
 describe('DAP/ChIP/ATAC bilingual QC workflows', () => {
   it.each(IDS)('%s has SPOT, scale-region TSS outputs, explicit library verdicts, and no blacklist dependency', id => {
-    const workflow = builtinWorkflows().find(item => item.id === id);
+    const workflow = builtinWorkflows(true).find(item => item.id === id);
     expect(workflow).toBeDefined();
     const serialized = JSON.stringify(workflow);
     expect(workflow!.params.some(param => param.name === 'TSS_BED')).toBe(true);
@@ -32,7 +32,7 @@ describe('DAP/ChIP/ATAC bilingual QC workflows', () => {
   });
 
   it('keeps distinct Chinese and English report entry points', () => {
-    const workflows = builtinWorkflows();
+    const workflows = builtinWorkflows(true);
     for (const id of IDS.filter(item => item.endsWith('-en'))) {
       const workflow = workflows.find(item => item.id === id)!;
       expect(workflow.name).toContain('(English)');
@@ -49,7 +49,7 @@ describe('DAP/ChIP/ATAC bilingual QC workflows', () => {
   });
 
   it('uses the requested geneR1 BED6 profile and does not apply the old reference-point TSS gate', () => {
-    const workflows = builtinWorkflows();
+    const workflows = builtinWorkflows(true);
     const atac = workflows.find(item => item.id === 'encode-atacseq')!;
     const chip = workflows.find(item => item.id === 'encode-chipseq-tf')!;
     const dap = workflows.find(item => item.id === 'builtin-dapseq-tf')!;
@@ -64,7 +64,7 @@ describe('DAP/ChIP/ATAC bilingual QC workflows', () => {
   });
 
   it('accepts a supplied BED6 file or extracts strand-aware gene regions from GTF/GFF', () => {
-    const workflow = builtinWorkflows().find(item => item.id === 'encode-chipseq-tf')!;
+    const workflow = builtinWorkflows(true).find(item => item.id === 'encode-chipseq-tf')!;
     const command = workflow.steps[6].command;
     expect(command).toContain('BED6');
     expect(command).toContain("row[0] == 'gene'");
@@ -73,10 +73,10 @@ describe('DAP/ChIP/ATAC bilingual QC workflows', () => {
   });
 
   it('normalizes the supplied geneR1 BED6 content with the embedded extractor', () => {
-    const command = builtinWorkflows().find(item => item.id === 'encode-chipseq-tf')!.steps[6].command;
+    const command = builtinWorkflows(true).find(item => item.id === 'encode-chipseq-tf')!.steps[6].command;
     const script = command.match(/qc\/geneR1\.source\.txt <<'PY'\n([\s\S]*?)\nPY\ntest -s qc\/geneR1\.bed/)?.[1];
     expect(script).toBeTruthy();
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hpclaw-gene-bed-'));
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-gene-bed-'));
     try {
       const source = path.join(temp, 'geneR1.bed');
       const output = path.join(temp, 'normalized.bed');

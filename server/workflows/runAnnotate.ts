@@ -91,6 +91,32 @@ const DONE_JOB_STATES = new Set(['DONE', 'COMPLETED']);
 const FAILED_JOB_STATES = new Set(['EXIT', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY', 'NODE_FAIL', 'PREEMPTED']);
 
 /**
+ * 用可信的持久化终态预填 states：正式流程续跑记录（terminalStatus）和
+ * run.jobStates 里已落盘的调度器终态。与 reconcileRunsWithScheduler 的
+ * knownState 回退口径一致——只有终态可复用，活跃态/UNKNOWN 不算数。
+ */
+export function seedPersistedTerminalStates(
+  run: RawRun,
+  records: Array<{ runDir: string; jobId: string; terminalStatus?: string }>,
+  states = new Map<string, string>(),
+): Map<string, string> {
+  for (const record of records) {
+    if (record.runDir === run.runDir && record.terminalStatus) states.set(record.jobId, record.terminalStatus);
+  }
+  for (const id of collectActiveJobIds([run])) {
+    if (states.has(id)) continue;
+    const stored = String(run.jobStates?.[id] || '').toUpperCase();
+    if (DONE_JOB_STATES.has(stored) || FAILED_JOB_STATES.has(stored)) states.set(id, stored);
+  }
+  return states;
+}
+
+/** 仍有活动作业缺少可信状态时才需要向调度器发起补查（大集群上该查询可能极慢，能免则免）。 */
+export function needsSchedulerStateQuery(run: RawRun, states: Map<string, string>): boolean {
+  return collectActiveJobIds([run]).some(id => !states.has(id));
+}
+
+/**
  * 用调度器的客观状态修正运行时间线。AI 仍负责产物总结与 QC，
  * 但作业是否运行/成功/失败不再依赖 AI 手写 run.json。
  */

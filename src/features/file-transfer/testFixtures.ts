@@ -3,7 +3,7 @@ import type {
   HostProfileMetadata,
   TransferTask,
 } from '@/shared/fileTransfer';
-import type { HpclawDesktop } from '@/src/types/desktop';
+import type { TraceDesktop } from '@/src/types/desktop';
 
 export function createFileEntry(overrides?: Partial<FileEntry>): FileEntry {
   return {
@@ -50,7 +50,7 @@ export function createTransferTask(
     direction: 'download',
     localPath: '/local/file.txt',
     remotePath: '/remote/file.txt',
-    temporaryPath: '/remote/.file.txt.hpclaw-task-1.part',
+    temporaryPath: '/remote/.file.txt.trace-task-1.part',
     totalBytes: 1000,
     transferredBytes: 0,
     bytesPerSecond: 0,
@@ -65,9 +65,9 @@ export function createTransferTask(
   };
 }
 
-export function mockHpclawDesktop(
-  overrides?: Partial<HpclawDesktop>,
-): HpclawDesktop {
+export function mockTraceDesktop(
+  overrides?: Partial<TraceDesktop>,
+): TraceDesktop {
   return {
     clipboard: {
       readText: async () => '',

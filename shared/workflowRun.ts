@@ -38,6 +38,8 @@ export interface WorkflowRunStep {
 }
 
 export interface WorkflowRunConfig {
+  /** Selected UI language at run creation; persisted for background report generation. */
+  reportLanguage?: 'zh' | 'en';
   inputs: string[];
   params: Record<string, string>;
   stepParams: Record<number, Record<string, string>>;

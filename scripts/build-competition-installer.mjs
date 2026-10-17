@@ -7,7 +7,7 @@ import { getPath7za } from 'app-builder-lib/out/toolsets/7zip.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const releaseDir = path.join(root, 'release-competition');
-const installer = path.join(releaseDir, `HPClaw-Competition-Setup-${pkg.version}-x64.exe`);
+const installer = path.join(releaseDir, `TRACE-Competition-Setup-${pkg.version}-x64.exe`);
 const blockmap = `${installer}.blockmap`;
 const latest = path.join(releaseDir, 'latest.yml');
 const sizeLimitBytes = 200_000_000;
@@ -31,8 +31,8 @@ fs.rmSync(releaseDir, { recursive: true, force: true });
 
 const buildEnv = {
   ...process.env,
-  HPCLAW_EDITION: 'competition',
-  VITE_HPCLAW_EDITION: 'competition',
+  TRACE_EDITION: 'competition',
+  VITE_TRACE_EDITION: 'competition',
 };
 runNodeScript(path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), ['build', '--mode', 'competition'], buildEnv);
 runNodeScript(path.join(root, 'scripts', 'build-electron-server.mjs'), [], buildEnv);

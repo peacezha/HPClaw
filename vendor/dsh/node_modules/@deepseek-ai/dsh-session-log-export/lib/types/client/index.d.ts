@@ -1,5 +1,5 @@
 /** Browser plugin owning Session export download state and its shared modal. */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import { SessionLogDownloadController } from './controller.ts';
 import { type SessionLogDownloadKey } from './locales.ts';
 declare module '@deepseek-ai/cordis' {

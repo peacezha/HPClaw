@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { HostCordisInspectProviderRegistration } from '@deepseek-ai/dsh-cordis-host-runner';
 /**
  * Construct Host providers over generated Catalogs, evaluator declarations, and live Tool scope.
- * @param ctx - Host context used for Agent-scoped live Tool queries.
+ * @param ctx - Host context used for live Loader Config and Agent-scoped Tool queries.
  * @returns registrations for static catalogs and live Host capabilities.
  */
 export declare function hostInspectProviders(ctx: Context): HostCordisInspectProviderRegistration[];

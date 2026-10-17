@@ -3,6 +3,8 @@
  * slot without defining a service.
  */
 import type { Context } from '@deepseek-ai/cordis';
+export type { TrajectoryKey } from './locales.ts';
+export type { TrajectoryContribution, TrajectoryConversationViewNode, TrajectoryRequestHeaderState, TrajectorySnapshot, UseTrajectory, } from './trajectory-contract.ts';
 /** Required services: the conversation slot, registries, ordinary Session paging, and the locale service. */
 export declare const inject: string[];
 /**

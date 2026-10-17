@@ -22,7 +22,7 @@ function getJson(path) {
 (async () => {
   const targets = await getJson('/json');
   const target = targets.find(item => item.type === 'page' && !item.url.startsWith('devtools'));
-  if (!target) throw new Error('没有找到 HPClaw 页面');
+  if (!target) throw new Error('没有找到 TRACE 页面');
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
@@ -72,7 +72,7 @@ function getJson(path) {
     });
     const run = created.run;
     const initial = await request('/api/workflow-runs/code?dir=' + encodeURIComponent(run.runDir) + '&step=1');
-    const marker = '# HPCLAW_CODE_EDIT_REGRESSION';
+    const marker = '# TRACE_CODE_EDIT_REGRESSION';
     const editedContent = initial.code.content.replace(/\\s*$/, '') + '\\n' + marker + '\\n';
     const saved = await request('/api/workflow-runs/code', {
       method: 'PUT',

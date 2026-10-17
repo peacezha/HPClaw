@@ -4,6 +4,7 @@ import {
   buildWorkflowRunSummary,
   buildWorkflowStepScript,
   createWorkflowRun,
+  readWorkflowRun,
   resolveWorkflowRunDir,
   sanitizeRunConfig,
   workflowStepScriptPath,
@@ -16,7 +17,7 @@ import { needsAutomaticOutputReview } from './runAnnotate';
 
 describe('workflowRunService', () => {
   it('hands each job off as waiting_jobs and progresses three steps from completion events without another user request', async () => {
-    const runDir = '/home/u/hpclaw_flows/wf/03_workspace/runs/r1';
+    const runDir = '/home/u/trace_flows/wf/03_workspace/runs/r1';
     let stored: WorkflowRun = {
       runId: 'r1', workflowId: 'wf', workflowName: 'Test', workflowVersion: 1, revision: 1,
       runDir, status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1,
@@ -45,14 +46,47 @@ describe('workflowRunService', () => {
     expect(stored.status).toBe('done');
     expect(stored.steps.every(step => step.status === 'done')).toBe(true);
   });
-  it('只允许流程运行工作区路径', () => {
-    const home = '/public/home/u';
-    expect(resolveWorkflowRunDir(home, '~/hpclaw_flows/rna/03_workspace/runs/r1'))
-      .toBe('/public/home/u/hpclaw_flows/rna/03_workspace/runs/r1');
-    expect(resolveWorkflowRunDir(home, '/public/home/u/hpclaw_flows/rna/03_workspace/runs/r1'))
-      .toBe('/public/home/u/hpclaw_flows/rna/03_workspace/runs/r1');
-    expect(resolveWorkflowRunDir(home, '/public/home/u/hpclaw_flows/rna/04_results/r1')).toBeNull();
-    expect(resolveWorkflowRunDir(home, '~/hpclaw_flows/../../etc')).toBeNull();
+  it('续跑对账链路可放宽 SSH 超时：read/reconcile/update 透传自定义超时，默认不变', async () => {
+    const runDir = '/home/u/trace_flows/wf/03_workspace/runs/r-timeout';
+    let stored: WorkflowRun = {
+      runId: 'r-timeout', workflowId: 'wf', workflowName: 'T', workflowVersion: 1, revision: 1,
+      runDir, status: 'waiting_jobs', startedAt: 1, updatedAt: 1, heartbeatAt: 1,
+      currentStep: 1, totalSteps: 1,
+      config: sanitizeRunConfig({}),
+      steps: [{ n: 1, stepId: 's1', title: 'S', status: 'running', jobIds: ['42'] }],
+    };
+    const seen: Array<{ command: string; timeout?: number }> = [];
+    const exec = async (command: string, timeout?: number) => {
+      seen.push({ command, timeout });
+      if (command.startsWith(`cat '${runDir}/run.json'`)) return JSON.stringify(stored);
+      const encoded = command.match(/printf %s '([^']+)' \| base64 -d/)?.[1];
+      if (encoded && command.includes('/run.json')) stored = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+      return '';
+    };
+
+    await readWorkflowRun(exec, '/home/u', runDir, 90_000);
+    expect(seen[seen.length - 1].timeout).toBe(90_000);
+    await readWorkflowRun(exec, '/home/u', runDir);
+    expect(seen[seen.length - 1].timeout).toBe(15_000); // 默认 15s 不变
+
+    await reconcileWorkflowRunWithScheduler(exec, '/home/u', runDir, new Map([['42', 'DONE']]), { readTimeoutMs: 90_000, writeTimeoutMs: 90_000 });
+    expect(seen[seen.length - 2].timeout).toBe(90_000); // reconcile 内部读
+    expect(seen[seen.length - 1].timeout).toBe(90_000); // reconcile 内部写
+    expect(stored.status).toBe('waiting_user'); // DONE → 等待 Agent 验收
+
+    const updated = await updateWorkflowRun(exec, '/home/u', runDir, { error: '等待调度器核实其余 1 个作业状态' }, { readTimeoutMs: 90_000, writeTimeoutMs: 90_000 });
+    expect(seen[seen.length - 2].timeout).toBe(90_000);
+    expect(seen[seen.length - 1].timeout).toBe(90_000);
+    expect(updated.error).toContain('等待调度器核实');
+  });
+
+  it('只允许流程运行工作区路径', () => {    const home = '/public/home/u';
+    expect(resolveWorkflowRunDir(home, '~/trace_flows/rna/03_workspace/runs/r1'))
+      .toBe('/public/home/u/trace_flows/rna/03_workspace/runs/r1');
+    expect(resolveWorkflowRunDir(home, '/public/home/u/trace_flows/rna/03_workspace/runs/r1'))
+      .toBe('/public/home/u/trace_flows/rna/03_workspace/runs/r1');
+    expect(resolveWorkflowRunDir(home, '/public/home/u/trace_flows/rna/04_results/r1')).toBeNull();
+    expect(resolveWorkflowRunDir(home, '~/trace_flows/../../etc')).toBeNull();
   });
 
   it('清洗运行配置并保留步骤参数', () => {
@@ -96,13 +130,13 @@ describe('workflowRunService', () => {
       referenceOverrides: { INDEX: '/ref/star' },
       stepCommandOverrides: { 1: 'fastqc {{INPUT_DIR}} --threads {{THREADS}}' },
     });
-    const runDir = '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-1';
+    const runDir = '/public/home/u/trace_flows/rna/03_workspace/runs/run-1';
     expect(workflowStepScriptPath(runDir, 1)).toBe(`${runDir}/code/step-01.sh`);
     const script = buildWorkflowStepScript(workflow, config, 1, runDir);
     expect(script).toContain('步骤 1/2：质控');
     expect(script).toContain('fastqc /data/reads --threads 8');
     expect(script).toContain('可以在流程面板中查看和修改');
-    expect(script).not.toContain('HPCLAW_REVIEW_REQUIRED');
+    expect(script).not.toContain('TRACE_REVIEW_REQUIRED');
   });
 
   it('把 LSF 指令放在首个 shell 命令之前，确保 bsub 能读取资源参数', () => {
@@ -115,7 +149,7 @@ describe('workflowRunService', () => {
       workflow,
       sanitizeRunConfig({ params: { THREADS: 8, QUEUE: 'normal' } }),
       1,
-      '/home/u/hpclaw_flows/w/03_workspace/runs/r1',
+      '/home/u/trace_flows/w/03_workspace/runs/r1',
     );
     expect(script.indexOf('#BSUB -J test_job')).toBeLessThan(script.indexOf('set -eo pipefail'));
     expect(script.match(/#BSUB -J test_job/g)).toHaveLength(1);
@@ -129,8 +163,8 @@ describe('workflowRunService', () => {
       steps: [{ title: '定量', command: 'kallisto quant -i {{INDEX}} {{READS}}' }],
       source: 'user', createdAt: 1, updatedAt: 1,
     };
-    const script = buildWorkflowStepScript(workflow, sanitizeRunConfig({}), 1, '/home/u/hpclaw_flows/w/03_workspace/runs/r1');
-    expect(script).toContain('HPCLAW_REVIEW_REQUIRED');
+    const script = buildWorkflowStepScript(workflow, sanitizeRunConfig({}), 1, '/home/u/trace_flows/w/03_workspace/runs/r1');
+    expect(script).toContain('TRACE_REVIEW_REQUIRED');
     expect(script).toContain('INDEX, READS');
   });
 
@@ -159,7 +193,7 @@ describe('workflowRunService', () => {
   it('从运行证据生成不消耗模型 Token 的报告', () => {
     const run = {
       runId: 'r1', workflowId: 'wf', workflowName: 'RNA 流程', workflowVersion: 1,
-      revision: 2, runDir: '/home/u/hpclaw_flows/rna/03_workspace/runs/r1',
+      revision: 2, runDir: '/home/u/trace_flows/rna/03_workspace/runs/r1',
       status: 'done', startedAt: 1, updatedAt: 2, endedAt: 2, heartbeatAt: 2,
       currentStep: 1, totalSteps: 1,
       config: { inputs: [], params: {}, stepParams: {}, referenceOverrides: {}, skippedSteps: [], stepCommandOverrides: {} },
@@ -173,7 +207,7 @@ describe('workflowRunService', () => {
   });
 
   it('用户要求重跑时原子重置目标步骤及后续步骤，并保留已有脚本', async () => {
-    const runDir = '/home/u/hpclaw_flows/rna/03_workspace/runs/rerun-1';
+    const runDir = '/home/u/trace_flows/rna/03_workspace/runs/rerun-1';
     let stored = {
       runId: 'rerun-1', workflowId: 'wf-rna', workflowName: 'RNA', workflowVersion: 1,
       revision: 4, runDir, workspacePolicy: 'isolated-run-v1' as const,
@@ -210,7 +244,7 @@ describe('workflowRunService', () => {
   });
 
   it('DAG 分支只等待声明的依赖，不被无关的前序步骤阻塞', async () => {
-    const runDir = '/home/u/hpclaw_flows/dag/03_workspace/runs/dag-1';
+    const runDir = '/home/u/trace_flows/dag/03_workspace/runs/dag-1';
     let stored = {
       runId: 'dag-1', workflowId: 'wf-dag', workflowName: 'DAG', workflowVersion: 1,
       revision: 1, runDir, workspacePolicy: 'isolated-run-v1' as const,

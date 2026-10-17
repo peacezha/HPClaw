@@ -4,7 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { appPath, dataPath } from '../paths';
 import { WORKFLOW_CATEGORIES } from '../../shared/workflow';
-import { classifyWorkflowCatalog } from '../../shared/workflowCatalog';
+import { currentProductText, currentProvider } from '../../shared/branding';
+import { classifyWorkflowCatalog, isPendingDisposal } from '../../shared/workflowCatalog';
 import { BIOSKILLS_IMPORTER_VERSION, generateBioskillsWorkflows } from './bioskillsSeed';
 import { buildEnvCheckCommand } from './envCheckScript';
 import { buildOfficialEncodeWorkflows } from './encodeOfficialWorkflows';
@@ -19,6 +20,11 @@ const SEED_MARKER_PATH = dataPath('workflows', '.bioskills-seed-version');
  * 避免删除的内置流程在下次启动时“复活”。
  */
 const DELETED_SEEDS_PATH = dataPath('workflows', 'deleted-builtin-seeds.json');
+const CATALOGUE_CLEANUP_PATH = dataPath('workflows', '.catalogue-cleanup-v0.4.54.json');
+export const REQUESTED_KEEP_IDS = new Set(['bioskills-atacseq-pipeline', 'bioskills-chipseq-pipeline']);
+export const REQUESTED_REMOVE_IDS = new Set(['bioskills-hic-pipeline', 'bioskills-clip-pipeline', 'bioskills-causal-genomics-pipeline', 'bioskills-crispr-editing-pipeline']);
+let requestedCleanupEnabled = false;
+export function enableRequestedCatalogueCleanup(): void { requestedCleanupEnabled = true; }
 /** bioSkills 种子版本：提取规则变化时递增，触发老库重新生成 */
 const BIOSKILLS_SEED_VERSION = BIOSKILLS_IMPORTER_VERSION;
 /** 旧版曾入库、现已由无 blacklist 的中英文原生流程取代的系统种子。 */
@@ -38,12 +44,11 @@ const [
  * 硬编码种子对象与 workflows/workflows.json 都不存 category（保持二者对齐）：
  * 内置流程的 category 由 loadWorkflows 在读取时按此表派生（applyDerivedCategories，不落盘）；
  * BioSkills 生成器（generateBioskillsWorkflows 的 categories 参数）则在新行入库时注入。
- * 注：atacseq/chipseq/rnaseq-to-de/hic/clip/smrna 六条 BioSkills 已被 ENCODE 金标准
- * 流程覆盖，v3 起不再生成（BIOSKILLS_RETIRED），此处也不再保留映射。
+ * v4 按用户清单恢复 ATAC/ChIP，移除 causal-genomics/CRISPR editing；
+ * rnaseq-to-de/hic/clip/smrna 继续不生成（BIOSKILLS_RETIRED）。
  */
 export const BUILTIN_CATEGORIES: Record<string, string> = {
   // 基因组与变异分析
-  'bioskills-causal-genomics-pipeline': CATEGORY_GENOMICS,
   'bioskills-cnv-pipeline': CATEGORY_GENOMICS,
   'bioskills-fastq-to-variants': CATEGORY_GENOMICS,
   'bioskills-genome-annotation-pipeline': CATEGORY_GENOMICS,
@@ -73,6 +78,8 @@ export const BUILTIN_CATEGORIES: Record<string, string> = {
   'encode-longread-rnaseq': CATEGORY_TRANSCRIPTOME,
   'encode-rampage': CATEGORY_TRANSCRIPTOME,
   'bioskills-expression-to-pathways': CATEGORY_TRANSCRIPTOME,
+  'bioskills-atacseq-pipeline': CATEGORY_TRANSCRIPTOME,
+  'bioskills-chipseq-pipeline': CATEGORY_TRANSCRIPTOME,
   'bioskills-grn-pipeline': CATEGORY_TRANSCRIPTOME,
   'bioskills-merip-pipeline': CATEGORY_TRANSCRIPTOME,
   'bioskills-methylation-pipeline': CATEGORY_TRANSCRIPTOME,
@@ -102,7 +109,6 @@ export const BUILTIN_CATEGORIES: Record<string, string> = {
   // 基因编辑与 CRISPR
   'builtin-hidog-vector-trace': CATEGORY_CRISPR,
   'builtin-hidog-amplicon': CATEGORY_CRISPR,
-  'bioskills-crispr-editing-pipeline': CATEGORY_CRISPR,
   'bioskills-crispr-screen-pipeline': CATEGORY_CRISPR,
   // 任务管理与通用工具
   'builtin-job-troubleshoot': CATEGORY_OPS,
@@ -172,7 +178,7 @@ ${action === 'idr' ? 'module load IDR/2.0.4.2\n' : ''}python3 <FLOW>/01_software
   }
   return {
     ...linear, id: 'encode-chipseq-tf-dag', name: 'ENCODE TF ChIP-seq 官方结构流程（分支 DAG）',
-    description: '参照 ENCODE 依赖结构的原生双端 TF ChIP-seq 流程：链交叉相关性、真重复峰与互补伪重复分支，三路 IDR 与信号质控汇入报告。使用直接文件参数；这是 HPClaw 扩展实现，不是官方 WDL。',
+    description: '参照 ENCODE 依赖结构的原生双端 TF ChIP-seq 流程：链交叉相关性、真重复峰与互补伪重复分支，三路 IDR 与信号质控汇入报告。使用直接文件参数；这是 TRACE 扩展实现，不是官方 WDL。',
     keywords: [...linear.keywords, '官方结构', 'dag', '分支', 'pseudoreplicate', '三路idr'],
     params: linear.params.map(param => param.name === 'CONTROL_DIR' ? { ...param, required: true } : param),
     manifest, assets: [...(linear.assets || []), { source: 'encode/chipseq_dag.py', remotePath: 'tools/chipseq_dag.py', label: 'TF ChIP-seq DAG reproducibility helper' }],
@@ -181,7 +187,9 @@ ${action === 'idr' ? 'module load IDR/2.0.4.2\n' : ''}python3 <FLOW>/01_software
   };
 }
 
-export function builtinWorkflows(): Workflow[] {
+/** Retired templates are internal construction inputs for the canonical DAG;
+ * they are never returned to the live catalogue. Tests may inspect them. */
+export function builtinWorkflows(includeRetired = false): Workflow[] {
   const now = Date.now();
   const workflows: Workflow[] = [
     {
@@ -198,9 +206,9 @@ export function builtinWorkflows(): Workflow[] {
         { name: 'GUIDE_MANIFEST', label: '旧版 guide manifest TSV（不用填 NONE）', defaultValue: 'NONE', type: 'path', required: false, help: '兼容输入：vector_id、guide_id、spacer_seq、gene_name、reference_group' },
       ],
       steps: [
-        { title: '校验已部署的 HiDOG V11', command: 'test -s <FLOW>/01_software/hidog/hidogV11.py\ntest -s <FLOW>/01_software/hidog/hidogV11_packages.py\ntest -s <FLOW>/01_software/hidog/hidogV11_vector_trace.py\ntest -s <FLOW>/01_software/hidog/hidogV11_hpclaw_runner.py\ntest -s <FLOW>/01_software/hidog/hidogV11_hpclaw_report.py\npython3 <FLOW>/01_software/hidog/hidogV11.py --version\npython3 <FLOW>/01_software/hidog/hidogV11.py vector-trace --help >/dev/null', notes: '运行面板会自动部署 5 个文件；本步骤只做版本与完整性校验' },
+        { title: '校验已部署的 HiDOG V11', command: 'test -s <FLOW>/01_software/hidog/hidogV11.py\ntest -s <FLOW>/01_software/hidog/hidogV11_packages.py\ntest -s <FLOW>/01_software/hidog/hidogV11_vector_trace.py\ntest -s <FLOW>/01_software/hidog/hidogV11_trace_runner.py\ntest -s <FLOW>/01_software/hidog/hidogV11_trace_report.py\npython3 <FLOW>/01_software/hidog/hidogV11.py --version\npython3 <FLOW>/01_software/hidog/hidogV11.py vector-trace --help >/dev/null', notes: '运行面板会自动部署 5 个文件；本步骤只做版本与完整性校验' },
         { title: '检查 vector-trace 最小环境', command: 'python3 -c "import sys; assert sys.version_info >= (3, 8); import openpyxl; print(sys.version.split()[0], openpyxl.__version__)"', notes: 'vector-trace 不调用 BWA、SAMtools 或 pysam；只要求 Python 3.8+ 与 openpyxl' },
-        { title: '运行 HiDOG V11 vector-trace', command: 'python3 <FLOW>/01_software/hidog/hidogV11_hpclaw_runner.py --hidog <FLOW>/01_software/hidog/hidogV11.py --run-dir <RUN> vector-trace \\\n  --read1 "{{READ1}}" --read2 "{{READ2}}" --barcode "{{BARCODE}}" \\\n  --anchor "{{ANCHOR}}" --spacer-ref "{{SPACER_REF}}" --guide-manifest "{{GUIDE_MANIFEST}}" \\\n  --anchor-read "{{ANCHOR_READ}}" --anchor-max-mismatches "{{ANCHOR_MAX_MISMATCHES}}" \\\n  --spacer-side "{{SPACER_SIDE}}" --spacer-length "{{SPACER_LENGTH}}" \\\n  --barcode-spacer-length "{{BARCODE_SPACER_LENGTH}}" --barcode-length "{{BARCODE_LENGTH}}" \\\n  --barcode-q30 "{{BARCODE_Q30}}" --min-guide-fraction "{{MIN_GUIDE_FRACTION}}" \\\n  --min-sample-anchor-reads "{{MIN_SAMPLE_ANCHOR_READS}}" \\\n  --allow-reverse-complement "{{ALLOW_REVERSE_COMPLEMENT}}" --allow-unique-1mm "{{ALLOW_UNIQUE_1MM}}"', notes: '命令由随包启动器按 argv 数组构造，不再让 AI 临时改写；输出固定在本次运行的 results/vt_results', params: [
+        { title: '运行 HiDOG V11 vector-trace', command: 'python3 <FLOW>/01_software/hidog/hidogV11_trace_runner.py --hidog <FLOW>/01_software/hidog/hidogV11.py --run-dir <RUN> vector-trace \\\n  --read1 "{{READ1}}" --read2 "{{READ2}}" --barcode "{{BARCODE}}" \\\n  --anchor "{{ANCHOR}}" --spacer-ref "{{SPACER_REF}}" --guide-manifest "{{GUIDE_MANIFEST}}" \\\n  --anchor-read "{{ANCHOR_READ}}" --anchor-max-mismatches "{{ANCHOR_MAX_MISMATCHES}}" \\\n  --spacer-side "{{SPACER_SIDE}}" --spacer-length "{{SPACER_LENGTH}}" \\\n  --barcode-spacer-length "{{BARCODE_SPACER_LENGTH}}" --barcode-length "{{BARCODE_LENGTH}}" \\\n  --barcode-q30 "{{BARCODE_Q30}}" --min-guide-fraction "{{MIN_GUIDE_FRACTION}}" \\\n  --min-sample-anchor-reads "{{MIN_SAMPLE_ANCHOR_READS}}" \\\n  --allow-reverse-complement "{{ALLOW_REVERSE_COMPLEMENT}}" --allow-unique-1mm "{{ALLOW_UNIQUE_1MM}}"', notes: '命令由随包启动器按 argv 数组构造，不再让 AI 临时改写；输出固定在本次运行的 results/vt_results', params: [
           { name: 'ANCHOR_READ', label: '锚定序列所在 read（--anchor-read）', defaultValue: 'r1', type: 'select', options: ['r1', 'r2'] },
           { name: 'SPACER_SIDE', label: 'spacer 相对锚点位置（--spacer-side）', defaultValue: 'after', type: 'select', options: ['before', 'after'] },
           { name: 'SPACER_LENGTH', label: 'spacer 长度（--spacer-length）', defaultValue: '20', type: 'number', required: false },
@@ -213,7 +221,7 @@ export function builtinWorkflows(): Workflow[] {
           { name: 'ALLOW_UNIQUE_1MM', label: '保留唯一 1-mismatch 辅助证据', defaultValue: 'true', type: 'boolean', required: false },
           { name: 'ALLOW_REVERSE_COMPLEMENT', label: '同时匹配反向互补 spacer', defaultValue: 'false', type: 'boolean', required: false },
         ] },
-        { title: '生成确定性 QC 与报告', command: 'python3 <FLOW>/01_software/hidog/hidogV11_hpclaw_report.py --mode vector-trace --input-dir <RUN>/results/vt_results --report-dir <RUN>/results/report\ntest -s <RUN>/results/report/qc_summary.json\ntest -s <RUN>/results/report/report.html', notes: '直接读取 V11 的 spacer_detection.tsv 与 run_parameters.json，生成 JSON、Markdown、HTML；不再把结果整段交给 AI 猜测' },
+        { title: '生成确定性 QC 与报告', command: 'python3 <FLOW>/01_software/hidog/hidogV11_trace_report.py --mode vector-trace --input-dir <RUN>/results/vt_results --report-dir <RUN>/results/report\ntest -s <RUN>/results/report/qc_summary.json\ntest -s <RUN>/results/report/report.html', notes: '直接读取 V11 的 spacer_detection.tsv 与 run_parameters.json，生成 JSON、Markdown、HTML；不再把结果整段交给 AI 猜测' },
       ],
       manifest: {
         software: [
@@ -221,7 +229,7 @@ export function builtinWorkflows(): Workflow[] {
           { name: 'openpyxl（V11 Excel 输出）', checkCmd: 'python3 -c "import openpyxl"', required: true },
         ],
         references: [
-          { name: 'HiDOG V11 管线与 HPClaw 启动器', path: '{{FLOW_HOME}}/01_software/hidog/hidogV11_hpclaw_runner.py', type: 'other', source: '随 HPClaw 分发并自动部署', required: true },
+          { name: 'HiDOG V11 管线与 TRACE 启动器', path: '{{FLOW_HOME}}/01_software/hidog/hidogV11_trace_runner.py', type: 'other', source: '随 TRACE 分发并自动部署', required: true },
         ],
         inputHint: '双端 FASTQ（R1/R2）+ barcode 文件 + 载体锚定序列 + spacer 参考（FASTA 或 TSV）',
         qcGates: [
@@ -232,8 +240,8 @@ export function builtinWorkflows(): Workflow[] {
         { source: 'hidog/hidogV11.py', remotePath: 'hidog/hidogV11.py', label: 'HiDOG 主入口' },
         { source: 'hidog/hidogV11_packages.py', remotePath: 'hidog/hidogV11_packages.py', label: '编辑效率分析核心' },
         { source: 'hidog/hidogV11_vector_trace.py', remotePath: 'hidog/hidogV11_vector_trace.py', label: '载体追踪核心' },
-        { source: 'hidog/hidogV11_hpclaw_runner.py', remotePath: 'hidog/hidogV11_hpclaw_runner.py', label: 'HPClaw 参数校验与启动器' },
-        { source: 'hidog/hidogV11_hpclaw_report.py', remotePath: 'hidog/hidogV11_hpclaw_report.py', label: '自动 QC 与报告生成器' },
+        { source: 'hidog/hidogV11_trace_runner.py', remotePath: 'hidog/hidogV11_trace_runner.py', label: 'TRACE 参数校验与启动器' },
+        { source: 'hidog/hidogV11_trace_report.py', remotePath: 'hidog/hidogV11_trace_report.py', label: '自动 QC 与报告生成器' },
       ],
       source: 'builtin',
       createdAt: now,
@@ -263,9 +271,9 @@ export function builtinWorkflows(): Workflow[] {
         { name: 'THREADS', label: 'Threads', defaultValue: '8', type: 'number', min: 1, max: 128 },
       ],
       steps: [
-        { title: '校验已部署的 HiDOG V11', command: 'test -s <FLOW>/01_software/hidog/hidogV11.py\ntest -s <FLOW>/01_software/hidog/hidogV11_packages.py\ntest -s <FLOW>/01_software/hidog/hidogV11_vector_trace.py\ntest -s <FLOW>/01_software/hidog/hidogV11_hpclaw_runner.py\ntest -s <FLOW>/01_software/hidog/hidogV11_hpclaw_report.py\npython3 <FLOW>/01_software/hidog/hidogV11.py --version\npython3 <FLOW>/01_software/hidog/hidogV11.py --help >/dev/null', notes: '运行面板会自动部署 5 个文件；本步骤只做版本与完整性校验' },
+        { title: '校验已部署的 HiDOG V11', command: 'test -s <FLOW>/01_software/hidog/hidogV11.py\ntest -s <FLOW>/01_software/hidog/hidogV11_packages.py\ntest -s <FLOW>/01_software/hidog/hidogV11_vector_trace.py\ntest -s <FLOW>/01_software/hidog/hidogV11_trace_runner.py\ntest -s <FLOW>/01_software/hidog/hidogV11_trace_report.py\npython3 <FLOW>/01_software/hidog/hidogV11.py --version\npython3 <FLOW>/01_software/hidog/hidogV11.py --help >/dev/null', notes: '运行面板会自动部署 5 个文件；本步骤只做版本与完整性校验' },
         { title: '检查 V11 扩增子环境', command: 'command -v bwa\ncommand -v samtools\ncommand -v trimmomatic\npython3 -c "import pysam, openpyxl, matplotlib; print(\'HiDOG Python dependencies OK\')"', notes: '缺少的模块或 Python 包会在环境检查卡中明确显示；流程不会在计算任务中临时 pip 安装' },
-        { title: '运行 HiDOG V11 扩增子分析', command: 'python3 <FLOW>/01_software/hidog/hidogV11_hpclaw_runner.py --hidog <FLOW>/01_software/hidog/hidogV11.py --run-dir <RUN> amplicon \\\n  --input-mode "{{INPUT_MODE}}" --read1 "{{READ1}}" --read2 "{{READ2}}" --barcode "{{BARCODE}}" --hitom-xls "{{HITOM_XLS}}" \\\n  --reference "{{REF_FASTA}}" --analysis-type "{{ANALYSIS_TYPE}}" --editing-tool "{{EDITING_TOOL}}" --umi-mode "{{UMI_MODE}}" \\\n  --guide-seq "{{GUIDE_SEQ}}" --target-gene "{{TARGET_GENE}}" \\\n  --pegrna-spacer-seq "{{PEGRNA_SPACER_SEQ}}" --pegrna-extension-seq "{{PEGRNA_EXTENSION_SEQ}}" \\\n  --pegrna-scaffold-seq "{{PEGRNA_SCAFFOLD_SEQ}}" --nicking-guide-seq "{{NICKING_GUIDE_SEQ}}" --threads "{{THREADS}}" \\\n  --bwa-profile "{{BWA_PROFILE}}" --min-ratio "{{MIN_RATIO}}" --min-genotype-depth "{{MIN_GENOTYPE_DEPTH}}" \\\n  --low-depth-warning-threshold "{{LOW_DEPTH_WARNING_THRESHOLD}}" --q30 "{{Q30}}" --sample-ratio "{{SAMPLE_RATIO}}" --sample-seed "{{SAMPLE_SEED}}" \\\n  --quant-window-size "{{QUANT_WINDOW_SIZE}}" --quant-window-center "{{QUANT_WINDOW_CENTER}}" \\\n  --quant-window-coordinates "{{QUANT_WINDOW_COORDINATES}}" --cleavage-offset "{{CLEAVAGE_OFFSET}}" \\\n  --spacer-length "{{SPACER_LENGTH}}" --barcode-length "{{BARCODE_LENGTH}}" --bridge-length "{{BRIDGE_LENGTH}}" \\\n  --post-barcode-spacer-length "{{POST_BARCODE_SPACER_LENGTH}}" --umi-length-r1 "{{UMI_LENGTH_R1}}" --umi-length-r2 "{{UMI_LENGTH_R2}}" \\\n  --min-umi-base-quality "{{MIN_UMI_BASE_QUALITY}}" --amplicon-primer-tsv "{{AMPLICON_PRIMER_TSV}}" \\\n  --amplicon-primer-max-mismatches "{{AMPLICON_PRIMER_MAX_MISMATCHES}}" --umi-consensus-min-family-size "{{UMI_CONSENSUS_MIN_FAMILY_SIZE}}" \\\n  --umi-consensus-min-fraction "{{UMI_CONSENSUS_MIN_FRACTION}}" --min-umi-family-genotype-depth "{{MIN_UMI_FAMILY_GENOTYPE_DEPTH}}" \\\n  --min-umi-variant-family-support "{{MIN_UMI_VARIANT_FAMILY_SUPPORT}}" --enable-umi-family-analysis "{{ENABLE_UMI_FAMILY_ANALYSIS}}" \\\n  --fast-bwa "{{FAST_BWA}}" --enable-cas9-nw-rescue "{{ENABLE_CAS9_NW_RESCUE}}" --disable-homoeolog-analysis "{{DISABLE_HOMOEOLOG_ANALYSIS}}" \\\n  --allow-multiple-guides "{{ALLOW_MULTIPLE_GUIDES}}" --force-rerun "{{FORCE_RERUN}}" --extra-args "{{EXTRA_ARGS}}"', notes: '启动器按 argv 数组构造命令，并在运行前验证输入模式、编辑工具和 UMI 参数组合；输出固定在 results/hidog_run', params: [
+        { title: '运行 HiDOG V11 扩增子分析', command: 'python3 <FLOW>/01_software/hidog/hidogV11_trace_runner.py --hidog <FLOW>/01_software/hidog/hidogV11.py --run-dir <RUN> amplicon \\\n  --input-mode "{{INPUT_MODE}}" --read1 "{{READ1}}" --read2 "{{READ2}}" --barcode "{{BARCODE}}" --hitom-xls "{{HITOM_XLS}}" \\\n  --reference "{{REF_FASTA}}" --analysis-type "{{ANALYSIS_TYPE}}" --editing-tool "{{EDITING_TOOL}}" --umi-mode "{{UMI_MODE}}" \\\n  --guide-seq "{{GUIDE_SEQ}}" --target-gene "{{TARGET_GENE}}" \\\n  --pegrna-spacer-seq "{{PEGRNA_SPACER_SEQ}}" --pegrna-extension-seq "{{PEGRNA_EXTENSION_SEQ}}" \\\n  --pegrna-scaffold-seq "{{PEGRNA_SCAFFOLD_SEQ}}" --nicking-guide-seq "{{NICKING_GUIDE_SEQ}}" --threads "{{THREADS}}" \\\n  --bwa-profile "{{BWA_PROFILE}}" --min-ratio "{{MIN_RATIO}}" --min-genotype-depth "{{MIN_GENOTYPE_DEPTH}}" \\\n  --low-depth-warning-threshold "{{LOW_DEPTH_WARNING_THRESHOLD}}" --q30 "{{Q30}}" --sample-ratio "{{SAMPLE_RATIO}}" --sample-seed "{{SAMPLE_SEED}}" \\\n  --quant-window-size "{{QUANT_WINDOW_SIZE}}" --quant-window-center "{{QUANT_WINDOW_CENTER}}" \\\n  --quant-window-coordinates "{{QUANT_WINDOW_COORDINATES}}" --cleavage-offset "{{CLEAVAGE_OFFSET}}" \\\n  --spacer-length "{{SPACER_LENGTH}}" --barcode-length "{{BARCODE_LENGTH}}" --bridge-length "{{BRIDGE_LENGTH}}" \\\n  --post-barcode-spacer-length "{{POST_BARCODE_SPACER_LENGTH}}" --umi-length-r1 "{{UMI_LENGTH_R1}}" --umi-length-r2 "{{UMI_LENGTH_R2}}" \\\n  --min-umi-base-quality "{{MIN_UMI_BASE_QUALITY}}" --amplicon-primer-tsv "{{AMPLICON_PRIMER_TSV}}" \\\n  --amplicon-primer-max-mismatches "{{AMPLICON_PRIMER_MAX_MISMATCHES}}" --umi-consensus-min-family-size "{{UMI_CONSENSUS_MIN_FAMILY_SIZE}}" \\\n  --umi-consensus-min-fraction "{{UMI_CONSENSUS_MIN_FRACTION}}" --min-umi-family-genotype-depth "{{MIN_UMI_FAMILY_GENOTYPE_DEPTH}}" \\\n  --min-umi-variant-family-support "{{MIN_UMI_VARIANT_FAMILY_SUPPORT}}" --enable-umi-family-analysis "{{ENABLE_UMI_FAMILY_ANALYSIS}}" \\\n  --fast-bwa "{{FAST_BWA}}" --enable-cas9-nw-rescue "{{ENABLE_CAS9_NW_RESCUE}}" --disable-homoeolog-analysis "{{DISABLE_HOMOEOLOG_ANALYSIS}}" \\\n  --allow-multiple-guides "{{ALLOW_MULTIPLE_GUIDES}}" --force-rerun "{{FORCE_RERUN}}" --extra-args "{{EXTRA_ARGS}}"', notes: '启动器按 argv 数组构造命令，并在运行前验证输入模式、编辑工具和 UMI 参数组合；输出固定在 results/hidog_run', params: [
           { name: 'BWA_PROFILE', label: 'BWA 配置', defaultValue: 'auto', type: 'select', options: ['auto', 'default', 'cas9-sensitive'], required: false },
           { name: 'MIN_RATIO', label: '最小等位基因比例（AUTO=V11 自动）', defaultValue: 'AUTO', type: 'text', required: false },
           { name: 'MIN_GENOTYPE_DEPTH', label: '基因型最小深度', defaultValue: '50', type: 'number', min: 1, required: false },
@@ -298,7 +306,7 @@ export function builtinWorkflows(): Workflow[] {
           { name: 'FORCE_RERUN', label: '忽略断点并强制重跑', defaultValue: 'false', type: 'boolean', required: false },
           { name: 'EXTRA_ARGS', label: 'V11 额外参数（不用填 NONE）', defaultValue: 'NONE', type: 'text', required: false, help: '启动器使用 shlex 拆分，不经 shell 执行' },
         ] },
-        { title: '生成确定性 QC 与报告', command: 'python3 <FLOW>/01_software/hidog/hidogV11_hpclaw_report.py --mode amplicon --input-dir <RUN>/results/hidog_run --report-dir <RUN>/results/report\ntest -s <RUN>/results/report/qc_summary.json\ntest -s <RUN>/results/report/report.html', notes: '直接读取 V11 的 *.stats.tsv 与 resume_state.json，生成 JSON、Markdown、HTML；不再把大段结果交给 AI 临时总结' },
+        { title: '生成确定性 QC 与报告', command: 'python3 <FLOW>/01_software/hidog/hidogV11_trace_report.py --mode amplicon --input-dir <RUN>/results/hidog_run --report-dir <RUN>/results/report\ntest -s <RUN>/results/report/qc_summary.json\ntest -s <RUN>/results/report/report.html', notes: '直接读取 V11 的 *.stats.tsv 与 resume_state.json，生成 JSON、Markdown、HTML；不再把大段结果交给 AI 临时总结' },
       ],
       manifest: {
         software: [
@@ -308,7 +316,7 @@ export function builtinWorkflows(): Workflow[] {
           { name: 'Python3 + pysam/openpyxl/matplotlib', checkCmd: 'python3 -c "import pysam, openpyxl, matplotlib"', required: true },
         ],
         references: [
-          { name: 'HiDOG V11 管线与 HPClaw 启动器', path: '{{FLOW_HOME}}/01_software/hidog/hidogV11_hpclaw_runner.py', type: 'other', source: '随 HPClaw 分发并自动部署', required: true },
+          { name: 'HiDOG V11 管线与 TRACE 启动器', path: '{{FLOW_HOME}}/01_software/hidog/hidogV11_trace_runner.py', type: 'other', source: '随 TRACE 分发并自动部署', required: true },
           { name: '扩增子参考序列', path: '{{REF_FASTA}}', type: 'genome', source: '用户提供的 FASTA 文件或目录', required: true },
         ],
         inputHint: 'fastq：R1/R2 + barcode + 参考 FASTA；hitom：Sequence.xls + 参考 FASTA。普通编辑需 guide，Prime Editing 需 pegRNA spacer/extension/scaffold。',
@@ -320,8 +328,8 @@ export function builtinWorkflows(): Workflow[] {
         { source: 'hidog/hidogV11.py', remotePath: 'hidog/hidogV11.py', label: 'HiDOG 主入口' },
         { source: 'hidog/hidogV11_packages.py', remotePath: 'hidog/hidogV11_packages.py', label: '编辑效率分析核心' },
         { source: 'hidog/hidogV11_vector_trace.py', remotePath: 'hidog/hidogV11_vector_trace.py', label: '载体追踪核心' },
-        { source: 'hidog/hidogV11_hpclaw_runner.py', remotePath: 'hidog/hidogV11_hpclaw_runner.py', label: 'HPClaw 参数校验与启动器' },
-        { source: 'hidog/hidogV11_hpclaw_report.py', remotePath: 'hidog/hidogV11_hpclaw_report.py', label: '自动 QC 与报告生成器' },
+        { source: 'hidog/hidogV11_trace_runner.py', remotePath: 'hidog/hidogV11_trace_runner.py', label: 'TRACE 参数校验与启动器' },
+        { source: 'hidog/hidogV11_trace_report.py', remotePath: 'hidog/hidogV11_trace_report.py', label: '自动 QC 与报告生成器' },
       ],
       source: 'builtin',
       createdAt: now,
@@ -392,7 +400,7 @@ export function builtinWorkflows(): Workflow[] {
         { title: 'Alignment filtering and PCR dedup', command: '#BSUB -J chipseq_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 "$b" > "${s}.filt.bam"\n  samtools sort -@ {{THREADS}} -n "${s}.filt.bam" -o "${s}.filt.nsrt.bam"\n  samtools fixmate -@ {{THREADS}} -m "${s}.filt.nsrt.bam" "${s}.fixmate.bam"\n  samtools sort -@ {{THREADS}} "${s}.fixmate.bam" -o "${s}.fixmate.sorted.bam"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I="${s}.fixmate.sorted.bam" O="${s}.dedup.bam" M=qc/"${s}".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index "${s}.dedup.bam"\ndone', notes: 'MAPQ≥30、保留正确配对、去未比对/次要比对/QC 失败 reads；fixmate + MarkDuplicates 去 PCR 重复，dup_metrics 纳入库复杂度评估' },
         { title: 'QC: strand cross-correlation and library complexity', command: '#BSUB -J chipseq_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c="$b" -savp -p {{THREADS}} -out=qc/"${s}".cc.qc\ndone\npython3 - <<\'PY\'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob("qc/*.cc.qc"):\n    s = os.path.basename(cc).replace(".cc.qc", "")\n    with open(cc) as fh:\n        header = fh.readline().rstrip("\\n").split("\\t")\n        row = fh.readline().rstrip("\\n").split("\\t")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join("qc", s + ".dup_metrics.txt")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith("#") or line.startswith("LIBRARY") or not line.strip():\n                    continue\n                cols = line.rstrip("\\n").split("\\t")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {"NSC": rec.get("NSC"), "RSC": rec.get("RSC"), "NRF": nrf}\nwith open("qc/qc.json", "w") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY', notes: '达标：NSC≥1.05、RSC≥0.8、NRF≥0.8；警告：NSC 1.0-1.05、RSC 0.5-0.8、NRF 0.6-0.8；PBC≥0.8 可用 preseq 补充评估' },
         { title: 'MACS2 narrow-peak calling and blacklist filtering', command: '#BSUB -J chipseq_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load MACS2/2.2.7.1 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  macs2 callpeak -t "$b" ${CTRL:+-c "$CTRL"} -n "${s}" -g {{GENOME_SIZE}} -q 0.05 --outdir peaks\n  bedtools intersect -a peaks/"${s}"_peaks.narrowPeak -b {{BLACKLIST}} -v > peaks/"${s}".peaks.final.bed\ndone', notes: '写成 chipseq_peak.lsf 后 bsub 提交；q=0.05 为候选峰，最终集以 IDR 筛选为准；CONTROL_DIR 有去重 BAM 时自动启用对照' },
-        { title: 'QC: RPKM bigWig tracks, SPOT and peak snapshots', command: '#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b "$b" -o qc/tracks/"${s}".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H "$b" | awk -F\'\\t\' \'/^@SQ/{split($2,a,":");split($3,c,":");print a[2]"\\t"c[2]}\' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes "$b" hotspots/"${s}"\n    total=$(samtools view -c "$b")\n    inhot=$(bedtools intersect -a "$b" -b hotspots/"${s}".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e "${s}\\t${total}\\t${inhot}" >> qc/spot.tsv\n  else\n    echo "SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）"\n  fi\ndone\npython3 - <<\'PY\'\nBAM_GLOB = "*.dedup.bam"\nBAM_SUFFIX = ".dedup.bam"\nPEAK_DIR = "peaks/"\nPEAK_SUFFIX = ".peaks.final.bed"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use("Agg")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print("SKIP: 无 matplotlib，跳过峰快照绘图（%s）" % exc)\n    sys.exit(0)\nos.makedirs("qc/igv", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith("#"):\n                continue\n            f = line.rstrip("\\n").split("\\t")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run(["samtools", "depth", "-a", "-r", "%s:%d-%d" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split("\\t")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color="#3b82f6", lw=0)\n        ax.axvspan(start, end, color="#f59e0b", alpha=0.25)\n        ax.set_title("%s  %s:%d-%d" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel("depth")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig("qc/igv/%s_%s_%d.png" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint("IGV 风格峰快照产出 %d 张 → qc/igv/" % made)\nPY', notes: 'HPClaw 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）' },
+        { title: 'QC: RPKM bigWig tracks, SPOT and peak snapshots', command: '#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b "$b" -o qc/tracks/"${s}".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H "$b" | awk -F\'\\t\' \'/^@SQ/{split($2,a,":");split($3,c,":");print a[2]"\\t"c[2]}\' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes "$b" hotspots/"${s}"\n    total=$(samtools view -c "$b")\n    inhot=$(bedtools intersect -a "$b" -b hotspots/"${s}".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e "${s}\\t${total}\\t${inhot}" >> qc/spot.tsv\n  else\n    echo "SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）"\n  fi\ndone\npython3 - <<\'PY\'\nBAM_GLOB = "*.dedup.bam"\nBAM_SUFFIX = ".dedup.bam"\nPEAK_DIR = "peaks/"\nPEAK_SUFFIX = ".peaks.final.bed"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use("Agg")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print("SKIP: 无 matplotlib，跳过峰快照绘图（%s）" % exc)\n    sys.exit(0)\nos.makedirs("qc/igv", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith("#"):\n                continue\n            f = line.rstrip("\\n").split("\\t")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run(["samtools", "depth", "-a", "-r", "%s:%d-%d" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split("\\t")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color="#3b82f6", lw=0)\n        ax.axvspan(start, end, color="#f59e0b", alpha=0.25)\n        ax.set_title("%s  %s:%d-%d" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel("depth")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig("qc/igv/%s_%s_%d.png" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint("IGV 风格峰快照产出 %d 张 → qc/igv/" % made)\nPY', notes: 'TRACE 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）' },
         { title: 'QC: FRiP and cross-replicate IDR consistency', command: '#BSUB -J chipseq_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c "$b")\n  inpeak=$(bedtools intersect -a "$b" -b peaks/"${s}".peaks.final.bed -u | samtools view -c -)\n  echo -e "${s}\\t${total}\\t${inpeak}" >> qc/frip.tsv\ndone\n# 重复≥2 时对真重复跑 IDR（合并池峰为 oracle）；单重复改用自我伪重复 IDR\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ "${#PK[@]}" -lt 2 ]; then\n  echo "SKIP: 需要至少 2 个重复 peaks 才能算 IDR"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples "${PK[0]}" "${PK[1]}" ${POOL:+--peak-list "$POOL"} --input-file-type narrowPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<\'PY\'\nimport json, os\nqc = {}\nif os.path.exists("qc/frip.tsv"):\n    with open("qc/frip.tsv") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip("\\n").split("\\t")\n            qc[s] = {"FRiP": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists("idr/idr.txt"):\n    n_idr = 0\n    with open("idr/idr.txt") as fh:\n        for line in fh:\n            cols = line.rstrip("\\n").split("\\t")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc["_idr"] = {"peaks_global_idr_lt_0.05": n_idr, "rule": "Np(伪重复)/Nt(真重复) < 2 达标，>= 2 判重复间不一致"}\nwith open("qc/idr_qc.json", "w") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY', notes: '达标：FRiP≥1%、IDR Np/Nt<2（global IDR<0.05 计 Nt）；警告：FRiP 0.5-1%；idr 包缺失时先 module av 或问用户安装方式' },
         { title: 'Generate analysis report', command: 'python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html', notes: '确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件' },
       ],
@@ -422,8 +430,8 @@ export function builtinWorkflows(): Workflow[] {
           { afterStep: 8, metric: 'FRiP 与重复间 IDR', pass: 'FRiP≥1%，Np/Nt<2', warn: 'FRiP 0.5-1%' },
         ],
       },
-      provenance: { provider: 'hpclaw-native', sourceName: 'ENCODE TF ChIP-seq protocol (HPClaw native implementation)', sourceUrl: 'https://github.com/peacezha/HPClaw',
-        sourceRef: 'native-encode-v1', upstreamWorkflow: 'hpclaw-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
+      provenance: { provider: 'trace-native', sourceName: 'ENCODE TF ChIP-seq protocol (TRACE native implementation)', sourceUrl: 'https://github.com/peacezha/TRACE',
+        sourceRef: 'native-encode-v1', upstreamWorkflow: 'trace-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
       source: 'builtin',
       createdAt: now,
       updatedAt: now,
@@ -480,8 +488,8 @@ export function builtinWorkflows(): Workflow[] {
           { afterStep: 6, metric: 'FRiP 与指纹图分离', pass: 'FRiP≥5% 且指纹图处理/对照明显分离', warn: 'FRiP 1-5% 或指纹图分离不清' },
         ],
       },
-      provenance: { provider: 'hpclaw-native', sourceName: 'DAP-seq protocol (O’Malley et al. 2016 / Bartlett et al. 2017, HPClaw native implementation)', sourceUrl: 'https://github.com/peacezha/HPClaw',
-        sourceRef: 'native-dapseq-v1', upstreamWorkflow: 'hpclaw-native', implementation: 'reference-extension', importerVersion: 'native-dapseq-v1' },
+      provenance: { provider: 'trace-native', sourceName: 'DAP-seq protocol (O’Malley et al. 2016 / Bartlett et al. 2017, TRACE native implementation)', sourceUrl: 'https://github.com/peacezha/TRACE',
+        sourceRef: 'native-dapseq-v1', upstreamWorkflow: 'trace-native', implementation: 'reference-extension', importerVersion: 'native-dapseq-v1' },
       source: 'builtin',
       createdAt: now,
       updatedAt: now,
@@ -508,7 +516,7 @@ export function builtinWorkflows(): Workflow[] {
         { title: 'Alignment filtering and PCR dedup', command: '#BSUB -J histone_filter -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 Picard/2.27.4\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.sorted.bam; do\n  s=${b%.sorted.bam}\n  samtools view -@ {{THREADS}} -b -q 30 -f 2 -F 1804 "$b" > "${s}.filt.bam"\n  samtools sort -@ {{THREADS}} -n "${s}.filt.bam" -o "${s}.filt.nsrt.bam"\n  samtools fixmate -@ {{THREADS}} -m "${s}.filt.nsrt.bam" "${s}.fixmate.bam"\n  samtools sort -@ {{THREADS}} "${s}.fixmate.bam" -o "${s}.fixmate.sorted.bam"\n  java -jar $EBROOTPICARD/picard.jar MarkDuplicates I="${s}.fixmate.sorted.bam" O="${s}.dedup.bam" M=qc/"${s}".dup_metrics.txt REMOVE_DUPLICATES=true\n  samtools index "${s}.dedup.bam"\ndone', notes: 'MAPQ≥30、保留正确配对、去未比对/次要比对/QC 失败 reads；fixmate + MarkDuplicates 去 PCR 重复' },
         { title: 'QC: strand cross-correlation and library complexity', command: '#BSUB -J histone_libqc -n 1 -q {{QUEUE}}\nmodule load SAMtools/1.17\ncd {{INPUT_DIR}} && mkdir -p qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c="$b" -savp -p {{THREADS}} -out=qc/"${s}".cc.qc\ndone\npython3 - <<\'PY\'\nimport glob, json, os\nqc = {}\nfor cc in glob.glob("qc/*.cc.qc"):\n    s = os.path.basename(cc).replace(".cc.qc", "")\n    with open(cc) as fh:\n        header = fh.readline().rstrip("\\n").split("\\t")\n        row = fh.readline().rstrip("\\n").split("\\t")\n    rec = dict(zip(header, row))\n    nrf = None\n    dup = os.path.join("qc", s + ".dup_metrics.txt")\n    if os.path.exists(dup):\n        with open(dup) as fh:\n            for line in fh:\n                if line.startswith("#") or line.startswith("LIBRARY") or not line.strip():\n                    continue\n                cols = line.rstrip("\\n").split("\\t")\n                examined = int(cols[1]) + 2 * int(cols[2])\n                duplicates = int(cols[5]) + 2 * int(cols[6])\n                nrf = round(1 - duplicates / examined, 4) if examined else None\n                break\n    qc[s] = {"NSC": rec.get("NSC"), "RSC": rec.get("RSC"), "NRF": nrf}\nwith open("qc/qc.json", "w") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY', notes: '达标：NSC≥1.05、RSC≥0.8、NRF≥0.8；警告：NSC 1.0-1.05、RSC 0.5-0.8、NRF 0.6-0.8' },
         { title: 'SPP broad-peak calling and blacklist filtering', command: '#BSUB -J histone_peak -n {{THREADS}} -q {{QUEUE}}\nmodule load BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p peaks\nCTRL=$(ls {{CONTROL_DIR}}/*.dedup.bam 2>/dev/null | head -1 || true)\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  run_spp.R -c="$b" ${CTRL:+-i="$CTRL"} -npeak=300000 -odir=peaks -speak=peaks/"${s}" -savp -rf\n  zcat peaks/"${s}".regionPeak.gz > peaks/"${s}".regionPeak\n  bedtools intersect -a peaks/"${s}".regionPeak -b {{BLACKLIST}} -v > peaks/"${s}".peaks.final.bed\ndone', notes: '写成 histone_peak.lsf 后 bsub 提交；SPP 宽峰适合 H3K27ac/H3K36me3 等宽域修饰；备选：macs2 callpeak --broad --broad-cutoff 0.1（需 MACS2 与 {{GENOME_SIZE}}）或 GEM' },
-        { title: 'QC: RPKM bigWig tracks, SPOT and peak snapshots', command: '#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b "$b" -o qc/tracks/"${s}".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H "$b" | awk -F\'\\t\' \'/^@SQ/{split($2,a,":");split($3,c,":");print a[2]"\\t"c[2]}\' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes "$b" hotspots/"${s}"\n    total=$(samtools view -c "$b")\n    inhot=$(bedtools intersect -a "$b" -b hotspots/"${s}".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e "${s}\\t${total}\\t${inhot}" >> qc/spot.tsv\n  else\n    echo "SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）"\n  fi\ndone\npython3 - <<\'PY\'\nBAM_GLOB = "*.dedup.bam"\nBAM_SUFFIX = ".dedup.bam"\nPEAK_DIR = "peaks/"\nPEAK_SUFFIX = ".peaks.final.bed"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use("Agg")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print("SKIP: 无 matplotlib，跳过峰快照绘图（%s）" % exc)\n    sys.exit(0)\nos.makedirs("qc/igv", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith("#"):\n                continue\n            f = line.rstrip("\\n").split("\\t")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run(["samtools", "depth", "-a", "-r", "%s:%d-%d" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split("\\t")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color="#3b82f6", lw=0)\n        ax.axvspan(start, end, color="#f59e0b", alpha=0.25)\n        ax.set_title("%s  %s:%d-%d" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel("depth")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig("qc/igv/%s_%s_%d.png" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint("IGV 风格峰快照产出 %d 张 → qc/igv/" % made)\nPY', notes: 'HPClaw 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）' },
+        { title: 'QC: RPKM bigWig tracks, SPOT and peak snapshots', command: '#BSUB -J chipseq_track_qc -n {{THREADS}} -q {{QUEUE}}\nmodule load deepTools/3.5.1 SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p qc/tracks qc/igv\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  bamCoverage -b "$b" -o qc/tracks/"${s}".rpkm.bw -p {{THREADS}} --normalizeUsing RPKM\ndone\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  if command -v hotspot2 >/dev/null 2>&1; then\n    mkdir -p hotspots\n    samtools view -H "$b" | awk -F\'\\t\' \'/^@SQ/{split($2,a,":");split($3,c,":");print a[2]"\\t"c[2]}\' > qc/chrom.sizes\n    hotspot2 -c qc/chrom.sizes "$b" hotspots/"${s}"\n    total=$(samtools view -c "$b")\n    inhot=$(bedtools intersect -a "$b" -b hotspots/"${s}".hotspots.fdr0.05.bed -u | samtools view -c - || true)\n    echo -e "${s}\\t${total}\\t${inhot}" >> qc/spot.tsv\n  else\n    echo "SKIP: hotspot2 不可用，跳过 SPOT（module load 或一键部署 hotspot2 即可启用）"\n  fi\ndone\npython3 - <<\'PY\'\nBAM_GLOB = "*.dedup.bam"\nBAM_SUFFIX = ".dedup.bam"\nPEAK_DIR = "peaks/"\nPEAK_SUFFIX = ".peaks.final.bed"\nimport glob, os, random, subprocess, sys\ntry:\n    import matplotlib\n    matplotlib.use("Agg")\n    import matplotlib.pyplot as plt\nexcept Exception as exc:\n    print("SKIP: 无 matplotlib，跳过峰快照绘图（%s）" % exc)\n    sys.exit(0)\nos.makedirs("qc/igv", exist_ok=True)\nmade = 0\nfor bam in sorted(glob.glob(BAM_GLOB)):\n    s = bam[: -len(BAM_SUFFIX)]\n    peak_file = PEAK_DIR + s + PEAK_SUFFIX\n    if not os.path.exists(peak_file):\n        continue\n    peaks = []\n    with open(peak_file) as fh:\n        for line in fh:\n            if line.startswith("#"):\n                continue\n            f = line.rstrip("\\n").split("\\t")\n            if len(f) >= 3:\n                try:\n                    peaks.append((f[0], int(f[1]), int(f[2])))\n                except ValueError:\n                    pass\n    if not peaks:\n        continue\n    random.seed(42)\n    for chrom, start, end in random.sample(peaks, min(5, len(peaks))):\n        a, b = max(0, start - 1500), end + 1500\n        out = subprocess.run(["samtools", "depth", "-a", "-r", "%s:%d-%d" % (chrom, a, b), bam], capture_output=True, text=True)\n        cov = {}\n        for line in out.stdout.splitlines():\n            f = line.split("\\t")\n            if len(f) >= 3:\n                cov[int(f[1])] = int(f[2])\n        xs = list(range(a, b + 1))\n        ys = [cov.get(x, 0) for x in xs]\n        fig, ax = plt.subplots(figsize=(8, 2.4))\n        ax.fill_between(xs, ys, color="#3b82f6", lw=0)\n        ax.axvspan(start, end, color="#f59e0b", alpha=0.25)\n        ax.set_title("%s  %s:%d-%d" % (s, chrom, start, end))\n        ax.set_xlabel(chrom)\n        ax.set_ylabel("depth")\n        ax.margins(x=0)\n        fig.tight_layout()\n        fig.savefig("qc/igv/%s_%s_%d.png" % (s, chrom, start), dpi=120)\n        plt.close(fig)\n        made += 1\nprint("IGV 风格峰快照产出 %d 张 → qc/igv/" % made)\nPY', notes: 'TRACE 对 ENCODE 基线的扩展：RPKM 标准化 bigWig（qc/tracks/*.rpkm.bw）可直接拖进 IGV/基因组浏览器；SPOT 需 hotspot2（缺失自动 SKIP）；随机抽 5 个峰画 IGV 风格覆盖图到 qc/igv/（需 matplotlib，缺失自动 SKIP；固定随机种子 42 可复现）' },
         { title: 'QC: FRiP and cross-replicate IDR consistency', command: '#BSUB -J histone_idr -n {{THREADS}} -q {{QUEUE}}\nmodule load SAMtools/1.17 BEDTools/2.30.0\ncd {{INPUT_DIR}} && mkdir -p idr qc\nfor b in *.dedup.bam; do\n  s=${b%.dedup.bam}\n  total=$(samtools view -c "$b")\n  inpeak=$(bedtools intersect -a "$b" -b peaks/"${s}".peaks.final.bed -u | samtools view -c -)\n  echo -e "${s}\\t${total}\\t${inpeak}" >> qc/frip.tsv\ndone\nmapfile -t PK < <(ls peaks/*.peaks.final.bed 2>/dev/null || ls *.peaks.final.bed 2>/dev/null)\nif [ "${#PK[@]}" -lt 2 ]; then\n  echo "SKIP: 需要至少 2 个重复 peaks 才能算 IDR"\nelse\n  POOL=$(ls peaks/*pool*.peaks.final.bed 2>/dev/null | head -1 || true)\n  idr --samples "${PK[0]}" "${PK[1]}" ${POOL:+--peak-list "$POOL"} --input-file-type broadPeak --rank p.value -o idr/idr.txt --plot\nfi\npython3 - <<\'PY\'\nimport json, os\nqc = {}\nif os.path.exists("qc/frip.tsv"):\n    with open("qc/frip.tsv") as fh:\n        for line in fh:\n            s, total, inpeak = line.rstrip("\\n").split("\\t")\n            qc[s] = {"FRiP": round(int(inpeak) / int(total), 4) if int(total) else None}\nn_idr = None\nif os.path.exists("idr/idr.txt"):\n    n_idr = 0\n    with open("idr/idr.txt") as fh:\n        for line in fh:\n            cols = line.rstrip("\\n").split("\\t")\n            try:\n                if float(cols[10]) < 0.05:\n                    n_idr += 1\n            except (IndexError, ValueError):\n                continue\nqc["_idr"] = {"peaks_global_idr_lt_0.05": n_idr, "rule": "Np(伪重复)/Nt(真重复) < 2 达标，>= 2 判重复间不一致"}\nwith open("qc/idr_qc.json", "w") as out:\n    json.dump(qc, out, indent=2, ensure_ascii=False)\nPY', notes: '达标：FRiP≥1%、IDR Np/Nt<2；警告：FRiP 0.5-1%；重复≥2 用真重复 IDR，单重复用伪重复 IDR' },
         { title: 'Generate analysis report', command: 'python3 <RUN>/tools/encode_native_report.py --run-dir <RUN> --input-dir {{INPUT_DIR}} --report-dir <RUN>/reports/final-report\ntest -s <RUN>/reports/final-report/report.html', notes: '确定性报告生成器直接读取真实产物（QC 指标/峰文件/图）生成图文并茂的 HTML+MD 报告；AI 只需在回复里补充一段结论解读并给出报告绝对路径，不要重写报告文件' },
       ],
@@ -539,8 +547,8 @@ export function builtinWorkflows(): Workflow[] {
           { afterStep: 8, metric: 'FRiP 与重复间 IDR', pass: 'FRiP≥1%，Np/Nt<2', warn: 'FRiP 0.5-1%' },
         ],
       },
-      provenance: { provider: 'hpclaw-native', sourceName: 'ENCODE histone ChIP-seq protocol (HPClaw native implementation)', sourceUrl: 'https://github.com/peacezha/HPClaw',
-        sourceRef: 'native-encode-v1', upstreamWorkflow: 'hpclaw-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
+      provenance: { provider: 'trace-native', sourceName: 'ENCODE histone ChIP-seq protocol (TRACE native implementation)', sourceUrl: 'https://github.com/peacezha/TRACE',
+        sourceRef: 'native-encode-v1', upstreamWorkflow: 'trace-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
       source: 'builtin',
       createdAt: now,
       updatedAt: now,
@@ -590,8 +598,8 @@ export function builtinWorkflows(): Workflow[] {
           { afterStep: 6, metric: '重复间表达一致性', pass: 'Spearman >0.9', warn: '0.8-0.9' },
         ],
       },
-      provenance: { provider: 'hpclaw-native', sourceName: 'ENCODE bulk RNA-seq protocol (HPClaw native implementation)', sourceUrl: 'https://github.com/peacezha/HPClaw',
-        sourceRef: 'native-encode-v1', upstreamWorkflow: 'hpclaw-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
+      provenance: { provider: 'trace-native', sourceName: 'ENCODE bulk RNA-seq protocol (TRACE native implementation)', sourceUrl: 'https://github.com/peacezha/TRACE',
+        sourceRef: 'native-encode-v1', upstreamWorkflow: 'trace-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
       source: 'builtin',
       createdAt: now,
       updatedAt: now,
@@ -645,8 +653,8 @@ export function builtinWorkflows(): Workflow[] {
           { afterStep: 6, metric: 'TSS 富集、FRiP 与 SPOT', pass: 'TSS enrichment >6，FRiP≥0.2，SPOT≥0.3（需 hotspot2）', warn: 'TSS 4-6 或 FRiP 0.1-0.2 或 SPOT 0.2-0.3' },
         ],
       },
-      provenance: { provider: 'hpclaw-native', sourceName: 'ENCODE ATAC-seq protocol (HPClaw native implementation)', sourceUrl: 'https://github.com/peacezha/HPClaw',
-        sourceRef: 'native-encode-v1', upstreamWorkflow: 'hpclaw-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
+      provenance: { provider: 'trace-native', sourceName: 'ENCODE ATAC-seq protocol (TRACE native implementation)', sourceUrl: 'https://github.com/peacezha/TRACE',
+        sourceRef: 'native-encode-v1', upstreamWorkflow: 'trace-native', implementation: 'reference-extension', importerVersion: 'native-encode-v1' },
       source: 'builtin',
       createdAt: now,
       updatedAt: now,
@@ -1088,7 +1096,7 @@ export function builtinWorkflows(): Workflow[] {
     },
   ];
 
-  // ENCODE 流程分两类：chip/atac/rnaseq 用 HPClaw 原生参数式定义（下方手写版，
+  // ENCODE 流程分两类：chip/atac/rnaseq 用 TRACE 原生参数式定义（下方手写版，
   // 逐个指定参考文件路径，符合软件自己的参数模型）；其余 8 条用带固定上游版本
   // 与依赖图的官方 WDL 包装器覆盖。保留旧对象仅用于历史迁移定位。
   const NATIVE_ENCODE_IDS = new Set([
@@ -1107,9 +1115,8 @@ export function builtinWorkflows(): Workflow[] {
   // 并在保留旧 ID 便于无感升级的前提下新增完整英文版。
   addChromatinWorkflowVariants(workflows, now);
 
-  // TF ChIP-seq 两版并存（用户要求）：现行原生参数式线性版 encode-chipseq-tf 不动；
-  // 「原来的」官方结构版以原生参数 + 依赖图形式提供（不要 genome TSV/Caper，
-  // 用户直接填文件路径），id 为 encode-chipseq-tf-dag。
+  // The corrected DAG is the canonical TF ChIP-seq workflow. Keep the linear
+  // template solely as its construction input; do not expose duplicate rows.
   const linearChipTf = workflows.find(workflow => workflow.id === 'encode-chipseq-tf');
   if (linearChipTf && !workflows.some(workflow => workflow.id === 'encode-chipseq-tf-dag')) {
     workflows.push(buildChipseqTfDagVariant(linearChipTf, now));
@@ -1161,7 +1168,25 @@ export function builtinWorkflows(): Workflow[] {
       }];
     }
   }
-  return workflows;
+  return includeRetired ? workflows : workflows.filter(w => !RETIRED_DUPLICATE_CHIP_IDS.has(w.id));
+}
+
+const RETIRED_DUPLICATE_CHIP_IDS = new Set(['encode-chipseq-tf', 'encode-chipseq-tf-en']);
+
+/** Preserve edited/user workflows and all cluster runs. Remove only untouched
+ * duplicate definitions, after saving a recoverable backup. */
+async function retireDuplicateChipDefinitions(workflows: Workflow[]): Promise<boolean> {
+  let changed = false;
+  for (let index = workflows.length - 1; index >= 0; index--) {
+    const row = workflows[index];
+    if (!RETIRED_DUPLICATE_CHIP_IDS.has(row.id) || row.source !== 'builtin' || row.provenance?.customized) continue;
+    const backup = dataPath('workflows', 'deleted-definitions', `retired-${row.id}-${Date.now()}-${crypto.randomUUID()}.json`);
+    await fs.mkdir(path.dirname(backup), { recursive: true });
+    await fs.writeFile(backup, JSON.stringify(row, null, 2), { encoding: 'utf-8', flag: 'wx' });
+    workflows.splice(index, 1);
+    changed = true;
+  }
+  return changed;
 }
 
 /**
@@ -1204,7 +1229,67 @@ function applyDerivedCategories(workflows: Workflow[]): void {
 }
 
 export async function loadWorkflows(): Promise<Workflow[]> {
-  return withStoreLock(loadWorkflowsUnlocked);
+  return withStoreLock(async () => {
+    if (requestedCleanupEnabled) await cleanupRequestedCatalogueUnlocked();
+    return loadWorkflowsUnlocked();
+  });
+}
+
+/** One-time, user-requested definition cleanup. Never touches RUNs or results.
+ * The marker prevents deleting subsequently created review drafts on restart. */
+export async function cleanupRequestedWorkflowCatalogue(): Promise<void> {
+  return withStoreLock(cleanupRequestedCatalogueUnlocked);
+}
+
+async function cleanupRequestedCatalogueUnlocked(): Promise<void> {
+  try { await fs.access(CATALOGUE_CLEANUP_PATH); return; } catch (error: any) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const now = Date.now();
+  const backupDir = dataPath('workflows', 'deleted-definitions', `catalogue-v0.4.54-${now}-${crypto.randomUUID()}`);
+  await fs.mkdir(backupDir, { recursive: true });
+  try {
+    const original = await fs.readFile(STORE_PATH);
+    await fs.writeFile(path.join(backupDir, 'original-catalogue.json'), original, { flag: 'wx' });
+  } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+  const deleted = await loadDeletedBuiltinSeeds();
+  for (const id of REQUESTED_KEEP_IDS) deleted.delete(id);
+  await fs.mkdir(path.dirname(DELETED_SEEDS_PATH), { recursive: true });
+  // Explicit retention overrides an earlier seed deletion only during this migration.
+  const tombstoneTmp = `${DELETED_SEEDS_PATH}.tmp`;
+  await fs.writeFile(tombstoneTmp, JSON.stringify([...deleted], null, 2), 'utf-8');
+  await fs.rename(tombstoneTmp, DELETED_SEEDS_PATH);
+  storeCache = null;
+  bioskillsSeedsReady = false;
+  const workflows = await loadWorkflowsUnlocked();
+  if (![...REQUESTED_KEEP_IDS].every(id => workflows.some(w => w.id === id))) {
+    throw new Error('Catalogue cleanup deferred: retained BioSkills definitions are unavailable');
+  }
+  for (const workflow of workflows) {
+    if (REQUESTED_KEEP_IDS.has(workflow.id)) {
+      workflow.lifecycle = { state: 'active', origin: 'user', updatedAt: now };
+    }
+  }
+  const removed = workflows.filter(w => REQUESTED_REMOVE_IDS.has(w.id) || isPendingDisposal(w));
+  // Persist the complete removed definitions before any removal/tombstone writes.
+  await fs.writeFile(path.join(backupDir, 'workflows.json'), JSON.stringify(removed, null, 2), { encoding: 'utf-8', flag: 'wx' });
+  for (const workflow of removed) if (workflow.source === 'builtin') deleted.add(workflow.id);
+  for (const id of REQUESTED_REMOVE_IDS) deleted.add(id);
+  // Prevent an older still-installed version from resurrecting the retired TF
+  // aliases after reading this catalogue. Respect active customized definitions.
+  for (const id of RETIRED_DUPLICATE_CHIP_IDS) if (!keptCustomizedId(id)) deleted.add(id);
+  function keptCustomizedId(id: string): boolean {
+    return workflows.some(w => w.id === id && w.provenance?.customized && !isPendingDisposal(w));
+  }
+  await fs.writeFile(tombstoneTmp, JSON.stringify([...deleted], null, 2), 'utf-8');
+  await fs.rename(tombstoneTmp, DELETED_SEEDS_PATH);
+  const removedIds = new Set(removed.map(w => w.id));
+  const kept = workflows.filter(w => !removedIds.has(w.id));
+  await writeWorkflows(kept);
+  const markerTmp = `${CATALOGUE_CLEANUP_PATH}.tmp`;
+  await fs.writeFile(markerTmp, JSON.stringify({ version: '0.4.54', at: now, removedIds: [...removedIds], retainedIds: [...REQUESTED_KEEP_IDS], backupDir }, null, 2), 'utf-8');
+  await fs.rename(markerTmp, CATALOGUE_CLEANUP_PATH);
+  await updateStoreCache(kept);
 }
 
 async function loadWorkflowsUnlocked(): Promise<Workflow[]> {
@@ -1225,7 +1310,16 @@ async function loadWorkflowsUnlocked(): Promise<Workflow[]> {
       let workflows = parsed as Workflow[];
       // 迁移：内置流程为系统所有，params/manifest 随版本升级总是刷新为当前内置定义
       // （用户自建与 AI 生成的流程不受影响）；版本新增的内置流程自动入库
-      let migrated = false;
+      let migrated = await retireDuplicateChipDefinitions(workflows);
+      for (const workflow of workflows) {
+        if (!workflow.provenance) continue;
+        const before = JSON.stringify(workflow.provenance);
+        workflow.provenance.provider = currentProvider(workflow.provenance.provider) as NonNullable<Workflow['provenance']>['provider'];
+        workflow.provenance.upstreamWorkflow = currentProvider(workflow.provenance.upstreamWorkflow);
+        workflow.provenance.sourceName = currentProductText(workflow.provenance.sourceName);
+        if (workflow.provenance.sourceUrl) workflow.provenance.sourceUrl = currentProductText(workflow.provenance.sourceUrl);
+        if (JSON.stringify(workflow.provenance) !== before) migrated = true;
+      }
       // 用户删除过的内置种子：清出库存且不再注入，避免删除后“复活”
       const deletedSeedIds = await loadDeletedBuiltinSeeds();
       if (deletedSeedIds.size > 0) {

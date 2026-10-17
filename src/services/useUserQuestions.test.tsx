@@ -10,6 +10,14 @@ function fixture() {
   return { ...hook, ask, onAnswered, onLegacyAnswer };
 }
 describe('user question receipts and UI lifecycle', () => {
+  it('sends a clarification on the original stream without selecting or authorizing an option', async () => {
+    const fetch = vi.fn(async () => Response.json({ success: true })); vi.stubGlobal('fetch', fetch);
+    const f = fixture(); f.ask();
+    await act(async () => f.result.current.reply({ selected: ['A'], custom: '有哪些修复方案？' }));
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ id: 'q1', answer: { selected: [], custom: '有哪些修复方案？', intent: 'clarification' } });
+    expect(f.onLegacyAnswer).not.toHaveBeenCalled();
+    expect(f.result.current.notice).toContain('未授权执行');
+  });
   it('updates existing delivery-error text when the language changes', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
     const f = renderHook(({ english }) => useUserQuestions({ english, onAnswered: vi.fn(), onLegacyAnswer: vi.fn() }), { initialProps: { english: false } });

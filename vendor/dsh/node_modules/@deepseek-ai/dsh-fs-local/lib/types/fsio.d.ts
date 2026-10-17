@@ -65,6 +65,13 @@ export interface LocalDirEntry {
     size?: number;
 }
 /**
+ * Anchor a path using native drive semantics and POSIX physical parent traversal.
+ * @param cwd - provider base directory for relative paths.
+ * @param path - non-empty requested path.
+ * @returns absolute display spelling shared by target resolution and no-follow metadata.
+ */
+export declare function localDisplayPath(cwd: string, path: string): string;
+/**
  * Resolve a path to its absolute display path and realpath identity. For a missing target,
  * realpath the nearest existing ancestor and append the missing suffix, preserving identity
  * across symlinked ancestors before and after creation.
@@ -114,6 +121,20 @@ export declare function readWholeText(target: LocalTarget, signal?: AbortSignal)
  * @returns the full raw content, at most `maxBytes` long.
  */
 export declare function readWholeBytes(target: LocalTarget, signal: AbortSignal | undefined, maxBytes: number, internals?: FsIoInternals): Promise<Uint8Array>;
+/**
+ * Read the bytes at `[offset, offset + length)` of a regular file with no
+ * decoding or binary rejection. The window is the bound: the stream opens at
+ * `offset` and closes after `length` bytes, so no more than the window is ever
+ * buffered whatever the file's size; a window at or past the end is empty.
+ * @param target - the resolved file to read.
+ * @param range - `offset`, the 0-based first byte, and `length`, the largest byte count.
+ * @param signal - aborts the read (`FS_ABORTED`).
+ * @returns the window's bytes, at most `length` long.
+ */
+export declare function readByteWindow(target: LocalTarget, range: {
+    offset: number;
+    length: number;
+}, signal?: AbortSignal): Promise<Uint8Array>;
 /**
  * Stream a whole regular UTF-8 text file as decoded text chunks. Same text
  * semantics as {@link readWholeText} (regular-file check, binary/NUL rejection,

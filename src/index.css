@@ -268,36 +268,36 @@ body {
 .rich-card table thead { background: rgb(var(--line-rgb) / 0.35); }
 
 /* ── Conversation Markdown ─────────────────────────────────── */
-.hpclaw-markdown { min-width: 0; overflow-wrap: anywhere; }
-.hpclaw-markdown > :first-child { margin-top: 0; }
-.hpclaw-markdown > :last-child { margin-bottom: 0; }
-.hpclaw-markdown p { margin: 0.35rem 0 0.65rem; }
-.hpclaw-markdown h1,
-.hpclaw-markdown h2,
-.hpclaw-markdown h3,
-.hpclaw-markdown h4 {
+.trace-markdown { min-width: 0; overflow-wrap: anywhere; }
+.trace-markdown > :first-child { margin-top: 0; }
+.trace-markdown > :last-child { margin-bottom: 0; }
+.trace-markdown p { margin: 0.35rem 0 0.65rem; }
+.trace-markdown h1,
+.trace-markdown h2,
+.trace-markdown h3,
+.trace-markdown h4 {
   margin: 0.9rem 0 0.4rem;
   color: var(--color-scholar-50);
   font-weight: 600;
   line-height: 1.35;
 }
-.hpclaw-markdown h1 { font-size: 1.15rem; }
-.hpclaw-markdown h2 { font-size: 1.05rem; }
-.hpclaw-markdown h3,
-.hpclaw-markdown h4 { font-size: 0.95rem; }
-.hpclaw-markdown ul,
-.hpclaw-markdown ol { margin: 0.45rem 0 0.7rem 1.25rem; }
-.hpclaw-markdown ul { list-style: disc; }
-.hpclaw-markdown ol { list-style: decimal; }
-.hpclaw-markdown li { margin: 0.18rem 0; padding-left: 0.12rem; }
-.hpclaw-markdown blockquote {
+.trace-markdown h1 { font-size: 1.15rem; }
+.trace-markdown h2 { font-size: 1.05rem; }
+.trace-markdown h3,
+.trace-markdown h4 { font-size: 0.95rem; }
+.trace-markdown ul,
+.trace-markdown ol { margin: 0.45rem 0 0.7rem 1.25rem; }
+.trace-markdown ul { list-style: disc; }
+.trace-markdown ol { list-style: decimal; }
+.trace-markdown li { margin: 0.18rem 0; padding-left: 0.12rem; }
+.trace-markdown blockquote {
   margin: 0.65rem 0;
   padding-left: 0.75rem;
   border-left: 2px solid rgb(var(--accent-rgb) / 0.55);
   color: var(--color-scholar-300);
 }
-.hpclaw-markdown a { color: var(--color-accent-dark); text-decoration: underline; text-underline-offset: 2px; }
-.hpclaw-markdown pre {
+.trace-markdown a { color: var(--color-accent-dark); text-decoration: underline; text-underline-offset: 2px; }
+.trace-markdown pre {
   max-width: 100%;
   margin: 0.65rem 0;
   padding: 0.75rem;
@@ -308,7 +308,7 @@ body {
   background: var(--color-scholar-900);
   color: var(--color-scholar-100);
 }
-.hpclaw-markdown code {
+.trace-markdown code {
   border-radius: 0.25rem;
   /* 行内代码：亮一档的底 + 细边 + 亮文字 */
   background: var(--color-scholar-800);
@@ -318,8 +318,8 @@ body {
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 0.82em;
 }
-.hpclaw-markdown pre code { padding: 0; background: transparent; border: none; color: inherit; font-size: 0.78rem; }
-.hpclaw-markdown table {
+.trace-markdown pre code { padding: 0; background: transparent; border: none; color: inherit; font-size: 0.78rem; }
+.trace-markdown table {
   width: 100%;
   margin: 0.65rem 0;
   font-size: 0.82rem;
@@ -330,26 +330,26 @@ body {
   border-radius: 0.5rem;
   overflow: hidden;
 }
-.hpclaw-markdown th,
-.hpclaw-markdown td { padding: 0.4rem 0.55rem; border-bottom: 1px solid rgb(var(--line-rgb) / 0.22); text-align: left; vertical-align: top; }
-.hpclaw-markdown tr:last-child td { border-bottom: none; }
+.trace-markdown th,
+.trace-markdown td { padding: 0.4rem 0.55rem; border-bottom: 1px solid rgb(var(--line-rgb) / 0.22); text-align: left; vertical-align: top; }
+.trace-markdown tr:last-child td { border-bottom: none; }
 /* 表格正文显式亮文字（不再跟随可能偏灰的继承色） */
-.hpclaw-markdown td { color: var(--color-scholar-200); }
-.hpclaw-markdown th { color: var(--color-scholar-50); font-weight: 600; background: var(--color-scholar-800); border-bottom: 1px solid rgb(var(--accent-rgb) / 0.35); }
+.trace-markdown td { color: var(--color-scholar-200); }
+.trace-markdown th { color: var(--color-scholar-50); font-weight: 600; background: var(--color-scholar-800); border-bottom: 1px solid rgb(var(--accent-rgb) / 0.35); }
 
 /* Codex 风格工作区：对话与底部输入框保持舒适阅读宽度。 */
-.hpclaw-chat-workspace [data-chat-messages],
-.hpclaw-chat-workspace [data-chat-composer] {
+.trace-chat-workspace [data-chat-messages],
+.trace-chat-workspace [data-chat-composer] {
   padding-left: clamp(1rem, 7vw, 7rem);
   padding-right: clamp(1rem, 7vw, 7rem);
 }
-.hpclaw-chat-workspace [data-message-bubble="assistant"] {
+.trace-chat-workspace [data-message-bubble="assistant"] {
   padding-left: 0;
   padding-right: 0;
   border-color: transparent;
   background: transparent;
 }
-.hpclaw-chat-workspace [data-message-bubble="user"] {
+.trace-chat-workspace [data-message-bubble="user"] {
   max-width: min(82%, 46rem);
 }
 

@@ -5,10 +5,11 @@
  */
 import { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { z as zod } from 'zod';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
-import type { CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalBlockReason, GoalProjection, GoalRef, GoalView } from './types.ts';
+import type { CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalBlockReason, GoalProjection, GoalProjectionState, GoalRef, GoalView } from './types.ts';
 export type * from './types.ts';
 export type * from './domain.ts';
 export { GOAL_CHANGE_VERSION, GoalError, GoalId } from './runtime.ts';
@@ -19,19 +20,27 @@ declare module '@deepseek-ai/cordis' {
     }
 }
 /**
- * Light last-wins fold of the `goal` projection unit. Unlike the strict
- * replay fold (fold.ts: transition validation, fail-loud on malformed
- * changes, Set-typed state), this transition is projection-grade: the state
- * is plain JSON (persisted-cache precondition), any non-goal or malformed
- * event returns the same reference (the registry's Object.is gate — the
- * title/todos posture), and correctness of the written change is the write
- * side's job (GoalService validated it before appending; the package
- * invariant rejects a violating stream fail-loud where it is installed).
+ * Fold durable goal events through the strict replay rules without throwing
+ * from the projection registry's event drive. The first invalid owned event
+ * is retained in `failure`; host goal access rejects that state while the
+ * client view remains at the last valid goal.
  * @param state - the projection covering all prior events.
  * @param event - the next committed session event.
- * @returns the next projection (same reference when the event is not a goal change).
+ * @returns the next projection (same reference when the event is unrelated).
  */
-export declare function applyGoalProjection(state: GoalProjection | null, event: SessionEvent): GoalProjection | null;
+export declare function applyGoalProjection(state: GoalProjectionState, event: SessionEvent): GoalProjectionState;
+/** Strict host goal state with the existing cropped client value. */
+export declare const goalProjectionDefinition: {
+    key: "goal";
+    stateSchema: zod.ZodType<GoalProjectionState, unknown, zod.core.$ZodTypeInternals<GoalProjectionState, unknown>>;
+    init: () => GoalProjectionState;
+    apply: typeof applyGoalProjection;
+    wire: {
+        viewSchema: zod.ZodType<GoalProjection | null, unknown, zod.core.$ZodTypeInternals<GoalProjection | null, unknown>>;
+        view: (state: NoInfer<GoalProjectionState>) => GoalProjection | null;
+    };
+    stateVersion: number;
+};
 /** Deployment defaults for goal creation. */
 export interface Config {
     /** Total rounds used when a create request omits its own cap. */
@@ -47,7 +56,7 @@ export declare class GoalService extends TypertRemoteService {
     static inject: string[];
     static Config: z<Config>;
     private readonly resolved;
-    private readonly caches;
+    private readonly runtimeStates;
     constructor(ctx: Context, config?: Config);
     /**
      * Read the current goal for one exact live agent.
@@ -117,16 +126,18 @@ export declare class GoalService extends TypertRemoteService {
      * @returns the tombstone ref whose revision is one past the cleared snapshot.
      */
     clear(agent: Agent, ref: GoalRef): GoalRef;
-    /** Resolve and validate the cache used by a mutation. */
+    /** Resolve the durable and process-local state used by a mutation. */
     private prepareMutation;
     /** Reject stale or missing current-state refs. */
     private expectCurrent;
     /** Enforce exact live-agent identity rather than trusting a matching id. */
     private assertLive;
-    /** Return the per-session cache, folding a seed once with activation disarmed. */
-    private cache;
-    /** Incrementally observe durable events and reconcile local activation intent. */
-    private sync;
+    /** Read the current durable projection maintained by the registry. */
+    private state;
+    /** Return the process-local activation state, initially disarmed. */
+    private runtimeState;
+    /** Publish one process-local activation edge when it actually changes. */
+    private setActivation;
     /** Build a new revision with one replacement phase. */
     private withPhase;
     /** Shared validated phase transition. */
@@ -139,7 +150,7 @@ export declare class GoalService extends TypertRemoteService {
     private nextMutationTime;
     /** Build and commit one full-snapshot mutation. */
     private commitSnapshot;
-    /** Commit one mutation into the goal log, cache, and live event stream. */
+    /** Commit one mutation into the goal log and live event stream. */
     private commit;
     /** Build a detached current view. */
     private view;

@@ -3,7 +3,7 @@ import { scopeWorkflowCommand } from './workflowCommandScope';
 
 const scope = {
   home: '/public/home/u',
-  runDir: '/public/home/u/hpclaw_flows/rna/03_workspace/runs/run-1',
+  runDir: '/public/home/u/trace_flows/rna/03_workspace/runs/run-1',
   inputs: ['/public/home/u/projects/rna/fastq'],
   references: ['/share/ref/hg38'],
   userAuthorizedPaths: ['/scratch/u/temporary-output'],

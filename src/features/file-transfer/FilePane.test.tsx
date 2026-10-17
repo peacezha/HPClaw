@@ -293,7 +293,7 @@ describe('FilePane', () => {
     expect(nameColumn).toHaveStyle({ width: '540px' });
     expect(screen.getByText(longName).closest('td')).toHaveAttribute('title', longName);
     expect(JSON.parse(
-      window.localStorage.getItem('hpclaw:file-table-column-widths:v1:remote') || '{}',
+      window.localStorage.getItem('trace:file-table-column-widths:v1:remote') || '{}',
     )).toMatchObject({ name: 540 });
   });
 
@@ -688,14 +688,16 @@ describe('FilePane', () => {
     const onPasteFiles = vi.fn().mockResolvedValue(undefined);
     renderClipboardPane({ onCopyFiles, onCutFiles, onPasteFiles });
 
-    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    const pane = screen.getByRole('region', { name: '远程文件面板' });
+    pane.focus();
+    fireEvent.keyDown(pane, { key: 'c', ctrlKey: true });
     expect(onCopyFiles).toHaveBeenCalledWith(['/home/user/a_notes.txt']);
 
-    fireEvent.keyDown(window, { key: 'x', ctrlKey: true });
+    fireEvent.keyDown(pane, { key: 'x', ctrlKey: true });
     expect(onCutFiles).toHaveBeenCalledWith(['/home/user/a_notes.txt']);
 
     // Ctrl+V 粘贴到当前目录（pane path）
-    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    fireEvent.keyDown(pane, { key: 'v', ctrlKey: true });
     expect(onPasteFiles).toHaveBeenCalledWith('/home/user');
   });
 
@@ -706,6 +708,32 @@ describe('FilePane', () => {
     fireEvent.keyDown(screen.getByTestId('address-input'), { key: 'c', ctrlKey: true });
 
     expect(onCopyFiles).not.toHaveBeenCalled();
+  });
+
+  it('does not hijack chat/contenteditable shortcuts while a file remains selected', () => {
+    const onCopyFiles = vi.fn();
+    const onPasteFiles = vi.fn();
+    renderClipboardPane({ onCopyFiles, onPasteFiles });
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    document.body.append(editor);
+    fireEvent.keyDown(editor, { key: 'c', ctrlKey: true });
+    fireEvent.keyDown(editor, { key: 'v', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true });
+    expect(onCopyFiles).not.toHaveBeenCalled();
+    expect(onPasteFiles).not.toHaveBeenCalled();
+    editor.remove();
+  });
+
+  it('only the focused pane handles a shortcut when two panes are mounted', () => {
+    const firstCopy = vi.fn(); const secondCopy = vi.fn();
+    renderClipboardPane({ onCopyFiles: firstCopy });
+    renderClipboardPane({ onCopyFiles: secondCopy });
+    const pane = screen.getAllByRole('region', { name: '远程文件面板' })[1];
+    pane.focus();
+    fireEvent.keyDown(pane, { key: 'C', ctrlKey: true });
+    expect(firstCopy).not.toHaveBeenCalled();
+    expect(secondCopy).toHaveBeenCalledTimes(1);
   });
 });
 

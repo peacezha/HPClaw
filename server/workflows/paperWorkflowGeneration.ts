@@ -4,7 +4,7 @@ import { paperQuoteExists, scanPaperAnalysis } from './paperLearningRecovery';
 type ModelReply = { text: string; finishReason?: string };
 type ParseReply = { value: any; truncated: boolean };
 export type PaperStageCall = (prompt: string, stage: 'outline' | 'steps') => Promise<ModelReply>;
-const reviewCommand = '# HPCLAW_REVIEW_REQUIRED\n# REVIEW_REQUIRED: Complete command and file dependencies must be verified.\nexit 2';
+const reviewCommand = '# TRACE_REVIEW_REQUIRED\n# REVIEW_REQUIRED: Complete command and file dependencies must be verified.\nexit 2';
 
 export function hasExecutableBody(command: unknown): boolean {
   return typeof command === 'string' && !/REVIEW_REQUIRED|\bTODO\b|待补充/.test(command)
@@ -148,7 +148,7 @@ export async function generatePaperWorkflow(options: {
     const missing = [...step.command.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)].map((match: any) => match[1]).filter((name: string) => !declared.has(name));
     if (missing.length) {
       step.agent = { ...step.agent, requiresReview: true };
-      step.command = '# HPCLAW_REVIEW_REQUIRED: undeclared parameters\nexit 2\n' + step.command;
+      step.command = '# TRACE_REVIEW_REQUIRED: undeclared parameters\nexit 2\n' + step.command;
       extraction.unresolvedQuestions.push({ question: step.title + (english ? ' has undeclared parameters: ' : ' 有未声明参数：') + missing.join(','), blocking: true });
     }
   }

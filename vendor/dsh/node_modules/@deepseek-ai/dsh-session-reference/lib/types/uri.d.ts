@@ -1,5 +1,5 @@
 /** Canonical session URI and inline mention encoding. */
-import { type SessionId as SessionIdType } from '@deepseek-ai/dsh-session';
+import type { SessionId as SessionIdType } from '@deepseek-ai/dsh-session';
 import type { SessionReferenceInput } from './types.ts';
 /** URI scheme reserved for DeepSeek Harness session snapshots. */
 export declare const SESSION_REFERENCE_SCHEME = "dsh-session:";

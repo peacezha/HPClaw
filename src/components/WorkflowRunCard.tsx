@@ -1,4 +1,4 @@
-// 对话内流程运行卡：用户消息中的 [HPCLAW_WORKFLOW_RUN] 标记不再显示原始协议文本，
+// 对话内流程运行卡：用户消息中的 [TRACE_WORKFLOW_RUN] 标记不再显示原始协议文本，
 // 改渲染本卡片——实时展示环境状态、步骤时间线、每步脚本/日志入口与输出结果。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Socket } from 'socket.io-client';

@@ -2,7 +2,9 @@
  * The sandbox POLICY home (`ctx.sandboxPolicy`): the single owner of the
  * deployment's sandbox fallbacks plus per-session resolution: the file-effect
  * {@link SandboxMode}, the `workspace-write` root, and the override kit (the
- * `sandbox/mode` event, its fold, and its write path, from `./session-mode.ts`).
+ * `sandbox/mode` event, its fold, and its write path; the fold is the
+ * `sandboxMode` session-projection unit registered here, while the event and
+ * write path come from `./session-mode.ts`).
  * Before each agent request, the owner also contributes the resolved policy to
  * the cache-safe runtime-context snapshot. The agent loop logs that snapshot as
  * model history, so replay reconstructs the same mode and root the enforcing
@@ -18,10 +20,11 @@
  * @module @deepseek-ai/dsh-sandbox-policy
  */
 import { Context, Service } from '@deepseek-ai/cordis';
+import { z as zod } from 'zod';
 import z from '@deepseek-ai/schemastery';
-import { type SandboxExecutionPolicy, type SandboxMode } from '@deepseek-ai/dsh-sandbox';
+import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox';
 import type { Session } from '@deepseek-ai/dsh-session';
-export { SANDBOX_MODES, effectiveSandboxMode, setSandboxMode } from './session-mode.ts';
+export { SANDBOX_MODES, setSandboxMode } from './session-mode.ts';
 declare module '@deepseek-ai/cordis' {
     interface Context {
         sandboxPolicy: SandboxPolicyService;
@@ -38,7 +41,7 @@ export interface Config {
     /** File-sandbox mode a session starts from (default: `read-only`). */
     mode?: SandboxMode;
     /**
-     * Fallback root for agentless calls and sessions without a cwd (default:
+     * Absolute fallback root for agentless calls and sessions without a cwd (default:
      * `process.cwd()`). Normal agent calls use their session cwd instead.
      */
     workspaceRoot?: string;
@@ -50,6 +53,15 @@ export interface SandboxPolicyRequest {
     /** Explicit approved mode override, which outranks session policy. */
     mode?: SandboxMode;
 }
+/** The sandbox-mode projection's state schema (state equals the public shape). */
+declare const sandboxModeStateSchema: zod.ZodNullable<zod.ZodUnion<readonly [zod.ZodLiteral<"read-only">, zod.ZodLiteral<"workspace-write">, zod.ZodLiteral<"danger-full-access">]>>;
+type SandboxModeState = zod.infer<typeof sandboxModeStateSchema>;
+declare module '@deepseek-ai/dsh-session-projection/types' {
+    interface SessionProjectionStateMap {
+        /** Last logged sandbox-mode override, or null before one (deployment default applies at resolve time). */
+        sandboxMode: SandboxModeState;
+    }
+}
 /**
  * The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment
  * default mode, fallback workspace root, and current request-time policy
@@ -58,6 +70,7 @@ export interface SandboxPolicyRequest {
  */
 export declare class SandboxPolicyService extends Service {
     static Config: z<Config>;
+    static inject: string[];
     /** The deployment default mode — the fallback beneath a session override. */
     readonly defaultMode: SandboxMode;
     /** The absolute `workspace-write` fallback root for calls without a session cwd. */
