@@ -5,6 +5,78 @@ const USER_AGENT = 'TRACE/0.3 (safe web research)';
 const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_REDIRECTS = 4;
 
+/** 调用方可用的模型供应商信息:DeepSeek 官方端点优先走 /v1/tools/search|fetch 结构化接口。 */
+export interface WebAccessAuth {
+  provider?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+/**
+ * 仅当 provider 为 deepseek 且 baseUrl 指向官方端点(或未自定义)时返回可用的
+ * tools API base。自定义兼容网关通常没有 /v1/tools/*,回退到本地抓取路径。
+ */
+function deepseekToolsBase(auth?: WebAccessAuth): string | null {
+  if (!auth?.apiKey || auth.provider !== 'deepseek') return null;
+  const base = (auth.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+  return /^https:\/\/([^/]*\.)?deepseek\.com$/i.test(base) ? base : null;
+}
+
+/** OpenAI 兼容错误格式:尽力提取 message。 */
+function extractApiError(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body);
+    const message = parsed?.error?.message;
+    if (typeof message === 'string' && message) return `HTTP ${status}: ${message}`;
+  } catch { /* 非 JSON */ }
+  return `HTTP ${status}`;
+}
+
+/** DeepSeek Search:结构化结果(标题/链接/长短摘要/日期/权威度)。 */
+export async function searchWebDeepSeek(input: { query: string; maxResults?: number }, base: string, apiKey: string): Promise<string> {
+  const query = String(input.query || '').replace(/\s+/g, ' ').trim().slice(0, 128);
+  if (!query) throw new Error('搜索关键词不能为空');
+  const count = Math.max(1, Math.min(50, Number(input.maxResults) || 5));
+  const response = await fetch(`${base}/v1/tools/search`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, count, need_content: false }),
+    signal: AbortSignal.timeout(25_000),
+  });
+  if (!response.ok) throw new Error(`DeepSeek 搜索失败：${extractApiError(response.status, (await response.text()).slice(0, 300))}`);
+  const data = await response.json() as { results?: Array<Record<string, unknown>> };
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (results.length === 0) return `[UNTRUSTED WEB SEARCH RESULTS]\n搜索：${query}\n未找到匹配的网页结果。`;
+  const lines = results.map((item, index) => {
+    const title = String(item.title || '').trim() || '(无标题)';
+    const url = String(item.url || '').trim();
+    const date = typeof item.date === 'string' && item.date ? item.date.slice(0, 10) : '';
+    const authority = typeof item.authority === 'number' && item.authority >= 3 ? ' ★权威来源' : '';
+    const summary = String(item.summary || item.snippet || '').trim().slice(0, 800);
+    return `${index + 1}. ${title} — ${url}${date ? `（${date}）` : ''}${authority}\n   ${summary}`;
+  });
+  return `[UNTRUSTED WEB SEARCH RESULTS]\n搜索：${query}\n${lines.join('\n')}`;
+}
+
+/** DeepSeek Fetch:抓取单页并返回 Markdown 正文。 */
+export async function fetchWebPageDeepSeek(input: { url: string; maxChars?: number }, base: string, apiKey: string): Promise<string> {
+  // 先做本地 SSRF 预检:内网/带凭据的地址不应发给第三方抓取服务。
+  await assertPublicHttpUrl(input.url);
+  const response = await fetch(`${base}/v1/tools/fetch`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: input.url }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`DeepSeek 抓取失败：${extractApiError(response.status, (await response.text()).slice(0, 300))}`);
+  const data = await response.json() as { title?: string; content?: string };
+  const content = String(data.content || '').trim();
+  if (!content) throw new Error('DeepSeek 抓取成功但页面没有可提取的正文');
+  const limit = Math.max(1_000, Math.min(30_000, Number(input.maxChars) || 12_000));
+  const title = String(data.title || '').trim();
+  return `[UNTRUSTED WEB CONTENT]\n来源：${input.url}${title ? `\n标题：${title}` : ''}\n\n${content.slice(0, limit)}`;
+}
+
 function decodeHtml(value: string): string {
   return value
     .replace(/&amp;/gi, '&')
@@ -127,7 +199,17 @@ export function htmlToReadableText(html: string): string {
     .trim();
 }
 
-export async function readWebPage(input: { url: string; maxChars?: number }): Promise<string> {
+export async function readWebPage(input: { url: string; maxChars?: number }, auth?: WebAccessAuth): Promise<string> {
+  // DeepSeek 官方 Fetch 接口优先(返回干净的 Markdown 正文,不怕 JS 渲染页);
+  // 失败(401/402/429/404 等)自动回退本地抓取,保证可用性。
+  const dsBase = deepseekToolsBase(auth);
+  if (dsBase) {
+    try {
+      return await fetchWebPageDeepSeek(input, dsBase, auth!.apiKey!);
+    } catch {
+      // 回退本地抓取
+    }
+  }
   const { url, response, body } = await fetchPublicPage(input.url);
   const contentType = response.headers.get('content-type')?.toLowerCase() || '';
   const text = contentType.includes('html') ? htmlToReadableText(body) : body.trim();
@@ -172,10 +254,19 @@ export function parseBingSearchResults(html: string, maxResults = 5): Array<{ ti
   return results;
 }
 
-export async function searchWeb(input: { query: string; maxResults?: number }): Promise<string> {
+export async function searchWeb(input: { query: string; maxResults?: number }, auth?: WebAccessAuth): Promise<string> {
   const query = String(input.query || '').replace(/\s+/g, ' ').trim().slice(0, 500);
   if (!query) throw new Error('搜索关键词不能为空');
   const maxResults = Math.max(1, Math.min(10, Number(input.maxResults) || 5));
+  // DeepSeek 官方 Search 接口优先(结构化摘要/日期/权威度);失败回退本地爬虫。
+  const dsBase = deepseekToolsBase(auth);
+  if (dsBase) {
+    try {
+      return await searchWebDeepSeek({ query, maxResults }, dsBase, auth!.apiKey!);
+    } catch {
+      // 回退本地爬虫
+    }
+  }
   const providers = [
     {
       name: 'Bing',

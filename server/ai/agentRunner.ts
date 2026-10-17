@@ -1552,7 +1552,7 @@ export async function runAgent(
           execute: async (input) => {
             cb.onToolCall('search_web', input);
             try {
-              const result = await searchWeb(input);
+              const result = await searchWeb(input, ctx.profile);
               cb.onToolResult('search_web', '已获取通用网页搜索结果');
               return result;
             } catch (err: any) {
@@ -1572,7 +1572,7 @@ export async function runAgent(
           execute: async (input) => {
             cb.onToolCall('read_web_page', { url: input.url });
             try {
-              const result = await readWebPage(input);
+              const result = await readWebPage(input, ctx.profile);
               cb.onToolResult('read_web_page', `已读取网页 ${input.url}`);
               return result;
             } catch (err: any) {
