@@ -37,4 +37,17 @@ describe('aggregateConversationLists', () => {
   it('空来源(集群全部读取失败)返回空数组', () => {
     expect(aggregateConversationLists([])).toEqual([]);
   });
+
+  it('ISO 字符串 updatedAt 归一化为时间戳再排序(旧版集群存档格式)', () => {
+    const out = aggregateConversationLists([
+      { originSessionId: 'sess-a', clusterLabel: 'u@h1', origin: 'cluster', list: [
+        { id: 'old-iso', title: '旧格式', updatedAt: '2026-05-22T08:55:06.859Z' },
+        { id: 'new-num', title: '新格式', updatedAt: 1792253102393 },
+        { id: 'bad', title: '坏值', updatedAt: 'not-a-date' },
+      ] },
+    ]);
+    expect(out.map(item => item.id)).toEqual(['new-num', 'old-iso', 'bad']);
+    expect(typeof out[0].updatedAt).toBe('number');
+    expect(out[2].updatedAt).toBe(0);
+  });
 });

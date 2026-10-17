@@ -7,6 +7,15 @@ export interface AggregatedConversationSource {
   list: Array<Record<string, unknown> & { id: string; updatedAt?: unknown }>;
 }
 
+/** updatedAt 兼容历史格式:旧版集群存档写 ISO 字符串,Number() 直接转是 NaN,
+ *  NaN 比较器会让 sort 整体失序,最新对话沉底(0.5.4 实测用户看不到新对话)。 */
+export function normalizeUpdatedAt(value: unknown): number {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function aggregateConversationLists(sources: AggregatedConversationSource[]): Array<Record<string, unknown>> {
   const seen = new Set<string>();
   const out: Array<Record<string, unknown>> = [];
@@ -16,6 +25,7 @@ export function aggregateConversationLists(sources: AggregatedConversationSource
       seen.add(item.id);
       out.push({
         ...item,
+        updatedAt: normalizeUpdatedAt(item.updatedAt),
         origin: source.origin,
         originSessionId: source.originSessionId,
         clusterLabel: source.clusterLabel,

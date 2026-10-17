@@ -120,7 +120,8 @@ export default function ConversationList({
         for (const item of [...localItems, ...clusterItems]) {
           if (item && typeof item.id === 'string' && !merged.has(item.id)) merged.set(item.id, item);
         }
-        setConversations([...merged.values()].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)));
+        const toTime=(v:unknown)=>{const n=Number(v);if(Number.isFinite(n)&&n>0)return n;const p=Date.parse(String(v??""));return Number.isFinite(p)?p:0;};
+        setConversations([...merged.values()].sort((a, b) => toTime(b.updatedAt) - toTime(a.updatedAt)));
       } else {
         setError(localResult.status === 'fulfilled'
           ? (localResult.value?.error || 'Failed to load conversations')
