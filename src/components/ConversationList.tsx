@@ -10,15 +10,18 @@ interface ConvSummary {
   updatedAt: string;
   messageCount: number;
   /** 来源标记：'cluster' = 仅集群存档（GET /api/conversations/cluster）；本地条目无此字段 */
-  origin?: 'cluster';
+  origin?: 'cluster' | 'local';
   /** 集群条目是否已导入本地库（同 id 已存在）；未导入的远程条目无删除/同步按钮 */
   imported?: boolean;
+  /** 聚合列表(/api/conversations/all):条目来源会话 id 与可读集群标签 */
+  originSessionId?: string;
+  clusterLabel?: string;
 }
 
 interface ConversationListProps {
   isOpen: boolean;
   onClose: () => void;
-  onLoad: (id: string) => void;
+  onLoad: (id: string, sessionId?: string) => void;
   activeConversationId: string | null;
   loadingConversationId?: string | null;
   onNewConversation: () => void;
@@ -90,8 +93,21 @@ export default function ConversationList({
     setLoading(true);
     setError(null);
     const requestInit: RequestInit = { credentials: 'include' as RequestCredentials, headers: sessionHeaders() };
+    // v0.5.2:桌面端优先聚合列表(本地+所有已连接集群,逐条标注来源集群),
+    // 避免按活跃标签过滤导致"刚跑的流程对话在列表里看不到";接口异常回退旧双源合并。
+    if (!isPublicWeb()) {
+      try {
+        const res = await fetch('/api/conversations/all', requestInit);
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.conversations)) {
+          setConversations(data.conversations as ConvSummary[]);
+          setLoading(false);
+          return;
+        }
+      } catch { /* 回退旧路径 */ }
+    }
     const [localResult, clusterResult] = await Promise.allSettled([
-      fetch(`/api/conversations?scope=${encodeURIComponent(sessionId || 'local-workbench')}`, requestInit).then(res => res.json()),
+      fetch('/api/conversations?scope=' + encodeURIComponent(sessionId || 'local-workbench'), requestInit).then(res => res.json()),
       isPublicWeb() ? Promise.resolve({ success: true, conversations: [] }) : fetch('/api/conversations/cluster', requestInit).then(res => res.json()),
     ]);
     try {
@@ -118,7 +134,9 @@ export default function ConversationList({
 
   const handleDelete = async (id: string) => {
     try {
-      const response = await fetch(`/api/conversations/${id}`, { method: 'DELETE', credentials: 'include' as RequestCredentials, headers: sessionHeaders() });
+      const target = conversations.find(c => c.id === id);
+      const targetSession = target?.originSessionId && target.originSessionId !== 'local-workbench' ? target.originSessionId : sessionId;
+      const response = await fetch(`/api/conversations/${id}`, { method: 'DELETE', credentials: 'include' as RequestCredentials, headers: targetSession ? { 'X-SSH-Session-Id': targetSession } : sessionHeaders() });
       if (isPublicWeb() && !response.ok) throw new Error((await response.json()).error || '删除失败');
       setConversations(prev => prev.filter(c => c.id !== id));
     } catch (e) { console.error(e); if (isPublicWeb()) setError(e instanceof Error ? e.message : '删除失败'); }
@@ -126,10 +144,10 @@ export default function ConversationList({
 
   const [importingId, setImportingId] = useState<string | null>(null);
   /** 仅在集群存档、本地还没有副本的条目：显示"计算资源"徽标，点击先导入再加载 */
-  const isRemoteOnly = (conv: ConvSummary) => conv.origin === 'cluster' && !conv.imported;
+  const isRemoteOnly = (conv: ConvSummary) => conv.origin === 'cluster' && !conv.imported && !conv.originSessionId;
 
   const handleSelect = async (conv: ConvSummary) => {
-    if (!isRemoteOnly(conv)) { onLoad(conv.id); return; }
+    if (!isRemoteOnly(conv)) { onLoad(conv.id, conv.originSessionId || undefined); return; }
     if (importingId) return; // 导入期间忽略重复点击
     setImportingId(conv.id);
     setError(null);
@@ -223,6 +241,12 @@ export default function ConversationList({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <p data-user-content="true" className="text-xs font-medium text-scholar-100 truncate">{conv.title}</p>
+                      {conv.originSessionId && conv.originSessionId !== 'local-workbench' && conv.clusterLabel && (
+                        <span className="shrink-0 inline-flex items-center rounded border border-emerald-600/50 bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-400" title={conv.clusterLabel}>{conv.clusterLabel.split('@')[0]}</span>
+                      )}
+                      {conv.origin === 'local' && (
+                        <span className="shrink-0 inline-flex items-center rounded border border-scholar-600 px-1 text-[10px] leading-4 text-scholar-400">本地</span>
+                      )}
                       {remoteOnly && (
                         <span className="shrink-0 inline-flex items-center rounded border border-accent/40 bg-accent/10 px-1 text-[10px] leading-4 text-accent">计算资源</span>
                       )}

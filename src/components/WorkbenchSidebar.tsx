@@ -108,7 +108,7 @@ interface WorkbenchSidebarProps {
   activeConversationId?: string | null;
   loadingConversationId?: string | null;
   conversationRefresh?: number;
-  onLoadConversation: (id: string) => void;
+  onLoadConversation: (id: string, sessionId?: string) => void;
   onNewConversation: () => void;
   onSelectWorkflow: (workflow: Workflow) => void;
   /** 打开流程管理页（新建/编辑/AI 生成/文献学习） */

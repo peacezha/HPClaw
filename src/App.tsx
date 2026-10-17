@@ -121,6 +121,8 @@ export default function App() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef<string | null>(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // 聚合对话列表跨集群加载：先切到来源集群标签,激活后再加载对话(见 effect)
+  const pendingConversationLoadRef = useRef<string | null>(null);
 
   // ─── Auth State ────────────────────────────────────────────────
   const [loginError, setLoginError] = useState('');
@@ -653,6 +655,14 @@ export default function App() {
     })();
   }, [handleLoadConversation]);
 
+  // 聚合对话列表跨集群加载：等目标标签激活后再加载,避免错载到当前标签
+  useEffect(() => {
+    const pending = pendingConversationLoadRef.current;
+    if (!pending) return;
+    pendingConversationLoadRef.current = null;
+    void handleLoadConversation(pending);
+  }, [activeTabId, handleLoadConversation]);
+
   const jobNotificationCenter = useJobNotificationCenter({
     sockets,
     workbenchSidebarTab,
@@ -822,8 +832,17 @@ export default function App() {
         activeConversationId={conversationTab?.activeConversationId}
         loadingConversationId={loadingConversationId}
         conversationRefresh={convListRefresh}
-        onLoadConversation={id => {
+        onLoadConversation={(id, sessionId) => {
           setWorkspaceView('chat');
+          // 聚合列表条目按来源切换标签:本地条目切回本地工作台,集群条目切到对应集群,
+          // 激活后由 effect 完成加载(避免错载到当前标签)
+          const targetTab = sessionId === 'local-workbench' ? LOCAL_WORKBENCH_ID : sessionId;
+          if (targetTab && targetTab !== activeTabIdRef.current
+            && tabsRef.current.some(t => t.sessionId === targetTab)) {
+            pendingConversationLoadRef.current = id;
+            setActiveTabId(targetTab);
+            return;
+          }
           void handleLoadConversation(id);
         }}
         onNewConversation={() => {

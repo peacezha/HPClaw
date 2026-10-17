@@ -102,6 +102,7 @@ import {
 import { ClusterConversationStore } from './server/conversations/clusterConversations';
 import { LocalConversationStore, filterConversationsByScope } from './server/conversations/localConversations';
 import { registerClusterConversationRoutes } from './server/conversations/registerClusterConversationRoutes';
+import { aggregateConversationLists, type AggregatedConversationSource } from './server/conversations/aggregateConversations';
 import { ensureDemoConversationSeed } from './server/conversations/demoConversationSeed';
 import type { AIMessage, AIProfile, SkillIndex, StructuredMemory } from './server/ai/types';
 import { SftpFileService } from './server/files/sftpFileService';
@@ -1354,6 +1355,50 @@ app.get('/api/conversations', async (req, res) => {
       conversations = filterConversationsByScope(conversations, 'local-workbench');
     }
     res.json({ success: true, conversations });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+// 聚合对话列表(v0.5.2+):本地工作台 + 所有已连接集群,每条标注来源(用户曾反馈
+// "按流程跑完,对话记录里看不到最新对话"——列表按活跃 tab 过滤,集群对话在别的
+// 作用域里不可见)。单集群读取失败只跳过该集群,不影响整体。必须在 :id 之前注册。
+app.get('/api/conversations/all', async (_req, res) => {
+  try {
+    const sources: AggregatedConversationSource[] = [];
+    if (!PUBLIC_WORKER) {
+      try {
+        const localList = await localConversationStore.list();
+        sources.push({ originSessionId: 'local-workbench', clusterLabel: '', origin: 'local', list: localList as never });
+      } catch { /* 本地库读取失败不阻塞集群部分 */ }
+    }
+    const jobs: Promise<void>[] = [];
+    for (const [sessionId, s] of sessions) {
+      if (s.cluster.state !== 'connected') continue;
+      jobs.push((async () => {
+        let list: Awaited<ReturnType<ClusterConversationStore['list']>> | null = null;
+        try {
+          const store = new ClusterConversationStore(
+            new SftpFileService(s.cluster.getSftp(), s.home, s.cluster.exec.bind(s.cluster)),
+            s.home,
+          );
+          list = await Promise.race([
+            store.list(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('cluster conversation list timeout')), 20_000)),
+          ]);
+        } catch { /* 单集群失败降级跳过 */ }
+        if (!list) return;
+        sources.push({
+          originSessionId: sessionId,
+          clusterLabel: `${s.info.username}@${s.info.host}`,
+          origin: 'cluster',
+          list: list as never,
+        });
+      })());
+    }
+    await Promise.all(jobs);
+    const out = aggregateConversationLists(sources);
+    res.json({ success: true, conversations: out });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || String(err) });
   }

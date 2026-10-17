@@ -116,7 +116,7 @@ describe('ConversationList 双来源合并', () => {
   it('点击本地条目：直接 onLoad，不触发 import', async () => {
     const onLoad = renderList();
     fireEvent.click(await screen.findByText('本地对话'));
-    expect(onLoad).toHaveBeenCalledWith('conv-local');
+    expect(onLoad).toHaveBeenCalledWith('conv-local', undefined);
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/import'))).toBe(false);
   });
 });
