@@ -1,7 +1,7 @@
 {
   "name": "trace",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "productName": "TRACE",
   "type": "module",
   "main": "electron/main.cjs",
@@ -73,7 +73,6 @@
         "en_US",
         "zh_CN"
       ],
-      "displayLanguageSelector": true,
       "oneClick": false,
       "include": "build/installer.nsh",
       "allowToChangeInstallationDirectory": true,

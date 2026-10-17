@@ -78,13 +78,19 @@
 
 ; The selected wizard language seeds the first launch. Silent online updates
 ; preserve it; explicit in-app preferences live in userData and take priority.
+; v0.5.2 起不再弹语言选择框(提权会弹两遍),$LANGUAGE 直接取系统区域设置:
+; 中文区域(2052 简体/3076 繁中/4100 新加坡/5124 澳门/1028 繁中)给 zh-CN,其余 en-US。
 !macro customInstall
   ${IfNot} ${Silent}
     FileOpen $R0 "$INSTDIR\trace-install-locale.json" w
-    ${If} $LANGUAGE == 1033
-      FileWrite $R0 '{$\"locale$\":$\"en-US$\"}'
-    ${Else}
+    ${If} $LANGUAGE == 2052
+    ${OrIf} $LANGUAGE == 3076
+    ${OrIf} $LANGUAGE == 4100
+    ${OrIf} $LANGUAGE == 5124
+    ${OrIf} $LANGUAGE == 1028
       FileWrite $R0 '{$\"locale$\":$\"zh-CN$\"}'
+    ${Else}
+      FileWrite $R0 '{$\"locale$\":$\"en-US$\"}'
     ${EndIf}
     FileClose $R0
   ${EndIf}
@@ -111,6 +117,16 @@
       IntOp $R1 $R1 + 1
       ${If} $R1 < 3
         Goto trace_legacy_check_${LABEL_SUFFIX}
+      ${EndIf}
+      ; v0.5.2:nsProcess 三轮关不掉时,用 taskkill 强制终止整个进程树再查一次,
+      ; 尽量避免弹"程序占用"框打断安装(尤其 Electron 子进程无响应的场景)。
+      DetailPrint "Force closing leftover processes with taskkill..."
+      nsExec::Exec `"$SYSDIR\taskkill.exe" /F /T /IM "${LEGACY_EXE}"`
+      Pop $R0
+      Sleep 1000
+      ${nsProcess::FindProcess} "${LEGACY_EXE}" $R0
+      ${If} $R0 != 0
+        Goto trace_legacy_closed_${LABEL_SUFFIX}
       ${EndIf}
       ${If} ${Silent}
         ${nsProcess::Unload}
@@ -155,6 +171,15 @@
       IntOp $R1 $R1 + 1
       ${If} $R1 < 3
         Goto trace_process_check
+      ${EndIf}
+      ; v0.5.2:同上,三轮温和关闭失败后先 taskkill /F /T 整树强杀,再查一次。
+      DetailPrint "Force closing leftover TRACE processes with taskkill..."
+      nsExec::Exec `"$SYSDIR\taskkill.exe" /F /T /IM "${APP_EXECUTABLE_FILENAME}"`
+      Pop $R0
+      Sleep 1000
+      ${nsProcess::FindProcess} "${APP_EXECUTABLE_FILENAME}" $R0
+      ${If} $R0 != 0
+        Goto trace_process_closed
       ${EndIf}
       ${If} ${Silent}
         ${nsProcess::Unload}

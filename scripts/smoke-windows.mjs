@@ -146,7 +146,9 @@ if (Number(expectedVersion.split('.')[2]) >= 44) {
   assert(builderDebug.includes('MUI_LANGUAGE "SimpChinese"'));
   const sourcePackage = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   assert.equal(sourcePackage.version, expectedVersion);
-  assert.equal(sourcePackage.build.nsis.displayLanguageSelector, true);
+  // v0.5.2 起安装器不再弹语言选择框(提权会弹两遍),改用系统区域设置自动定语言;
+  // 双语 MUI_LANGUAGE 仍需保留(安装界面本地化),displayLanguageSelector 必须为 false/缺省。
+  assert.notEqual(sourcePackage.build.nsis.displayLanguageSelector, true);
   const { createLocaleStore } = await import(pathToFileURL(path.join(appRoot, 'electron/locale-store.cjs')).href);
   const installDir = path.join(temporary, 'isolated-install');
   fs.mkdirSync(installDir);
