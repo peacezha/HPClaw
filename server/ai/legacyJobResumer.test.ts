@@ -153,6 +153,35 @@ describe('maybeResumeLegacyAgent', () => {
     expect(deps.markResumed).toHaveBeenCalledTimes(1);
   });
 
+  it('空文本时用真实状态合成交代(新提交作业优先),不再写占位符', async () => {
+    const deps = makeDeps({
+      runAgent: vi.fn<RunAgentMock>(async (ctx, cb) => {
+        ctx.onJobsSubmitted?.(['76197138']);
+        cb.onDone('');
+      }),
+    });
+    await maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+    expect(deps.appendConversation).toHaveBeenCalledWith('conv-1', [
+      { role: 'user', content: '【系统】作业 424242 已结束（DONE），已自动继续处理。' },
+      { role: 'assistant', content: '(作业 424242 已结束，后台监控已自动续跑本轮。)已验证上一步产出并提交后续作业 76197138，后台监控会继续接管，作业结束后自动推进。' },
+    ], 'ssh-1');
+    expect(deps.onJobsSubmitted).toHaveBeenCalled();
+    expect(deps.markResumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('空文本且无新作业时给出计划进度说明', async () => {
+    const deps = makeDeps({
+      runAgent: vi.fn<RunAgentMock>(async (_ctx, cb) => {
+        cb.onPlan({ goal: 'x', steps: [{ status: 'done' }, { status: 'running' }] });
+        cb.onDone('');
+      }),
+    });
+    await maybeResumeLegacyAgent({ sessionId: 'ssh-1', jobId: '424242', status: 'DONE' }, deps);
+    const appended = deps.appendConversation.mock.calls[0][1] as Array<{ role: string; content: string }>;
+    expect(appended[1].content).toContain('当前计划进度 1/2');
+    expect(appended[1].content).not.toContain('续跑未产生文本');
+  });
+
   it('writes a failure note when the agent run errors, and still marks the attempt', async () => {
     const deps = makeDeps({
       runAgent: vi.fn<RunAgentMock>(async (_ctx, cb) => cb.onErr('provider timeout')),

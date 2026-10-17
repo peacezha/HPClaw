@@ -2643,9 +2643,18 @@ export async function runAgent(
       ];
     }
 
-    cb.onDone(guardDoneText
+    const finalDoneText = guardDoneText
       ? stripDsmlMarkup(guardDoneText)
-      : (askedUser ? '__ASK__' : stripDsmlMarkup(workflowExecutor ? formalFinalText : fullText)));
+      : (askedUser ? '__ASK__' : stripDsmlMarkup(workflowExecutor ? formalFinalText : fullText));
+    // 空文本兜底:正式流程的轮次可能经内部停止门/停滞判定结束而没有可见文字,
+    // 若直接发空串,后台唤醒路径会把"(续跑未产生文本)"写进对话(用户实测困惑)。
+    // 用权威运行状态合成一句真实交代。
+    if (!finalDoneText && workflowExecutor && activeWorkflowRun) {
+      const stepInfo = `${activeWorkflowRun.currentStep ?? '?'}/${activeWorkflowRun.totalSteps ?? '?'}`;
+      cb.onDone(`本轮已结束。当前流程状态:${activeWorkflowRun.status || '未知'},进行到第 ${stepInfo} 步。`);
+    } else {
+      cb.onDone(finalDoneText);
+    }
   } catch (err: any) {
     if (!extSig?.aborted && !guardDoneText && !askedUser) {
       console.error('[Agent] runAgent error:', err?.message || err, err?.stack?.slice(0, 300) || '');

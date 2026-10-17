@@ -109,6 +109,8 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
     let askQuestion = '';
     let runError = '';
     let latestPlan: unknown;
+    // 续跑轮新提交的作业 id,用于空文本时合成真实交代
+    const submittedJobIds: string[] = [];
     const history = binding.conversationId && deps.loadConversation
       ? await deps.loadConversation(binding.conversationId, evt.sessionId)
       : null;
@@ -129,7 +131,7 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
         maxCommands: 40,
         maxSteps: 200,
       },
-      onJobsSubmitted: jobIds => deps.onJobsSubmitted?.(binding, jobIds),
+      onJobsSubmitted: jobIds => { submittedJobIds.push(...jobIds); deps.onJobsSubmitted?.(binding, jobIds); },
       jobSubmissionGuard: deps.jobSubmissionGuard,
       conversationId: binding.conversationId,
       conversationKey: binding.conversationKey,
@@ -170,14 +172,38 @@ async function runResume(evt: LegacyResumeJobEvent, binding: JobAgentBinding, de
     } else {
       assistantText = finalText;
     }
-    const fallback = zh ? '(续跑未产生文本)' : '(resume produced no text)';
-    const preview = (assistantText || fallback).slice(0, 200);
+    // 空文本时用真实状态合成交代,不再写无信息量的"(续跑未产生文本)":
+    // 优先报告新提交的后续作业,其次计划进度,最后如实说明只是状态核对。
+    if (!assistantText) {
+      const parts: string[] = [zh
+        ? `(作业 ${evt.jobId} 已结束，后台监控已自动续跑本轮。)`
+        : `(Job ${evt.jobId} finished; the watcher auto-resumed this turn.)`];
+      if (submittedJobIds.length > 0) {
+        parts.push(zh
+          ? `已验证上一步产出并提交后续作业 ${submittedJobIds.join(', ')}，后台监控会继续接管，作业结束后自动推进。`
+          : `Verified the previous step's output and submitted follow-up job(s) ${submittedJobIds.join(', ')}; the watcher continues from here.`);
+      } else {
+        const steps = (latestPlan as { steps?: Array<{ status?: string }> } | undefined)?.steps;
+        if (Array.isArray(steps) && steps.length > 0) {
+          const done = steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
+          parts.push(zh
+            ? `本轮完成状态核对，当前计划进度 ${done}/${steps.length}；无需你操作，下一个作业结束时会自动继续。`
+            : `Checked state this turn; plan progress ${done}/${steps.length}. No action needed — the next job completion will continue automatically.`);
+        } else {
+          parts.push(zh
+            ? '本轮完成了检查与状态核对，没有需要汇报的新内容；如长时间没有进展，发送"继续"即可手动推进。'
+            : 'This turn only reconciled state with nothing new to report; send "continue" if it stalls.');
+        }
+      }
+      assistantText = parts.join('');
+    }
+    const preview = assistantText.slice(0, 200);
 
     if (binding.conversationId && deps.appendConversation) {
       try {
         await deps.appendConversation(binding.conversationId, [
           { role: 'user', content: buildSysMessage(binding, evt.jobId, evt.status) },
-          { role: 'assistant', content: assistantText || fallback },
+          { role: 'assistant', content: assistantText },
           ...(latestPlan ? [{ role: 'system' as const, content: serializeAgentPlanCheckpoint(latestPlan) }] : []),
         ], binding.sshSessionId);
       } catch (err) {
