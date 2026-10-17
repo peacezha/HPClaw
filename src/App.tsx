@@ -269,6 +269,7 @@ export default function App() {
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const loadAbortRef = useRef<AbortController | null>(null);
   const [convListRefresh, setConvListRefresh] = useState(0);
+  const lastConvListRefreshAtRef = useRef(0);
   const autoSaveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const autoSaveQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
   const autoSaveConversationIdsRef = useRef<Map<string, string | null>>(new Map());
@@ -359,7 +360,13 @@ export default function App() {
       }
 
       // Refresh conversation list after save
-      setConvListRefresh(k => k + 1);
+      // v0.5.4:自动保存在流式期间高频触发,每次都全量刷新列表导致侧栏闪烁;
+      // 刷新节流为 3 秒一次,且新对话创建时必定刷新(让新条目立刻出现)。
+      const now = Date.now();
+      if (!id || now - lastConvListRefreshAtRef.current > 3000) {
+        lastConvListRefreshAtRef.current = now;
+        setConvListRefresh(k => k + 1);
+      }
       return savedId;
     } catch (e) {
       console.error('[saveConversation]', e);

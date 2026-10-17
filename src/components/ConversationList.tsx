@@ -202,7 +202,7 @@ export default function ConversationList({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {loading ? (
+        {loading && filtered.length === 0 ? (
           <div className="flex items-center justify-center p-8 text-scholar-400">
             <Loader2 className="w-5 h-5 animate-spin" />
           </div>
